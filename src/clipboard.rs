@@ -6,7 +6,7 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 
 const CF_UNICODETEXT: u32 = 13;
 
@@ -66,8 +66,10 @@ pub fn get_text() -> Result<String> {
         if p.is_null() {
             bail!("GlobalLock failed");
         }
+        // Never read past the allocation, even if the data is not NUL-terminated.
+        let max = GlobalSize(h) / 2;
         let mut len = 0usize;
-        while *p.add(len) != 0 {
+        while len < max && *p.add(len) != 0 {
             len += 1;
         }
         let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));

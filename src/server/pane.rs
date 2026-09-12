@@ -79,6 +79,9 @@ pub struct Pane {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Kill-on-close job holding the shell and everything it started, so a
+    /// dead pane never leaves orphans (tmux's SIGHUP-the-process-group).
+    job: Option<crate::winsec::KillOnCloseJob>,
     pub title: String,
     pub command: String,
     pub cwd: Option<String>,
@@ -119,6 +122,23 @@ impl Pane {
         let mut child = pair.slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", argv))?;
         let killer = child.clone_killer();
         drop(pair.slave);
+        let job = match crate::winsec::KillOnCloseJob::new() {
+            Ok(j) => match child.as_raw_handle() {
+                // The handle comes straight from CreateProcessW inside portable-pty.
+                Some(h) => match unsafe { j.assign(h as _) } {
+                    Ok(()) => Some(j),
+                    Err(e) => {
+                        log::warn!("pane {id}: job assign failed: {e}");
+                        None
+                    }
+                },
+                None => None,
+            },
+            Err(e) => {
+                log::warn!("pane {id}: no job object: {e}");
+                None
+            }
+        };
         let mut reader = pair.master.try_clone_reader().context("pty reader")?;
         let writer = pair.master.take_writer().context("pty writer")?;
 
@@ -153,6 +173,7 @@ impl Pane {
             master: pair.master,
             writer,
             killer,
+            job,
             title: String::new(),
             command: std::path::Path::new(&argv[0])
                 .file_stem()
@@ -211,7 +232,11 @@ impl Pane {
         }
     }
 
+    /// Kill the shell and its whole process tree.
     pub fn kill(&mut self) {
+        // Dropping the job terminates every process in it; the killer covers
+        // the (unlikely) case where the job could not be created.
+        self.job = None;
         let _ = self.killer.kill();
     }
 
@@ -257,6 +282,9 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
+        // Field drop order would close the ConPTY before the job; kill first so
+        // ClosePseudoConsole never waits on a live process tree.
+        self.job = None;
         if self.exit_code.is_none() {
             let _ = self.killer.kill();
         }
@@ -324,6 +352,24 @@ mod tests {
         );
         p.kill();
         assert!(pump(&mut p, &rx, |p| p.exit_code.is_some(), Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn kill_takes_grandchildren_down() {
+        let (tx, rx) = channel();
+        // The shell starts ping (a grandchild of wmux) and waits for it.
+        let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into(), "prompt $g".into()];
+        let mut p = Pane::spawn(9, &argv, None, 80, 24, 100, &[], tx).unwrap();
+        assert!(pump(&mut p, &rx, |p| p.screen().contents().contains('>'), Duration::from_secs(10)));
+        let marker = std::env::temp_dir().join(format!("wmux-job-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        p.write_input(format!("ping -n 4 127.0.0.1 > nul & echo done > \"{}\"\r", marker.display()).as_bytes());
+        std::thread::sleep(Duration::from_millis(500));
+        p.kill();
+        assert!(pump(&mut p, &rx, |p| p.exit_code.is_some(), Duration::from_secs(10)), "shell did not die");
+        // ping would finish after ~3s and write the marker; it must not.
+        std::thread::sleep(Duration::from_secs(4));
+        assert!(!marker.exists(), "grandchild survived the pane kill");
     }
 
     #[test]

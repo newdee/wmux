@@ -112,6 +112,13 @@ the console with VT sequences. The server exits when its last session ends.
 Environment inside panes: `WMUX` (socket name) and `WMUX_PANE` (pane id).
 Server log: `%LOCALAPPDATA%\wmux\server.log` (`WMUX_LOG=debug` for more).
 
+The pipe carries a DACL that admits only the creating user (and SYSTEM), the
+Windows equivalent of tmux's mode-0700 socket directory. Every pane runs in a
+kill-on-close job object, so `kill-pane`, `kill-session` and a server exit
+take the whole process tree down (the equivalent of tmux hanging up the
+process group), and a slow client console never makes the server buffer
+frames without bound: it drops to a full redraw instead.
+
 ## Development
 
 ```powershell

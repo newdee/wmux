@@ -9,11 +9,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME: u32 = 64 * 1024 * 1024;
 
-/// Name of the per-user named pipe the server listens on.
+/// Name of the per-user named pipe the server listens on. Both the user name
+/// and the socket name are reduced to `[A-Za-z0-9_.-]` so a `-L` value can
+/// never escape the `wmux-<user>-` namespace (pipe names accept `\`).
 pub fn pipe_name(socket_name: &str) -> String {
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
-    let user: String = user.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    format!(r"\\.\pipe\wmux-{user}-{socket_name}")
+    let clean = |s: &str| -> String {
+        s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '_' }).collect()
+    };
+    let (user, socket) = (clean(&user), clean(socket_name));
+    let socket = if socket.is_empty() { "default".to_string() } else { socket };
+    format!(r"\\.\pipe\wmux-{user}-{socket}")
 }
 
 /// Raw Windows `KEY_EVENT_RECORD`, forwarded verbatim so the server can hand it
@@ -147,5 +153,8 @@ mod tests {
         let n = pipe_name("default");
         assert!(n.starts_with(r"\\.\pipe\wmux-"));
         assert!(n.ends_with("-default"));
+        assert!(pipe_name(r"..\evil").ends_with("-.._evil"));
+        assert!(pipe_name("").ends_with("-default"));
+        assert!(pipe_name("a b/c").ends_with("-a_b_c"));
     }
 }

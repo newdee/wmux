@@ -19,7 +19,7 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "
 toml = "1.1.6"
 unicode-width = "0.2.2"
 vt100 = "0.16"
-windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_Security_Authorization"] }
 
 [dev-dependencies]
 portable-pty = "0.9"

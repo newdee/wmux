@@ -31,9 +31,14 @@ const BTN_LEFT: u32 = 0x0001;
 const BTN_RIGHT: u32 = 0x0002;
 const BTN_MIDDLE: u32 = 0x0004;
 
+/// Frames queued per client before we stop diffing and fall back to a full
+/// redraw once the client catches up (a slow console must not make the
+/// server's memory grow without bound).
+const OUTPUT_QUEUE: usize = 64;
+
 enum Event {
     Pane(PaneEvent),
-    Connected(ClientId, mpsc::UnboundedSender<ServerMsg>),
+    Connected(ClientId, mpsc::Sender<ServerMsg>),
     Msg(ClientId, ClientMsg),
     Gone(ClientId),
     Tick,
@@ -62,7 +67,7 @@ struct Drag {
 
 struct Client {
     id: ClientId,
-    tx: mpsc::UnboundedSender<ServerMsg>,
+    tx: mpsc::Sender<ServerMsg>,
     cols: u16,
     rows: u16,
     cwd: String,
@@ -84,8 +89,21 @@ struct Client {
 }
 
 impl Client {
+    /// Queue a control message. These are rare; if the queue is full the
+    /// client is not reading at all and the message is logged and dropped.
     fn send(&self, m: ServerMsg) {
-        let _ = self.tx.send(m);
+        if let Err(mpsc::error::TrySendError::Full(m)) = self.tx.try_send(m) {
+            log::warn!("client {}: output queue full, dropping {m:?}", self.id);
+        }
+    }
+
+    /// Queue a screen update. When the client lags, the frame is dropped and
+    /// the next render is forced to be a full redraw, which supersedes it.
+    fn send_output(&mut self, bytes: Vec<u8>) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(ServerMsg::Output(bytes)) {
+            self.last_grid = None;
+            self.last_cursor = None;
+        }
     }
 }
 
@@ -215,12 +233,16 @@ pub async fn run(socket: String) -> Result<()> {
             .context("spawn pane event bridge")?;
     }
 
+    // Only this user (and SYSTEM) may open the pipe: tmux's 0700 socket.
+    let mut sec = crate::winsec::OwnerOnly::new().context("pipe security descriptor")?;
     // Listener: the first instance must be created before we are considered up.
-    let first = ServerOptions::new()
-        .first_pipe_instance(true)
-        .reject_remote_clients(true)
-        .create(&pipe)
-        .with_context(|| format!("create pipe {pipe} (server already running?)"))?;
+    let first = unsafe {
+        ServerOptions::new()
+            .first_pipe_instance(true)
+            .reject_remote_clients(true)
+            .create_with_security_attributes_raw(&pipe, sec.as_ptr() as *mut _)
+    }
+    .with_context(|| format!("create pipe {pipe} (server already running?)"))?;
     log::info!("listening on {pipe}");
     let listener = {
         let tx = tx.clone();
@@ -234,7 +256,11 @@ pub async fn run(socket: String) -> Result<()> {
                     break;
                 }
                 let conn = server;
-                server = match ServerOptions::new().reject_remote_clients(true).create(&pipe) {
+                server = match unsafe {
+                    ServerOptions::new()
+                        .reject_remote_clients(true)
+                        .create_with_security_attributes_raw(&pipe, sec.as_ptr() as *mut _)
+                } {
                     Ok(s) => s,
                     Err(e) => {
                         log::error!("create next pipe instance: {e}");
@@ -246,7 +272,7 @@ pub async fn run(socket: String) -> Result<()> {
                 let tx = tx.clone();
                 tokio::spawn(async move {
                     let (mut rd, mut wr) = tokio::io::split(conn);
-                    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerMsg>();
+                    let (out_tx, mut out_rx) = mpsc::channel::<ServerMsg>(OUTPUT_QUEUE);
                     let _ = tx.send(Event::Connected(id, out_tx));
                     let writer = tokio::spawn(async move {
                         while let Some(m) = out_rx.recv().await {
@@ -1448,6 +1474,8 @@ impl Server {
                 };
                 let hist = self.opts.history_limit;
                 if let Some(p) = self.find_pane_mut(pid) {
+                    // The scrollback the copy cursor refers to is about to vanish.
+                    exit_copy_mode(p);
                     // vt100 has no explicit clear; re-create the parser at the same size.
                     let (rows, cols) = p.screen().size();
                     let mut fresh = vt100::Parser::new_with_callbacks(rows, cols, hist, pane::Callbacks::default());
@@ -1483,6 +1511,9 @@ impl Server {
             return;
         }
         let key = key_from_record(&rec);
+        if key.is_some() && self.opts.display_time_ms == 0 {
+            c.message = None;
+        }
 
         if c.overlay.is_some() {
             if key.is_some() {
@@ -1938,10 +1969,13 @@ impl Server {
 
     fn render_all(&mut self) {
         let now = Instant::now();
-        let ttl = Duration::from_millis(self.opts.display_time_ms);
-        for c in self.clients.values_mut() {
-            if c.message.as_ref().is_some_and(|(_, t)| now.duration_since(*t) > ttl) {
-                c.message = None;
+        // display-time 0 means "until the next key press" (see handle_key).
+        if self.opts.display_time_ms > 0 {
+            let ttl = Duration::from_millis(self.opts.display_time_ms);
+            for c in self.clients.values_mut() {
+                if c.message.as_ref().is_some_and(|(_, t)| now.duration_since(*t) > ttl) {
+                    c.message = None;
+                }
             }
         }
         let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session.is_some()).map(|c| c.id).collect();
@@ -2050,7 +2084,7 @@ impl Server {
         }
         c.last_grid = Some(grid);
         c.last_cursor = cursor;
-        c.send(ServerMsg::Output(bytes));
+        c.send_output(bytes);
     }
 }
 
@@ -2128,10 +2162,14 @@ fn copy_scroll(p: &mut Pane, delta: i64) {
     }
 }
 
-/// Absolute line number under the copy-mode cursor.
+/// Absolute line number under the copy-mode cursor. The scrollback can shrink
+/// under us (resize, clear-history), so the offset is re-clamped here.
 fn copy_abs(p: &mut Pane) -> usize {
     let max = p.scrollback_len();
-    let c = p.copy.as_ref().unwrap();
+    let rows = p.rows;
+    let c = p.copy.as_mut().unwrap();
+    c.offset = c.offset.min(max);
+    c.cy = c.cy.min(rows.saturating_sub(1));
     max - c.offset + c.cy as usize
 }
 
@@ -2183,4 +2221,55 @@ fn copy_selection(p: &mut Pane) -> Result<usize, String> {
     let n = text.chars().count();
     crate::clipboard::set_text(&text).map_err(|e| format!("clipboard: {e}"))?;
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(cap: usize) -> (Client, mpsc::Receiver<ServerMsg>) {
+        let (tx, rx) = mpsc::channel(cap);
+        let c = Client {
+            id: 1,
+            tx,
+            cols: 10,
+            rows: 2,
+            cwd: String::new(),
+            interactive: true,
+            pane_env: None,
+            session: Some(1),
+            last_grid: Some(Grid::new(10, 2)),
+            last_cursor: Some((0, 0)),
+            prefix: false,
+            prompt: None,
+            message: None,
+            overlay: None,
+            mouse_buttons: 0,
+            drag: None,
+            swallow_up: HashSet::new(),
+        };
+        (c, rx)
+    }
+
+    #[test]
+    fn lagging_client_forces_full_redraw() {
+        let (mut c, mut rx) = client(1);
+        c.send_output(b"frame1".to_vec());
+        assert!(c.last_grid.is_some(), "first frame queued, diff state kept");
+        c.send_output(b"frame2".to_vec());
+        assert!(c.last_grid.is_none() && c.last_cursor.is_none(), "dropped frame invalidates the diff base");
+        // Only the first frame is in the queue; nothing else was allocated.
+        assert!(matches!(rx.try_recv(), Ok(ServerMsg::Output(b)) if b == b"frame1"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn expand_home_forms() {
+        let home = dirs::home_dir().unwrap().display().to_string();
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~/.wmux.conf"), format!("{home}/.wmux.conf"));
+        assert_eq!(expand_home("~\\x"), format!("{home}\\x"));
+        assert_eq!(expand_home("~user/x"), "~user/x");
+        assert_eq!(expand_home("C:\\x"), "C:\\x");
+    }
 }
