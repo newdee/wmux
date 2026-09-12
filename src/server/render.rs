@@ -2,6 +2,7 @@
 //! diffing grids into a minimal VT byte stream for the client console.
 
 use super::layout::Rect;
+use crate::format::Segment;
 use unicode_width::UnicodeWidthStr;
 use vt100::Color;
 
@@ -292,10 +293,12 @@ pub struct CopyView {
 }
 
 pub struct StatusLine {
-    pub session: String,
-    /// (label, is_current)
-    pub windows: Vec<(String, bool)>,
-    pub right: String,
+    /// Expanded `status-left`.
+    pub left: Vec<Segment>,
+    /// (expanded window label, is_current)
+    pub windows: Vec<(Vec<Segment>, bool)>,
+    /// Expanded `status-right`.
+    pub right: Vec<Segment>,
     pub message: Option<String>,
     /// (prompt, input, cursor index in chars)
     pub prompt: Option<(String, String, usize)>,
@@ -313,10 +316,16 @@ pub struct Frame<'a> {
     pub active_border_fg: Color,
 }
 
-/// Compose a frame; returns the grid and the cursor position (None = hidden).
-pub fn compose(f: &Frame) -> (Grid, Option<(u16, u16)>) {
+/// Result of `compose`: the grid, the cursor position (None = hidden) and
+/// the status-line column range `[start, end)` of every window label drawn
+/// (for mouse clicks).
+pub type Composed = (Grid, Option<(u16, u16)>, Vec<(u16, u16)>);
+
+/// Compose a frame.
+pub fn compose(f: &Frame) -> Composed {
     let mut g = Grid::new(f.cols, f.rows);
     let mut cursor = None;
+    let mut window_hits: Vec<(u16, u16)> = Vec::new();
     let (win_y, win_h, status_y) = if f.status.is_some() && f.rows > 1 {
         if f.status_top { (1, f.rows - 1, Some(0)) } else { (0, f.rows - 1, Some(f.rows - 1)) }
     } else {
@@ -411,24 +420,52 @@ pub fn compose(f: &Frame) -> (Grid, Option<(u16, u16)>) {
             g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, mstyle);
             g.put_str(0, sy, m, mstyle, f.cols);
         } else {
-            let mut x = g.put_str(0, sy, &format!("[{}] ", s.session), Style { bold: true, ..style }, f.cols);
-            let right_w = s.right.width() as u16;
+            let mut x = g.put_segments(0, sy, &s.left, f.cols);
+            let right_w = seg_width(&s.right);
             let win_end = f.cols.saturating_sub(right_w + 1);
             for (label, current) in &s.windows {
-                let st = if *current { Style { inverse: true, ..style } } else { style };
-                let label = format!("{label} ");
-                let w = label.width() as u16;
+                let w = seg_width(label) + 1;
                 if x + w > win_end {
                     break;
                 }
-                x += g.put_str(x, sy, &label, st, win_end - x);
+                let start = x;
+                if *current {
+                    let inv: Vec<Segment> = label
+                        .iter()
+                        .map(|s| Segment { text: s.text.clone(), style: Style { inverse: true, ..s.style } })
+                        .collect();
+                    x += g.put_segments(x, sy, &inv, win_end - x);
+                } else {
+                    x += g.put_segments(x, sy, label, win_end - x);
+                }
+                window_hits.push((start, x));
+                x += 1;
             }
             if right_w < f.cols {
-                g.put_str(f.cols - right_w, sy, &s.right, style, right_w);
+                g.put_segments(f.cols - right_w, sy, &s.right, right_w);
             }
         }
     }
-    (g, cursor)
+    (g, cursor, window_hits)
+}
+
+/// Display width of a segment list.
+pub fn seg_width(segs: &[Segment]) -> u16 {
+    segs.iter().map(|s| s.text.width() as u16).sum()
+}
+
+impl Grid {
+    /// Write styled segments at (x, y) clipped to `max_w`; returns cells used.
+    pub fn put_segments(&mut self, x: u16, y: u16, segs: &[Segment], max_w: u16) -> u16 {
+        let mut used = 0u16;
+        for s in segs {
+            if used >= max_w {
+                break;
+            }
+            used += self.put_str(x + used, y, &s.text, s.style, max_w - used);
+        }
+        used
+    }
 }
 
 /// Draw a block of text over `area` (tmux view mode). The last row of the
@@ -549,8 +586,13 @@ mod tests {
         assert!(!g.get(2, 0).wide);
     }
 
+    fn seg(text: &str, style: Style) -> Vec<Segment> {
+        vec![Segment { text: text.into(), style }]
+    }
+
     #[test]
     fn compose_borders_and_status() {
+        let st = Style::colors(Color::Idx(0), Color::Idx(2));
         let left = screen(4, 3, b"L");
         let right = screen(15, 3, b"R");
         let f = Frame {
@@ -561,9 +603,9 @@ mod tests {
                 PaneView { rect: Rect { x: 5, y: 0, w: 15, h: 3 }, screen: right.screen(), active: false, copy: None },
             ],
             status: Some(StatusLine {
-                session: "s".into(),
-                windows: vec![("0:a".into(), true), ("1:b".into(), false)],
-                right: "12:00".into(),
+                left: seg("[s] ", Style { bold: true, ..st }),
+                windows: vec![(seg("0:a", st), true), (seg("1:b", st), false)],
+                right: seg("12:00", st),
                 message: None,
                 prompt: None,
                 fg: Color::Idx(0),
@@ -573,7 +615,7 @@ mod tests {
             border_fg: Color::Idx(8),
             active_border_fg: Color::Idx(2),
         };
-        let (g, cursor) = compose(&f);
+        let (g, cursor, hits) = compose(&f);
         assert_eq!(g.get(0, 0).text(), "L");
         assert_eq!(g.get(5, 0).text(), "R");
         for y in 0..3 {
@@ -587,6 +629,54 @@ mod tests {
         assert!(g.get(4, 3).style.inverse);
         assert!(!g.get(8, 3).style.inverse);
         assert_eq!(g.get(0, 3).style.bg, Color::Idx(2));
+        assert!(g.get(0, 3).style.bold);
+        // Window labels are reported for mouse hit-testing.
+        assert_eq!(hits, vec![(4, 7), (8, 11)]);
+    }
+
+    #[test]
+    fn status_segments_keep_their_styles_and_clip() {
+        let a = screen(3, 1, b"");
+        let st = Style::colors(Color::Idx(7), Color::Idx(0));
+        let mut left = seg("ab", st);
+        left.extend(seg("cd", Style { fg: Color::Idx(1), ..st }));
+        let mut f = Frame {
+            cols: 12,
+            rows: 2,
+            panes: vec![PaneView {
+                rect: Rect { x: 0, y: 0, w: 3, h: 1 },
+                screen: a.screen(),
+                active: true,
+                copy: None,
+            }],
+            status: Some(StatusLine {
+                left,
+                windows: vec![(seg("0:long-name", st), true), (seg("1:x", st), false)],
+                right: seg("RR", Style { bold: true, ..st }),
+                message: None,
+                prompt: None,
+                fg: Color::Idx(7),
+                bg: Color::Idx(0),
+            }),
+            status_top: false,
+            border_fg: Color::Default,
+            active_border_fg: Color::Default,
+        };
+        let (g, _, hits) = compose(&f);
+        let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
+        // Left and right keep their styles; a label that does not fit
+        // between them is skipped entirely (never drawn half).
+        assert_eq!(row, "abcd      RR");
+        assert_eq!(g.get(2, 1).style.fg, Color::Idx(1));
+        assert!(g.get(10, 1).style.bold);
+        assert!(hits.is_empty());
+        // A label that fits is drawn inverse (current) and reported.
+        f.status.as_mut().unwrap().windows = vec![(seg("0:x", st), true), (seg("1:y", st), false)];
+        let (g, _, hits) = compose(&f);
+        let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
+        assert_eq!(row, "abcd0:x   RR");
+        assert!(g.get(4, 1).style.inverse);
+        assert_eq!(hits, vec![(4, 7)]);
     }
 
     #[test]
@@ -603,9 +693,9 @@ mod tests {
                     PaneView { rect: Rect { x: 40, y: 40, w: 5, h: 2 }, screen: a.screen(), active: false, copy: None },
                 ],
                 status: Some(StatusLine {
-                    session: "a-very-long-session-name".into(),
-                    windows: vec![("0:x".into(), true)],
-                    right: "right".into(),
+                    left: seg("[a-very-long-session-name] ", Style::default()),
+                    windows: vec![(seg("0:x", Style::default()), true)],
+                    right: seg("right", Style::default()),
                     message: None,
                     prompt: Some(("(p) ".into(), "typed".into(), 3)),
                     fg: Color::Default,
@@ -615,7 +705,7 @@ mod tests {
                 border_fg: Color::Default,
                 active_border_fg: Color::Default,
             };
-            let (g, cursor) = compose(&f);
+            let (g, cursor, _) = compose(&f);
             assert_eq!((g.cols, g.rows), (cols, rows));
             if let Some((x, y)) = cursor {
                 assert!(x < cols && y < rows, "{cols}x{rows}: cursor {cursor:?}");
@@ -648,7 +738,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
         };
-        let (g, _) = compose(&f);
+        let (g, _, _) = compose(&f);
         assert_eq!(g.get(3, 2).text(), "├");
         assert_eq!(g.get(5, 2).text(), "─");
         assert_eq!(g.get(3, 0).text(), "│");
@@ -667,9 +757,9 @@ mod tests {
                 copy: None,
             }],
             status: Some(StatusLine {
-                session: "s".into(),
+                left: seg("[s] ", Style::default()),
                 windows: vec![],
-                right: String::new(),
+                right: Vec::new(),
                 message: Some("hello".into()),
                 prompt: None,
                 fg: Color::Default,
@@ -679,11 +769,11 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
         };
-        let (g, _) = compose(&f);
+        let (g, _, _) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 0).text()).collect();
         assert_eq!(row, "hello       ");
         f.status.as_mut().unwrap().prompt = Some(("(rename) ".into(), "ab".into(), 1));
-        let (_, cursor) = compose(&f);
+        let (_, cursor, _) = compose(&f);
         assert_eq!(cursor, Some((10, 0)));
     }
 
@@ -704,7 +794,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
         };
-        let (g, cursor) = compose(&f);
+        let (g, cursor, _) = compose(&f);
         assert!(cursor.is_none());
         assert!(!g.get(2, 0).style.inverse);
         assert!(g.get(3, 0).style.inverse);

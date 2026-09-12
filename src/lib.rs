@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod command;
 pub mod config;
 pub mod console;
+pub mod format;
 pub mod ipc;
 pub mod keys;
 pub mod logger;

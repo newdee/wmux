@@ -498,6 +498,88 @@ async fn resize_and_two_clients() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn plugins_hooks_status_formats_and_run_shell() {
+    let h = Harness::start("plugin").await;
+    // A plugin directory: <plugin-path>/demo/demo.wmux
+    let root = std::env::temp_dir().join(format!("wmux-plugins-{}", std::process::id()));
+    let dir = root.join("demo");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("demo.wmux"),
+        "set -g status-right \"#[fg=red]#(pwsh -NoProfile -Command Write-Output plugged)#[default] %H\"\n\
+         set -g status-interval 1\n\
+         bind P run-shell \"pwsh -NoProfile -Command Write-Output hello-from-plugin\"\n\
+         set-hook -g after-new-window \"rename-window hooked\"\n\
+         set -g @demo-option yes\n",
+    )
+    .unwrap();
+    // Declared the tmux way, from a config file.
+    let conf = root.join("wmux.conf");
+    std::fs::write(&conf, format!("set -g plugin-path \"{}\"\nset -g @plugin demo\n", root.display())).unwrap();
+    let (code, _, err) = h.cli(&["source-file", &conf.to_string_lossy()]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["list-plugins"]).await;
+    assert!(out.contains("demo"), "{out}");
+    let (_, out, _) = h.cli(&["show-hooks"]).await;
+    assert!(out.contains("after-new-window \"rename-window hooked\""), "{out}");
+    let (code, _, err) = h.cli(&["load-plugin", "nope"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("plugin not found"), "{err}");
+    // Loading the same plugin twice is a no-op, so bindings are not duplicated.
+    let (code, _, _) = h.cli(&["load-plugin", "demo"]).await;
+    assert_eq!(code, 0);
+    let (_, out, _) = h.cli(&["list-plugins"]).await;
+    assert_eq!(out.lines().count(), 1, "{out}");
+    // Plugins read their options the tmux way.
+    let (code, out, _) = h.cli(&["show-options", "-gqv", "@demo-option"]).await;
+    assert_eq!((code, out.as_str()), (0, "yes"));
+    let (code, out, _) = h.cli(&["show-options", "-gqv", "@absent"]).await;
+    assert_eq!((code, out.as_str()), (0, ""));
+    let (code, _, err) = h.cli(&["show-options", "-g", "@absent"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown option"), "{err}");
+    let (_, out, _) = h.cli(&["show-options", "-g"]).await;
+    assert!(out.contains("status-interval 1") && out.contains("@demo-option yes"), "{out}");
+    let (code, _, err) = h.cli(&["set-hook", "-g", "no-such-hook", "list-keys"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown hook"), "{err}");
+
+    // run-shell from the CLI: output comes back when the command finishes; a
+    // non-zero exit is an error.
+    let (code, out, _) = h.cli(&["run-shell", "pwsh -NoProfile -Command Write-Output from-cli"]).await;
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "from-cli");
+    let (code, _, err) = h.cli(&["run-shell", "pwsh -NoProfile -Command exit 3"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("exited with 3"), "{err}");
+    // WMUX is set for the child, so plugin scripts can call back.
+    let (_, out, _) = h.cli(&["run-shell", "pwsh -NoProfile -Command Write-Output $env:WMUX"]).await;
+    assert_eq!(out.trim(), h.socket);
+
+    // Attached: the #(command) piece shows up on the status line (styled),
+    // prefix P runs the plugin's command and shows its output, the hook renames
+    // new windows.
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "p"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("status #() piece", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("plugged")).await;
+    let sr = c.screen.screen();
+    let row = ROWS - 1;
+    let col = (0..COLS).find(|&x| sr.rows(x, COLS - x).nth(row as usize).unwrap().starts_with("plugged")).unwrap();
+    assert_eq!(sr.cell(row, col).unwrap().fgcolor(), vt100::Color::Idx(1), "#[fg=red] applied");
+    c.prefix('P').await;
+    c.wait_for("run-shell output", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("hello-from-plugin"))
+        .await;
+    c.prefix('c').await;
+    c.wait_for("hook renamed the window", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:hooked*"))
+        .await;
+    let (_, out, _) = h.cli(&["list-windows", "-t", "p"]).await;
+    assert!(out.contains("1: hooked*"), "{out}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn list_keys_is_reproducible_across_servers() {
     // Two independent servers (different HashMap seeds) must print the key
     // table byte-for-byte identically.

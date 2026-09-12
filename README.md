@@ -96,6 +96,59 @@ Options unknown to wmux but common in `.tmux.conf` (`escape-time`,
 `default-terminal`, `status-left`, ...) are accepted and ignored, so an
 existing tmux config can be reused as a starting point.
 
+### Status line
+
+`status-left`, `status-right`, `window-status-format` and
+`window-status-current-format` take tmux format strings: `#S` session, `#W`
+window name, `#I` window index, `#P` pane index, `#T` pane title, `#H` host,
+`#F` flags, `#{session_name}`-style names, `%H:%M` time fields,
+`#[fg=colour39,bg=black,bold]` style changes and `#(command)`, which runs the
+command every `status-interval` seconds (default 15) and shows its first
+line. `status-left-length` / `status-right-length` clip.
+
+```tmux
+set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
+```
+
+## Plugins
+
+Plugins work the way tmux plugins do: a plugin is a directory with a
+`<name>.wmux` (or `plugin.wmux`) file of wmux commands, plus any scripts it
+needs, in any language. Scripts call back through the CLI: `WMUX` holds the
+socket name and `WMUX_PANE` the pane, so `wmux -L $env:WMUX display-message
+...` from a script reaches the right server.
+
+```tmux
+# ~/.wmux.conf
+set -g plugin-path ~/.wmux/plugins       # default
+set -g @plugin demo                       # ~/.wmux/plugins/demo/demo.wmux
+set -g @plugin C:\src\my-plugin           # or a path (dir or file)
+```
+
+Inside a plugin file you have everything the config has, plus:
+
+- `run-shell [-b] [-t target] command` runs a command (through pwsh) with
+  the wmux environment; its output is shown when it finishes (`-b`: ignore).
+- `set-hook -g <hook> <command>` runs a command when something happens:
+  `after-new-session`, `after-new-window`, `after-split-window`,
+  `after-select-window`, `after-select-pane`, `after-kill-pane`,
+  `client-attached`, `client-detached`, `pane-exited`. `set-hook -gu <hook>`
+  removes it; `show-hooks` lists them.
+- `set -g @anything value` stores a user option; `show-options -gqv @anything`
+  reads it back (from a script: `wmux -L $env:WMUX show-options -gqv @anything`).
+- `#(command)` pieces on the status line (above).
+- `load-plugin name-or-path` and `list-plugins` at runtime.
+
+A minimal plugin that shows an agent's progress file on the status line and
+pops the full log with `prefix A`:
+
+```tmux
+# ~/.wmux/plugins/agent-status/agent-status.wmux
+set -g status-right "#[fg=cyan]#(pwsh -NoProfile -File ~/.wmux/plugins/agent-status/summary.ps1)#[default] %H:%M"
+set -g status-interval 5
+bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
+```
+
 Every window and pane command accepts `-t target` as in tmux:
 `session`, `session:window`, `:window`, `session:window.pane`, and the window
 part may be an index, a name, `+`, `-` or `!`.
@@ -138,8 +191,8 @@ covered without a human at the keyboard.
 ## Not (yet) implemented
 
 Relative to tmux: multiple clients on the same session see the same size
-(last attach wins, no per-client viewport), no `status-left`/`status-right`
-formats, no hooks, no named paste buffers (the Windows clipboard is the only
-buffer), no `choose-tree` UI, no window layout presets (`select-layout`),
-no repeatable bindings (`bind -r` is accepted, the repeat is ignored), and
-`list-panes -a`/`-s` always list the target window only.
+(last attach wins, no per-client viewport), only the hooks listed above, no
+`#{?cond,a,b}` conditionals in formats, no named paste buffers (the Windows
+clipboard is the only buffer), no `choose-tree` UI, no window layout presets
+(`select-layout`), no repeatable bindings (`bind -r` is accepted, the repeat
+is ignored), and `list-panes -a`/`-s` always list the target window only.

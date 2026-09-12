@@ -22,7 +22,44 @@ pub struct Options {
     pub display_time_ms: u64,
     pub pane_border_active_fg: Color,
     pub pane_border_fg: Color,
+    /// Status line formats (see `format.rs`).
+    pub status_left: String,
+    pub status_right: String,
+    pub status_left_length: usize,
+    pub status_right_length: usize,
+    /// Seconds between refreshes of `#(command)` pieces.
+    pub status_interval: u64,
+    pub window_status_format: String,
+    pub window_status_current_format: String,
+    /// Directory searched by `@plugin name` / `load-plugin name`.
+    pub plugin_path: String,
+    /// `set -g @plugin x` entries not yet loaded.
+    pub pending_plugins: Vec<String>,
+    /// tmux-style user options (`@name`), readable by plugins via
+    /// `show-options -gv @name`.
+    pub user: Vec<(String, String)>,
 }
+
+/// Options `show-options` can print, in display order.
+pub const SHOWABLE: &[&str] = &[
+    "prefix",
+    "default-shell",
+    "default-command",
+    "mouse",
+    "history-limit",
+    "status",
+    "status-position",
+    "status-left",
+    "status-right",
+    "status-left-length",
+    "status-right-length",
+    "status-interval",
+    "window-status-format",
+    "window-status-current-format",
+    "base-index",
+    "display-time",
+    "plugin-path",
+];
 
 impl Default for Options {
     fn default() -> Self {
@@ -40,6 +77,16 @@ impl Default for Options {
             display_time_ms: 1500,
             pane_border_active_fg: Color::Idx(2),
             pane_border_fg: Color::Idx(8),
+            status_left: "[#S] ".into(),
+            status_right: "\"#T\" %H:%M %d-%b-%y".into(),
+            status_left_length: 40,
+            status_right_length: 60,
+            status_interval: 15,
+            window_status_format: "#I:#W#F".into(),
+            window_status_current_format: "#I:#W#F".into(),
+            plugin_path: "~/.wmux/plugins".into(),
+            pending_plugins: Vec::new(),
+            user: Vec::new(),
         }
     }
 }
@@ -160,6 +207,26 @@ impl Options {
             }
             "base-index" => self.base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "display-time" => self.display_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "status-left" => self.status_left = value.to_string(),
+            "status-right" => self.status_right = value.to_string(),
+            "status-left-length" => {
+                self.status_left_length = value.parse().map_err(|_| format!("bad number '{value}'"))?
+            }
+            "status-right-length" => {
+                self.status_right_length = value.parse().map_err(|_| format!("bad number '{value}'"))?
+            }
+            "status-interval" => self.status_interval = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "window-status-format" => self.window_status_format = value.to_string(),
+            "window-status-current-format" => self.window_status_current_format = value.to_string(),
+            "plugin-path" => self.plugin_path = value.to_string(),
+            "@plugin" => {
+                self.pending_plugins.push(value.to_string());
+                self.user.push(("@plugin".into(), value.to_string()));
+            }
+            n if n.starts_with('@') => {
+                self.user.retain(|(k, _)| k != n);
+                self.user.push((n.to_string(), value.to_string()));
+            }
             // Accepted for .tmux.conf compatibility; no effect on Windows.
             "escape-time"
             | "default-terminal"
@@ -169,13 +236,6 @@ impl Options {
             | "renumber-windows"
             | "allow-rename"
             | "automatic-rename"
-            | "status-interval"
-            | "status-left"
-            | "status-right"
-            | "status-left-length"
-            | "status-right-length"
-            | "window-status-format"
-            | "window-status-current-format"
             | "window-status-current-style"
             | "mode-keys"
             | "aggressive-resize"
@@ -192,6 +252,34 @@ impl Options {
             other => return Err(format!("unknown option '{other}'")),
         }
         Ok(())
+    }
+
+    /// Current value of an option as `show-options` prints it.
+    pub fn get(&self, name: &str) -> Option<String> {
+        if name.starts_with('@') {
+            return self.user.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+        }
+        let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
+        Some(match name {
+            "prefix" => self.prefix.to_string(),
+            "default-shell" => self.default_shell.clone(),
+            "default-command" => self.default_command.join(" "),
+            "mouse" => onoff(self.mouse),
+            "history-limit" => self.history_limit.to_string(),
+            "status" => onoff(self.status),
+            "status-position" => if self.status_top { "top" } else { "bottom" }.into(),
+            "status-left" => self.status_left.clone(),
+            "status-right" => self.status_right.clone(),
+            "status-left-length" => self.status_left_length.to_string(),
+            "status-right-length" => self.status_right_length.to_string(),
+            "status-interval" => self.status_interval.to_string(),
+            "window-status-format" => self.window_status_format.clone(),
+            "window-status-current-format" => self.window_status_current_format.clone(),
+            "base-index" => self.base_index.to_string(),
+            "display-time" => self.display_time_ms.to_string(),
+            "plugin-path" => self.plugin_path.clone(),
+            _ => return None,
+        })
     }
 }
 
@@ -286,6 +374,22 @@ mod tests {
         assert_eq!(o.status_bg, Color::Rgb(0x1a, 0x2b, 0x3c));
         o.set("default-command", "wsl.exe -d Ubuntu").unwrap();
         assert_eq!(o.default_command, vec!["wsl.exe", "-d", "Ubuntu"]);
+        o.set("status-right", "#(uptime) %H:%M").unwrap();
+        assert_eq!(o.status_right, "#(uptime) %H:%M");
+        o.set("@plugin", "demo").unwrap();
+        o.set("@plugin", "other").unwrap();
+        o.set("@theme", "dark").unwrap();
+        o.set("@theme", "light").unwrap();
+        assert_eq!(o.pending_plugins, vec!["demo", "other"]);
+        assert_eq!(o.user.iter().filter(|(k, _)| k == "@theme").count(), 1);
+        assert!(o.user.iter().any(|(k, v)| k == "@theme" && v == "light"));
+        assert_eq!(o.get("@theme").as_deref(), Some("light"));
+        assert_eq!(o.get("@missing"), None);
+        assert_eq!(o.get("prefix").as_deref(), Some("C-a"));
+        assert_eq!(o.get("mouse").as_deref(), Some("off"));
+        for name in SHOWABLE {
+            assert!(o.get(name).is_some(), "{name} is listed but not showable");
+        }
         assert!(o.set("nonsense", "1").is_err());
         assert!(o.set("mouse", "maybe").is_err());
         assert!(o.set("history-limit", "x").is_err());

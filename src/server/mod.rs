@@ -42,7 +42,31 @@ enum Event {
     Msg(ClientId, ClientMsg),
     Gone(ClientId),
     Tick,
+    /// A `run-shell` finished: deliver its output to the client that asked.
+    ShellDone {
+        cid: Option<ClientId>,
+        output: String,
+        code: i32,
+    },
+    /// A status-line `#(command)` finished.
+    StatusShell {
+        command: String,
+        output: String,
+    },
 }
+
+/// Hooks a plugin can attach commands to (`set-hook -g <name> <command>`).
+pub const HOOKS: &[&str] = &[
+    "after-new-session",
+    "after-new-window",
+    "after-split-window",
+    "after-select-window",
+    "after-select-pane",
+    "after-kill-pane",
+    "client-attached",
+    "client-detached",
+    "pane-exited",
+];
 
 enum PromptKind {
     /// Run the input as a command line, or substitute it into a template.
@@ -88,6 +112,8 @@ struct Client {
     swallow_up: HashSet<u16>,
     /// Control messages that did not fit in the output queue yet.
     pending: std::collections::VecDeque<ServerMsg>,
+    /// Status-line column ranges of the window labels last drawn (clicks).
+    window_hits: Vec<(u16, u16)>,
 }
 
 impl Client {
@@ -206,6 +232,8 @@ enum Outcome {
     Text(String),
     Attach(SessionId),
     Error(String),
+    /// The result arrives later as an event (`run-shell`); nothing to send yet.
+    Pending,
 }
 
 impl From<Result<(), String>> for Outcome {
@@ -231,6 +259,16 @@ pub struct Server {
     quit: bool,
     /// Errors from the config file, pending display on the first attach.
     config_errors: Option<Vec<String>>,
+    hooks: HashMap<String, Cmd>,
+    /// Re-entrancy guard: a hook must not fire hooks.
+    in_hook: bool,
+    /// Output of status-line `#(command)` pieces and what is being run.
+    shell_cache: crate::format::ShellCache,
+    shell_running: HashSet<String>,
+    shell_last_refresh: Option<Instant>,
+    /// Plugin directories loaded so far.
+    plugins: Vec<String>,
+    events: mpsc::UnboundedSender<Event>,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -320,7 +358,7 @@ pub async fn run(socket: String) -> Result<()> {
         })
     };
 
-    let mut srv = Server::new(pane_tx, socket);
+    let mut srv = Server::new(pane_tx, socket, tx.clone());
     srv.load_config();
     loop {
         let ev = tokio::select! {
@@ -409,7 +447,11 @@ fn default_bindings() -> HashMap<Key, Cmd> {
 }
 
 impl Server {
-    pub fn new(pane_tx: std::sync::mpsc::Sender<PaneEvent>, socket: String) -> Server {
+    fn new(
+        pane_tx: std::sync::mpsc::Sender<PaneEvent>,
+        socket: String,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Server {
         Server {
             opts: Options::default(),
             prefix_binds: default_bindings(),
@@ -423,6 +465,13 @@ impl Server {
             started: Instant::now(),
             quit: false,
             config_errors: None,
+            hooks: HashMap::new(),
+            in_hook: false,
+            shell_cache: crate::format::ShellCache::default(),
+            shell_running: HashSet::new(),
+            shell_last_refresh: None,
+            plugins: Vec::new(),
+            events,
         }
     }
 
@@ -445,6 +494,7 @@ impl Server {
         }
     }
 
+    /// Source a file of wmux commands, then load any `@plugin` it declared.
     fn source_file(&mut self, path: &str) -> Result<usize, String> {
         let path = &expand_home(path);
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -462,7 +512,123 @@ impl Server {
                 Err(e) => errors.push(format!("{path}:{}: {e}", i + 1)),
             }
         }
+        let pending = std::mem::take(&mut self.opts.pending_plugins);
+        for p in pending {
+            if let Err(e) = self.load_plugin(&p) {
+                errors.push(format!("{path}: @plugin {p}: {e}"));
+            }
+        }
         if errors.is_empty() { Ok(n) } else { Err(errors.join("\n")) }
+    }
+
+    /// A plugin is a directory holding `<name>.wmux` or `plugin.wmux`; `name`
+    /// is a path or a directory name under `plugin-path`. Sourcing it once is
+    /// all "loading" means: it binds keys, sets options, hooks and status
+    /// pieces, and its scripts talk back through the `wmux` CLI.
+    fn load_plugin(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim_matches(['"', '\'']);
+        let direct = std::path::PathBuf::from(expand_home(name));
+        let dir = if direct.is_dir() {
+            direct
+        } else if direct.is_file() {
+            let f = direct.to_string_lossy().into_owned();
+            if self.plugins.contains(&f) {
+                return Ok(());
+            }
+            self.plugins.push(f.clone());
+            return self.source_file(&f).map(|_| ());
+        } else {
+            let base = std::path::PathBuf::from(expand_home(&self.opts.plugin_path));
+            // `user/repo` (TPM style) -> last component.
+            let short = name.rsplit(['/', '\\']).next().unwrap_or(name);
+            let cand = base.join(short);
+            if cand.is_dir() {
+                cand
+            } else {
+                return Err(format!("plugin not found: {name} (looked in {})", base.display()));
+            }
+        };
+        let short = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let entry = [format!("{short}.wmux"), "plugin.wmux".into(), "plugin.conf".into()]
+            .iter()
+            .map(|f| dir.join(f))
+            .find(|p| p.is_file())
+            .ok_or_else(|| format!("{}: no {short}.wmux or plugin.wmux", dir.display()))?;
+        let dir_s = dir.to_string_lossy().into_owned();
+        if self.plugins.contains(&dir_s) {
+            return Ok(());
+        }
+        self.plugins.push(dir_s);
+        self.source_file(&entry.to_string_lossy()).map(|_| ())
+    }
+
+    /// Fire a hook's command, if one is set. Hooks never fire from inside a hook.
+    fn fire_hook(&mut self, name: &str, cid: Option<ClientId>) {
+        if self.in_hook {
+            return;
+        }
+        let Some(cmd) = self.hooks.get(name).cloned() else { return };
+        self.in_hook = true;
+        let out = self.exec(cmd, cid);
+        self.in_hook = false;
+        if let Outcome::Error(e) = out {
+            log::warn!("hook {name}: {e}");
+        }
+    }
+
+    /// Run `command` through the shell on a worker thread; the result comes
+    /// back as `Event::ShellDone` (or `StatusShell` when `status` is set).
+    fn spawn_shell(&self, command: String, pane: Option<PaneId>, cid: Option<ClientId>, status: bool) {
+        let events = self.events.clone();
+        let mut env = self.pane_env(pane.unwrap_or(0));
+        if pane.is_none() {
+            env.retain(|(k, _)| k != "WMUX_PANE");
+        }
+        let spawned = std::thread::Builder::new().name("run-shell".into()).spawn({
+            let events = events.clone();
+            let command = command.clone();
+            move || {
+                let (output, code) = run_shell_blocking(&command, &env);
+                let ev = if status {
+                    Event::StatusShell { command, output }
+                } else {
+                    Event::ShellDone { cid, output, code }
+                };
+                let _ = events.send(ev);
+            }
+        });
+        if let Err(e) = spawned {
+            // Never leave a client waiting on a Pending outcome.
+            let ev = if status {
+                Event::StatusShell { command, output: String::new() }
+            } else {
+                Event::ShellDone { cid, output: format!("cannot start a thread: {e}"), code: 127 }
+            };
+            let _ = events.send(ev);
+        }
+    }
+
+    /// Kick off every `#(command)` the status line wants, at most once per
+    /// `status-interval`, and never two copies of the same command at once.
+    fn refresh_status_shells(&mut self) {
+        let wanted = std::mem::take(&mut self.shell_cache.wanted);
+        if wanted.is_empty() {
+            return;
+        }
+        let due = self
+            .shell_last_refresh
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(self.opts.status_interval.max(1)));
+        for cmd in wanted {
+            let fresh = self.shell_cache.results.contains_key(&cmd);
+            if self.shell_running.contains(&cmd) || (fresh && !due) {
+                continue;
+            }
+            self.shell_running.insert(cmd.clone());
+            self.spawn_shell(cmd, None, None, true);
+        }
+        if due {
+            self.shell_last_refresh = Some(Instant::now());
+        }
     }
 
     // ----------------------------------------------------------------- events
@@ -500,6 +666,7 @@ impl Server {
                         drag: None,
                         swallow_up: HashSet::new(),
                         pending: std::collections::VecDeque::new(),
+                        window_hits: Vec::new(),
                     },
                 );
             }
@@ -507,6 +674,30 @@ impl Server {
                 self.clients.remove(&id);
             }
             Event::Msg(id, msg) => self.handle_msg(id, msg),
+            Event::ShellDone { cid, output, code } => {
+                let text = output.trim_end().to_string();
+                match cid {
+                    Some(cid) => {
+                        let out = if code == 0 {
+                            if text.is_empty() { Outcome::Ok } else { Outcome::Text(text) }
+                        } else {
+                            Outcome::Error(if text.is_empty() { format!("shell exited with {code}") } else { text })
+                        };
+                        self.reply(cid, out);
+                    }
+                    None => {
+                        if code != 0 {
+                            log::warn!("run-shell exited with {code}: {text}");
+                        }
+                    }
+                }
+            }
+            Event::StatusShell { command, output } => {
+                self.shell_running.remove(&command);
+                // First line only, like tmux.
+                let line = output.lines().next().unwrap_or("").trim_end().to_string();
+                self.shell_cache.results.insert(command, line);
+            }
             Event::Tick => {
                 // A server nobody uses has no reason to live (e.g. started by
                 // `wmux attach` when there was nothing to attach to).
@@ -594,6 +785,7 @@ impl Server {
                 c.send(ServerMsg::Error(e));
                 c.send(ServerMsg::Done { code: 1 });
             }
+            Outcome::Pending => {}
             Outcome::Attach(sid) => {
                 let (cols, rows) = (c.cols, c.rows);
                 let name = self.sessions.iter().find(|s| s.id == sid).map(|s| s.name.clone()).unwrap_or_default();
@@ -616,6 +808,7 @@ impl Server {
                 if let Some(s) = self.session_mut(sid) {
                     s.last_used = Instant::now();
                 }
+                self.fire_hook("client-attached", Some(cid));
             }
         }
     }
@@ -642,6 +835,7 @@ impl Server {
         {
             c.last_grid = None;
             c.send(ServerMsg::Detached { reason: reason.to_string() });
+            self.fire_hook("client-detached", None);
         }
     }
 
@@ -825,6 +1019,7 @@ impl Server {
         } else {
             self.relayout_session(sid);
         }
+        self.fire_hook("pane-exited", None);
     }
 
     fn kill_session(&mut self, sid: SessionId, reason: &str) {
@@ -919,6 +1114,7 @@ impl Server {
             self.sessions.retain(|s| s.id != sid);
             return Err(e);
         }
+        self.fire_hook("after-new-session", None);
         Ok(sid)
     }
 
@@ -1137,6 +1333,9 @@ impl Server {
                     s.cur = cur;
                     s.last = last;
                 }
+                if r.is_ok() {
+                    self.fire_hook("after-new-window", cid);
+                }
                 r.map(|_| ()).into()
             }
             Cmd::KillWindow { target, all_but } => {
@@ -1176,6 +1375,7 @@ impl Server {
                 match self.resolve_window(sid, Some(&target)) {
                     Ok(idx) => {
                         self.session_mut(sid).unwrap().select_window(idx);
+                        self.fire_hook("after-select-window", cid);
                         Outcome::Ok
                     }
                     Err(e) => Outcome::Error(e),
@@ -1232,6 +1432,7 @@ impl Server {
                     w.active = nid;
                 }
                 self.relayout_session(sid);
+                self.fire_hook("after-split-window", cid);
                 Outcome::Ok
             }
             Cmd::KillPane { target, all_but } => {
@@ -1251,6 +1452,7 @@ impl Server {
                     }
                     self.remove_pane(id, Some(0));
                 }
+                self.fire_hook("after-kill-pane", cid);
                 Outcome::Ok
             }
             Cmd::SelectPane { sel } => {
@@ -1276,6 +1478,7 @@ impl Server {
                             w.zoomed = false;
                             self.relayout_session(sid);
                         }
+                        self.fire_hook("after-select-pane", cid);
                         Outcome::Ok
                     }
                     Some(_) => Outcome::Ok,
@@ -1532,6 +1735,57 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::SourceFile { path } => self.source_file(&path).map(|_| ()).into(),
+            Cmd::ShowOptions { name, value_only, quiet } => match name {
+                Some(n) => match self.opts.get(&n) {
+                    Some(v) => Outcome::Text(if value_only { v } else { format!("{n} {}", crate::command::quote(&v)) }),
+                    None if quiet => Outcome::Text(String::new()),
+                    None => Outcome::Error(format!("unknown option: {n}")),
+                },
+                None => {
+                    let mut lines: Vec<String> = crate::config::SHOWABLE
+                        .iter()
+                        .filter_map(|n| self.opts.get(n).map(|v| format!("{n} {}", crate::command::quote(&v))))
+                        .collect();
+                    for (k, v) in &self.opts.user {
+                        lines.push(format!("{k} {}", crate::command::quote(v)));
+                    }
+                    Outcome::Text(lines.join("\n"))
+                }
+            },
+            Cmd::RunShell { command, background, target } => {
+                let pane = self.resolve(target.as_ref(), cid).ok().map(|(_, _, p)| p);
+                // From a config file (no client) or with -b the output goes to the log.
+                let reply_to = if background { None } else { cid };
+                self.spawn_shell(command, pane, reply_to, false);
+                if reply_to.is_some() { Outcome::Pending } else { Outcome::Ok }
+            }
+            Cmd::SetHook { hook, cmd } => {
+                if !HOOKS.contains(&hook.as_str()) {
+                    return Outcome::Error(format!("unknown hook: {hook} (known: {})", HOOKS.join(", ")));
+                }
+                match cmd {
+                    Some(c) => {
+                        self.hooks.insert(hook, *c);
+                    }
+                    None => {
+                        self.hooks.remove(&hook);
+                    }
+                }
+                Outcome::Ok
+            }
+            Cmd::ShowHooks => {
+                let mut lines: Vec<String> = self.hooks.iter().map(|(h, c)| format!("{h} \"{c}\"")).collect();
+                lines.sort();
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::LoadPlugin { path } => self.load_plugin(&path).into(),
+            Cmd::ListPlugins => {
+                if self.plugins.is_empty() {
+                    Outcome::Text("no plugins loaded".into())
+                } else {
+                    Outcome::Text(self.plugins.join("\n"))
+                }
+            }
         }
     }
 
@@ -1998,23 +2252,14 @@ impl Server {
         }
     }
 
-    fn status_click(&mut self, _cid: ClientId, sid: SessionId, x: u16) {
-        let base = self.opts.base_index;
-        let Some(s) = self.session_mut(sid) else { return };
-        // Mirror the layout in `status_line`: "[name] " then "idx:name<flag> ".
-        let mut pos = s.name.chars().count() as u16 + 3;
-        let labels: Vec<(usize, u16)> = s
-            .windows
-            .iter()
-            .enumerate()
-            .map(|(i, w)| (i, (window_label(i, w, s, base).chars().count() + 1) as u16))
-            .collect();
-        for (i, wlen) in labels {
-            if x >= pos && x < pos + wlen {
-                s.select_window(i);
-                return;
-            }
-            pos += wlen;
+    fn status_click(&mut self, cid: ClientId, sid: SessionId, x: u16) {
+        // Hit ranges recorded by the last render of this client.
+        let hit = self.clients.get(&cid).and_then(|c| c.window_hits.iter().position(|(a, b)| x >= *a && x < *b));
+        if let Some(i) = hit
+            && let Some(s) = self.session_mut(sid)
+        {
+            s.select_window(i);
+            self.fire_hook("after-select-window", Some(cid));
         }
     }
 
@@ -2045,15 +2290,13 @@ impl Server {
         let Some(sid) = c.session else { return };
         let (cols, rows) = (c.cols, c.rows);
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else { return };
-        let (status, status_top, border_fg, active_fg, base_index, opts_status) = (
-            self.opts.status,
+        let (status_top, border_fg, active_fg, base_index, opts_status) = (
             self.opts.status_top,
             self.opts.pane_border_fg,
             self.opts.pane_border_active_fg,
             self.opts.base_index,
             self.opts.status,
         );
-        let _ = status;
         let (message, prompt) = {
             let c = self.clients.get(&cid).unwrap();
             (
@@ -2062,31 +2305,58 @@ impl Server {
             )
         };
         let mut bell = false;
-        let s = &mut self.sessions[spos];
         let status_line = if opts_status {
-            let right = {
-                let w = s.window();
-                let title = w.and_then(|w| w.active_pane()).map(|p| p.display_title().to_string()).unwrap_or_default();
-                let now = chrono::Local::now();
-                format!("\"{}\" {}", truncate(&title, 30), now.format("%H:%M %d-%b-%y"))
+            let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
+            let now = chrono::Local::now();
+            let s = &self.sessions[spos];
+            let host = std::env::var("COMPUTERNAME").unwrap_or_default();
+            let ctx_for = |s: &Session, widx: usize| -> crate::format::Context {
+                let w = &s.windows[widx];
+                let pane = w.active_pane();
+                let pidx = w.layout.panes().iter().position(|p| *p == w.active).unwrap_or(0);
+                crate::format::Context {
+                    session: s.name.clone(),
+                    window: w.name.clone(),
+                    window_index: widx + base_index,
+                    pane_index: pidx,
+                    pane_title: pane.map(|p| truncate(p.display_title(), 30)).unwrap_or_default(),
+                    pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
+                    host: host.clone(),
+                    flags: format!(
+                        "{}{}",
+                        if widx == s.cur {
+                            "*"
+                        } else if Some(w.id) == s.last {
+                            "-"
+                        } else {
+                            ""
+                        },
+                        if w.zoomed { "Z" } else { "" }
+                    ),
+                }
             };
-            Some(StatusLine {
-                session: s.name.clone(),
-                windows: s
-                    .windows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, w)| (window_label(i, w, s, base_index), i == s.cur))
-                    .collect(),
-                right,
-                message,
-                prompt,
-                fg: self.opts.status_fg,
-                bg: self.opts.status_bg,
-            })
+            let cache = &mut self.shell_cache;
+            let cur_ctx = ctx_for(s, s.cur);
+            let mut left = crate::format::expand(&self.opts.status_left, &cur_ctx, cache, base, now);
+            let mut right = crate::format::expand(&self.opts.status_right, &cur_ctx, cache, base, now);
+            clip_segments(&mut left, self.opts.status_left_length);
+            clip_segments(&mut right, self.opts.status_right_length);
+            let windows = (0..s.windows.len())
+                .map(|i| {
+                    let fmt = if i == s.cur {
+                        &self.opts.window_status_current_format
+                    } else {
+                        &self.opts.window_status_format
+                    };
+                    (crate::format::expand(fmt, &ctx_for(s, i), cache, base, now), i == s.cur)
+                })
+                .collect();
+            Some(StatusLine { left, windows, right, message, prompt, fg: self.opts.status_fg, bg: self.opts.status_bg })
         } else {
             None
         };
+        self.refresh_status_shells();
+        let s = &mut self.sessions[spos];
         let Some(w) = s.window_mut() else { return };
         let active = w.active;
         // Apply copy-mode scroll offsets for rendering and precompute the
@@ -2118,7 +2388,7 @@ impl Server {
         }
         let frame =
             Frame { cols, rows, panes: views, status: status_line, status_top, border_fg, active_border_fg: active_fg };
-        let (mut grid, mut cursor) = render::compose(&frame);
+        let (mut grid, mut cursor, window_hits) = render::compose(&frame);
         for p in &mut w.panes {
             if p.copy.is_some() {
                 p.parser.screen_mut().set_scrollback(0);
@@ -2126,6 +2396,7 @@ impl Server {
         }
         let area = self.window_area(cols, rows);
         let c = self.clients.get_mut(&cid).unwrap();
+        c.window_hits = window_hits;
         if let Some(lines) = &c.overlay {
             render::draw_overlay(&mut grid, area, lines);
             cursor = None;
@@ -2162,16 +2433,60 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-fn window_label(i: usize, w: &Window, s: &Session, base: usize) -> String {
-    let flag = if i == s.cur {
-        "*"
-    } else if Some(w.id) == s.last {
-        "-"
+/// Truncate a segment list to `max` display cells (tmux `status-*-length`).
+fn clip_segments(segs: &mut Vec<crate::format::Segment>, max: usize) {
+    use unicode_width::UnicodeWidthChar;
+    let mut left = max;
+    for s in segs.iter_mut() {
+        let mut keep = String::new();
+        for ch in s.text.chars() {
+            let w = ch.width().unwrap_or(0);
+            if w > left {
+                break;
+            }
+            left -= w;
+            keep.push(ch);
+        }
+        s.text = keep;
+    }
+    segs.retain(|s| !s.text.is_empty());
+}
+
+/// Run a shell command to completion, returning (stdout+stderr, exit code).
+/// Uses pwsh when available, else Windows PowerShell, else cmd.
+fn run_shell_blocking(command: &str, env: &[(String, String)]) -> (String, i32) {
+    // `-Command` alone reports 0/1; make a native command's exit code
+    // propagate like `sh -c` does for tmux.
+    let ps_script = format!("{command}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}");
+    let (exe, args): (&str, Vec<&str>) = if crate::config::which("pwsh.exe").is_some() {
+        ("pwsh.exe", vec!["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &ps_script])
+    } else if crate::config::which("powershell.exe").is_some() {
+        ("powershell.exe", vec!["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &ps_script])
     } else {
-        ""
+        ("cmd.exe", vec!["/d", "/c", command])
     };
-    let zoom = if w.zoomed { "Z" } else { "" };
-    format!("{}:{}{}{}", i + base, w.name, flag, zoom)
+    let mut c = std::process::Command::new(exe);
+    c.args(&args).stdin(std::process::Stdio::null());
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    #[allow(unused_imports)]
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
+    match c.output() {
+        Ok(o) => {
+            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
+            let err = String::from_utf8_lossy(&o.stderr);
+            if !err.trim().is_empty() {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&err);
+            }
+            (text, o.status.code().unwrap_or(1))
+        }
+        Err(e) => (format!("{exe}: {e}"), 127),
+    }
 }
 
 fn char_index(s: &str, chars: usize) -> usize {
@@ -2304,6 +2619,7 @@ mod tests {
             drag: None,
             swallow_up: HashSet::new(),
             pending: std::collections::VecDeque::new(),
+            window_hits: Vec::new(),
         };
         (c, rx)
     }

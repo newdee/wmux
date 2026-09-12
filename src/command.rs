@@ -169,12 +169,36 @@ pub enum Cmd {
         name: String,
         value: String,
     },
+    /// `show-options [-g] [-v] [-q] [name]`: one option, or all of them.
+    ShowOptions {
+        name: Option<String>,
+        value_only: bool,
+        quiet: bool,
+    },
     SwitchClient {
         next: bool,
         prev: bool,
         target: Option<Target>,
     },
     ListKeys,
+    /// `run-shell [-b] [-t target] command`: run a shell command with
+    /// `WMUX`/`WMUX_PANE` set; output is shown (or printed) when it finishes.
+    RunShell {
+        command: String,
+        background: bool,
+        target: Option<Target>,
+    },
+    /// `set-hook [-g] hook command` / `set-hook -u hook`.
+    SetHook {
+        hook: String,
+        cmd: Option<Box<Cmd>>,
+    },
+    ShowHooks,
+    /// `load-plugin name-or-path`: source `<dir>/<name>.wmux` (or `plugin.wmux`).
+    LoadPlugin {
+        path: String,
+    },
+    ListPlugins,
     ClearHistory,
     /// `capture-pane -p`: print the visible text of a pane (`-S -N` adds N
     /// lines of scrollback above it).
@@ -400,6 +424,34 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)
             }
             Cmd::ListKeys => f.write_str("list-keys"),
+            Cmd::ShowOptions { name, value_only, quiet } => {
+                f.write_str("show-options -g")?;
+                if *value_only {
+                    f.write_str(" -v")?;
+                }
+                if *quiet {
+                    f.write_str(" -q")?;
+                }
+                if let Some(n) = name {
+                    write!(f, " {}", quote(n))?;
+                }
+                Ok(())
+            }
+            Cmd::RunShell { command, background, target } => {
+                f.write_str("run-shell")?;
+                if *background {
+                    f.write_str(" -b")?;
+                }
+                fmt_target(f, target)?;
+                write!(f, " {}", quote(command))
+            }
+            Cmd::SetHook { hook, cmd } => match cmd {
+                Some(c) => write!(f, "set-hook -g {} {}", quote(hook), quote(&c.to_string())),
+                None => write!(f, "set-hook -gu {}", quote(hook)),
+            },
+            Cmd::ShowHooks => f.write_str("show-hooks -g"),
+            Cmd::LoadPlugin { path } => write!(f, "load-plugin {}", quote(path)),
+            Cmd::ListPlugins => f.write_str("list-plugins"),
             Cmd::ClearHistory => f.write_str("clear-history"),
             Cmd::CapturePane { target, history } => {
                 f.write_str("capture-pane -p")?;
@@ -608,8 +660,14 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "bind-key" | "bind" => "bind-key",
         "unbind-key" | "unbind" => "unbind-key",
         "set-option" | "set" => "set-option",
+        "show-options" | "show-option" | "show" => "show-options",
         "switch-client" | "switchc" => "switch-client",
         "list-keys" | "lsk" => "list-keys",
+        "run-shell" | "run" => "run-shell",
+        "set-hook" => "set-hook",
+        "show-hooks" => "show-hooks",
+        "load-plugin" => "load-plugin",
+        "list-plugins" => "list-plugins",
         "clear-history" | "clearhist" => "clear-history",
         "capture-pane" | "capturep" => "capture-pane",
         "source-file" | "source" => "source-file",
@@ -955,6 +1013,83 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SwitchClient { next, prev, target }
         }
         "list-keys" => Cmd::ListKeys,
+        "show-options" => {
+            let (mut value_only, mut quiet) = (false, false);
+            while a.is_flag() {
+                let flag = a.next().unwrap();
+                // Combined flags as tmux users write them: -gqv, -gv, ...
+                if flag.len() > 2 && flag[1..].chars().all(|c| "gswpqv".contains(c)) {
+                    value_only |= flag.contains('v');
+                    quiet |= flag.contains('q');
+                    continue;
+                }
+                match flag {
+                    "-v" => value_only = true,
+                    "-q" => quiet = true,
+                    "-g" | "-s" | "-w" | "-p" => {}
+                    "-t" => {
+                        a.value("-t")?;
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let name = a.next().map(str::to_string);
+            a.none_left(n)?;
+            Cmd::ShowOptions { name, value_only, quiet }
+        }
+        "run-shell" => {
+            let (mut background, mut target) = (false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-b" => background = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-C" => {} // tmux: run as a wmux command; here everything is a shell command
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let rest = a.rest();
+            if rest.is_empty() {
+                return Err("run-shell: command required".into());
+            }
+            Cmd::RunShell { command: rest.join(" "), background, target }
+        }
+        "set-hook" => {
+            let mut unset = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-u" | "-gu" | "-ug" => unset = true,
+                    "-g" | "-a" | "-R" => {}
+                    "-t" => {
+                        a.value("-t")?;
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let hook = a.next().ok_or("set-hook: hook name required")?.to_string();
+            if unset {
+                a.none_left(n)?;
+                Cmd::SetHook { hook, cmd: None }
+            } else {
+                let rest = a.rest();
+                if rest.is_empty() {
+                    return Err("set-hook: command required".into());
+                }
+                let inner = if rest.len() == 1 { tokenize(&rest[0])? } else { rest };
+                Cmd::SetHook { hook, cmd: Some(Box::new(parse(&inner)?)) }
+            }
+        }
+        "show-hooks" => {
+            while a.is_flag() {
+                a.next();
+            }
+            Cmd::ShowHooks
+        }
+        "load-plugin" => {
+            let path = a.next().ok_or("load-plugin: name or path required")?.to_string();
+            a.none_left(n)?;
+            Cmd::LoadPlugin { path }
+        }
+        "list-plugins" => Cmd::ListPlugins,
         "clear-history" => Cmd::ClearHistory,
         "capture-pane" => {
             let (mut target, mut history) = (None, 0usize);
@@ -1082,6 +1217,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_plugin_commands() {
+        assert_eq!(
+            p("run-shell -b pwsh -c \"Get-Date\""),
+            Cmd::RunShell { command: "pwsh -c Get-Date".into(), background: true, target: None }
+        );
+        assert_eq!(p("run \"echo hi\""), Cmd::RunShell { command: "echo hi".into(), background: false, target: None });
+        assert!(parse_line("run-shell").is_err());
+        assert_eq!(
+            p("set-hook -g after-new-window rename-window hooked"),
+            Cmd::SetHook {
+                hook: "after-new-window".into(),
+                cmd: Some(Box::new(Cmd::RenameWindow { target: None, name: "hooked".into() }))
+            }
+        );
+        assert_eq!(
+            p("set-hook -g after-new-window \"rename-window hooked\""),
+            Cmd::SetHook {
+                hook: "after-new-window".into(),
+                cmd: Some(Box::new(Cmd::RenameWindow { target: None, name: "hooked".into() }))
+            }
+        );
+        assert_eq!(p("set-hook -gu after-new-window"), Cmd::SetHook { hook: "after-new-window".into(), cmd: None });
+        assert_eq!(p("load-plugin demo"), Cmd::LoadPlugin { path: "demo".into() });
+        assert_eq!(
+            p("show-options -gqv @theme"),
+            Cmd::ShowOptions { name: Some("@theme".into()), value_only: true, quiet: true }
+        );
+        assert_eq!(p("show -g"), Cmd::ShowOptions { name: None, value_only: false, quiet: false });
+        assert_eq!(
+            p("show-option -v mouse"),
+            Cmd::ShowOptions { name: Some("mouse".into()), value_only: true, quiet: false }
+        );
+    }
+
+    #[test]
     fn parse_flags_that_change_behaviour() {
         assert!(matches!(p("neww -d"), Cmd::NewWindow { detached: true, .. }));
         assert!(matches!(
@@ -1163,6 +1333,14 @@ mod tests {
             "kill-pane -a",
             "kill-session -a -t x",
             "capture-pane -p -S -100 -t w:1",
+            "run-shell -b -t w:1 \"pwsh -c Get-Date\"",
+            "set-hook -g after-new-window \"rename-window hooked\"",
+            "set-hook -gu after-new-window",
+            "load-plugin \"C:\\plugins\\demo\"",
+            "list-plugins",
+            "show-hooks -g",
+            "show-options -g -v -q @x",
+            "show-options -g",
             "confirm-before -p \"kill? (y/n)\" \"kill-window\"",
             "bind-key -n M-h select-pane -L",
             "set-option prefix C-a",

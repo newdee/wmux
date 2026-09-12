@@ -37,3 +37,12 @@ bind W new-window -n wsl wsl.exe
 
 # reload this file
 bind r source-file ~/.wmux.conf
+
+# status line formats (tmux syntax; #() runs every status-interval seconds)
+set -g status-left "#[bold][#S] "
+set -g status-right "#[fg=yellow]#(pwsh -NoProfile -Command (Get-Date).ToString('HH:mm'))#[default] #H"
+set -g status-interval 15
+
+# plugins: directories under plugin-path holding <name>.wmux
+# set -g plugin-path ~/.wmux/plugins
+# set -g @plugin agent-status
