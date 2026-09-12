@@ -13,6 +13,13 @@ const ROWS: u16 = 24;
 struct Harness {
     socket: String,
     _server: tokio::task::JoinHandle<()>,
+    sessions_dir: std::path::PathBuf,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.sessions_dir);
+    }
 }
 
 impl Harness {
@@ -30,12 +37,12 @@ impl Harness {
             assert!(Instant::now() < deadline, "server did not come up");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let h = Harness { socket, _server: server };
+        // Autosave must never touch the real sessions directory from a test.
+        let dir = std::env::temp_dir().join(format!("wmux-test-sessions-{}-{name}", std::process::id()));
+        let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
         // Make every implicitly spawned pane a predictable cmd.exe prompt.
         let (code, _, err) = h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt wmux$g"]).await;
         assert_eq!(code, 0, "{err}");
-        // Autosave must never touch the real sessions directory from a test.
-        let dir = std::env::temp_dir().join(format!("wmux-test-sessions-{}-{name}", std::process::id()));
         let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
         assert_eq!(code, 0, "{err}");
         h

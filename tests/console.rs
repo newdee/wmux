@@ -164,6 +164,7 @@ fn real_client_in_conpty() {
     assert!(stdout.starts_with("t: 1 windows"), "{stdout}");
     let out = wmux().args(["-L", &socket, "kill-server"]).output().unwrap();
     assert!(out.status.success());
+    let _ = std::fs::remove_dir_all(sessions_dir());
 }
 
 #[test]
@@ -188,4 +189,5 @@ fn nested_new_is_refused_and_detached_flag_allowed() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("outer:") && stdout.contains("inner:"), "{stdout}");
     let _ = wmux().args(["-L", &socket, "kill-server"]).output();
+    let _ = std::fs::remove_dir_all(sessions_dir());
 }
