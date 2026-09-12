@@ -110,7 +110,18 @@ pub fn expand(
             },
             '%' => match chars.next() {
                 Some('%') => text.push('%'),
-                Some(f) => text.push_str(&now.format(&format!("%{f}")).to_string()),
+                Some(f) => {
+                    // chrono's Display fails (and `to_string` would panic) on
+                    // an unknown specifier; keep such text verbatim instead.
+                    use std::fmt::Write;
+                    let mut s = String::new();
+                    if write!(s, "{}", now.format(&format!("%{f}"))).is_ok() {
+                        text.push_str(&s);
+                    } else {
+                        text.push('%');
+                        text.push(f);
+                    }
+                }
                 None => text.push('%'),
             },
             c => text.push(c),
@@ -223,6 +234,17 @@ mod tests {
         assert!(s[1].style.bold);
         assert_eq!(s[2].style, Style::default());
         assert_eq!(s[3].style.bg, Color::Idx(17));
+    }
+
+    #[test]
+    fn malformed_formats_do_not_panic() {
+        let mut cache = ShellCache::default();
+        for f in ["%Q", "%中", "100%", "#[fg=red", "#(unclosed", "#{unclosed", "#", "%", "#[fg=notacolour]x", "#[]y"] {
+            let _ = expand(f, &ctx(), &mut cache, Style::default(), now());
+        }
+        // Unknown strftime fields come out verbatim rather than blowing up.
+        let s = expand("a%Qb", &ctx(), &mut cache, Style::default(), now());
+        assert_eq!(plain(&s), "a%Qb");
     }
 
     #[test]

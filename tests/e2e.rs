@@ -522,6 +522,10 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     assert!(out.contains("demo"), "{out}");
     let (_, out, _) = h.cli(&["show-hooks"]).await;
     assert!(out.contains("after-new-window \"rename-window hooked\""), "{out}");
+    // show-hooks output is valid command syntax: feeding it back reproduces the hook.
+    let line = out.lines().find(|l| l.starts_with("after-new-window")).unwrap();
+    let words = wmux::command::tokenize(line).unwrap();
+    assert_eq!(words, vec!["after-new-window", "rename-window hooked"]);
     let (code, _, err) = h.cli(&["load-plugin", "nope"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("plugin not found"), "{err}");

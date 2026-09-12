@@ -379,6 +379,8 @@ pub async fn run(socket: String) -> Result<()> {
             for c in srv.clients.values_mut() {
                 c.last_grid = None;
             }
+            // A panic inside a hook would otherwise leave the guard set forever.
+            srv.in_hook = false;
         }
         if srv.quit {
             break;
@@ -588,7 +590,10 @@ impl Server {
             let events = events.clone();
             let command = command.clone();
             move || {
-                let (output, code) = run_shell_blocking(&command, &env);
+                // A status piece that hangs must not wedge its slot forever;
+                // a foreground run-shell waits like tmux does.
+                let timeout = if status { Some(STATUS_SHELL_TIMEOUT) } else { None };
+                let (output, code) = run_shell_blocking(&command, &env, timeout);
                 let ev = if status {
                     Event::StatusShell { command, output }
                 } else {
@@ -960,8 +965,15 @@ impl Server {
 
     // ----------------------------------------------------------------- panes
 
+    /// Environment for panes and `run-shell`: the socket, the pane, and PATH
+    /// with this executable's directory first so `wmux` is callable from
+    /// scripts and panes even when it was never installed.
     fn pane_env(&self, pane_id: PaneId) -> Vec<(String, String)> {
-        vec![("WMUX".into(), self.socket.clone()), ("WMUX_PANE".into(), pane_id.to_string())]
+        vec![
+            ("WMUX".into(), self.socket.clone()),
+            ("WMUX_PANE".into(), pane_id.to_string()),
+            ("PATH".into(), path_with_self()),
+        ]
     }
 
     fn spawn_pane(&mut self, argv: &[String], cwd: Option<&str>, cols: u16, rows: u16) -> Result<Pane, String> {
@@ -1774,7 +1786,8 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::ShowHooks => {
-                let mut lines: Vec<String> = self.hooks.iter().map(|(h, c)| format!("{h} \"{c}\"")).collect();
+                let mut lines: Vec<String> =
+                    self.hooks.iter().map(|(h, c)| format!("{h} {}", crate::command::quote(&c.to_string()))).collect();
                 lines.sort();
                 Outcome::Text(lines.join("\n"))
             }
@@ -2452,12 +2465,32 @@ fn clip_segments(segs: &mut Vec<crate::format::Segment>, max: usize) {
     segs.retain(|s| !s.text.is_empty());
 }
 
+/// PATH with the directory of the running executable prepended (once).
+fn path_with_self() -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+        return path;
+    };
+    let dir_s = dir.to_string_lossy().into_owned();
+    let already = std::env::split_paths(&path).any(|p| p == dir);
+    if already { path } else { format!("{dir_s};{path}") }
+}
+
+/// Longest a status-line `#(command)` may run before it is killed.
+const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Run a shell command to completion, returning (stdout+stderr, exit code).
-/// Uses pwsh when available, else Windows PowerShell, else cmd.
-fn run_shell_blocking(command: &str, env: &[(String, String)]) -> (String, i32) {
+/// Uses pwsh when available, else Windows PowerShell, else cmd. With a
+/// `timeout` the process tree is killed when it expires (exit code 124).
+fn run_shell_blocking(command: &str, env: &[(String, String)], timeout: Option<Duration>) -> (String, i32) {
     // `-Command` alone reports 0/1; make a native command's exit code
     // propagate like `sh -c` does for tmux.
-    let ps_script = format!("{command}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}");
+    // Without a console PowerShell writes the ANSI code page; ask for UTF-8 so
+    // non-ASCII output survives the trip into the status line / overlay.
+    let ps_script = format!(
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8\n\
+         {command}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}"
+    );
     let (exe, args): (&str, Vec<&str>) = if crate::config::which("pwsh.exe").is_some() {
         ("pwsh.exe", vec!["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &ps_script])
     } else if crate::config::which("powershell.exe").is_some() {
@@ -2473,7 +2506,41 @@ fn run_shell_blocking(command: &str, env: &[(String, String)]) -> (String, i32) 
     #[allow(unused_imports)]
     use std::os::windows::process::CommandExt;
     c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
-    match c.output() {
+    c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut job = crate::winsec::KillOnCloseJob::new().ok();
+    let child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) => return (format!("{exe}: {e}"), 127),
+    };
+    if let Some(j) = &job {
+        use std::os::windows::io::AsRawHandle;
+        // Straight from CreateProcess; killing the job takes grandchildren too.
+        let _ = unsafe { j.assign(child.as_raw_handle() as _) };
+    }
+    // Watchdog: close the job (killing the tree) when the timeout expires.
+    // Without a timeout the job simply lives until the command is done.
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(t) = timeout
+        && let Some(j) = job.take()
+    {
+        let (timed_out, done) = (timed_out.clone(), done.clone());
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + t;
+            while Instant::now() < deadline {
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            timed_out.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(j);
+        });
+    }
+    let out = child.wait_with_output();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(job);
+    match out {
         Ok(o) => {
             let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
             let err = String::from_utf8_lossy(&o.stderr);
@@ -2482,6 +2549,9 @@ fn run_shell_blocking(command: &str, env: &[(String, String)]) -> (String, i32) 
                     text.push('\n');
                 }
                 text.push_str(&err);
+            }
+            if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
+                return (format!("{text}\n[timed out after {}s]", timeout.map_or(0, |t| t.as_secs())), 124);
             }
             (text, o.status.code().unwrap_or(1))
         }
@@ -2655,6 +2725,44 @@ mod tests {
         assert!(c.flush_pending());
         assert!(matches!(rx.try_recv(), Ok(ServerMsg::Detached { .. })));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn path_with_self_contains_our_directory_exactly_once() {
+        // (cargo already puts target/debug/deps on PATH for tests, so the
+        // interesting property is "present, and not duplicated".)
+        let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let p = path_with_self();
+        let count = std::env::split_paths(&p).filter(|x| *x == dir).count();
+        let before = std::env::split_paths(&std::env::var("PATH").unwrap()).filter(|x| *x == dir).count();
+        assert_eq!(count, before.max(1));
+        if before == 0 {
+            assert_eq!(std::env::split_paths(&p).next().unwrap(), dir);
+        }
+    }
+
+    #[test]
+    fn run_shell_reports_exit_code_and_utf8() {
+        let (out, code) = run_shell_blocking("Write-Output 中文-ok; exit 3", &[], None);
+        assert_eq!(code, 3);
+        assert!(out.contains("中文-ok"), "{out:?}");
+        let (out, code) =
+            run_shell_blocking("Write-Output $env:WMUX_TEST_VAR", &[("WMUX_TEST_VAR".into(), "v1".into())], None);
+        assert_eq!(code, 0);
+        assert_eq!(out.trim(), "v1");
+    }
+
+    #[test]
+    fn run_shell_timeout_kills_the_tree() {
+        let start = Instant::now();
+        let (out, code) = run_shell_blocking(
+            "Write-Output first-line; ping -n 30 127.0.0.1 > $null; Write-Output never-reached",
+            &[],
+            Some(Duration::from_secs(2)),
+        );
+        assert_eq!(code, 124, "{out:?}");
+        assert!(out.contains("first-line") && !out.contains("never-reached"), "{out:?}");
+        assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
     }
 
     #[test]
