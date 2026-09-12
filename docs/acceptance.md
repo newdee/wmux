@@ -113,6 +113,40 @@
 
 测试结果（修复后）：lib 56 passed / console 2 passed / e2e 7 passed / clippy 0 warnings。
 
-## 第 8 轮（计数 1/3）— 视角：可复现性 + 机制通路（真实二进制）
+## 第 8 轮（计数 1/3，无发现）— 视角：可复现性 + 机制通路（真实二进制）
 
-（待填）
+数据：`cargo test` 连跑 3 次指纹均为 `A4092EC0BD2FA264`（65 项：lib 56 / console 2 / e2e 7）。
+release 二进制 + 临时配置（`prefix C-a`、`status-position top`、`base-index 1`、`bind -n M-q`、`default-shell cmd`）：
+`list-windows` 编号从 1 起；`send-keys -t s1:2` 命中第二个窗口；`list-keys` 含 `root M-q`；pane 标题 `cmd.exe`。全部生效。
+
+发现：无。
+
+## 第 9 轮（计数 2/3，无发现）— 视角：静态一致性终审
+
+做了什么：`--help` 文本中 20 个命令名逐个对照 `command::parse` 的别名表；README 中的路径（`.wmux.conf`、`.config\wmux`、`WMUX_CONFIG`、`%LOCALAPPDATA%\wmux\server.log`）、环境变量（`WMUX`、`WMUX_PANE`、`WMUX_LOG`）、管道名格式与代码对照；`docs/acceptance.md` 各轮数字与当时测试输出对照。
+
+数据：clippy 0 warnings；65 项全绿；`git status` 干净；`wmux --help` / `wmux -V` 输出正常。
+
+发现：无。
+
+## 第 10 轮（计数 3/3，无发现）— 视角：核心不变量的真实场景验证
+
+做了什么：release 二进制，在隐藏控制台里 attach 一个 session，`Stop-Process -Force` 强杀客户端（等价于关掉终端窗口），再从 CLI 查询、发键、在另一个隐藏控制台重新 attach，最后 `kill-server`。
+
+数据（原样）：
+```
+keep: 1 windows (created 1s ago) [120x30] (attached)
+-- kill client --
+keep: 1 windows (created 2s ago) [120x30]
+0: [120x29] %2 C:\WINDOWS\system32\cmd.exe (active)
+-- re-attach --
+keep: 1 windows (created 5s ago) [120x30] (attached)
+client2 exited after kill-server: True code=0
+```
+`cargo test` 65 项全绿；clippy 0。
+
+发现：无。
+
+## 结论
+
+第 8、9、10 轮连续零发现，验收通过。累计修复 27 项（第 1–4、6、7 轮），新增测试 21 项；最终 65 项自动化测试（单元 56、真实 ConPTY 2、管道级 e2e 7）。
