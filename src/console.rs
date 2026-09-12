@@ -73,16 +73,7 @@ impl Console {
     /// Switch to raw input, VT output, alternate screen.
     pub fn enter_raw(&mut self) -> Result<()> {
         unsafe {
-            let in_mode = (self.saved_in
-                & !(ENABLE_PROCESSED_INPUT
-                    | ENABLE_LINE_INPUT
-                    | ENABLE_ECHO_INPUT
-                    | ENABLE_QUICK_EDIT_MODE
-                    | ENABLE_VIRTUAL_TERMINAL_INPUT))
-                | ENABLE_WINDOW_INPUT
-                | ENABLE_MOUSE_INPUT
-                | ENABLE_EXTENDED_FLAGS;
-            if SetConsoleMode(self.hin, in_mode) == 0 {
+            if SetConsoleMode(self.hin, self.raw_input_mode(true)) == 0 {
                 bail!("SetConsoleMode(stdin) failed: {}", std::io::Error::last_os_error());
             }
             let out_mode = ENABLE_PROCESSED_OUTPUT
@@ -101,6 +92,31 @@ impl Console {
         // (full key fidelity under Windows Terminal; ignored elsewhere).
         self.write_str("\x1b[?1049h\x1b[2J\x1b[H\x1b[?9001h");
         Ok(())
+    }
+
+    /// Raw input mode: no line editing/echo, window events, and either mouse
+    /// capture for wmux or quick-edit so the host terminal selects text.
+    fn raw_input_mode(&self, mouse: bool) -> u32 {
+        let base = (self.saved_in
+            & !(ENABLE_PROCESSED_INPUT
+                | ENABLE_LINE_INPUT
+                | ENABLE_ECHO_INPUT
+                | ENABLE_QUICK_EDIT_MODE
+                | ENABLE_MOUSE_INPUT
+                | ENABLE_VIRTUAL_TERMINAL_INPUT))
+            | ENABLE_WINDOW_INPUT
+            | ENABLE_EXTENDED_FLAGS;
+        if mouse { base | ENABLE_MOUSE_INPUT } else { base | ENABLE_QUICK_EDIT_MODE }
+    }
+
+    /// Toggle mouse capture while in raw mode (the server's `mouse` option).
+    pub fn set_mouse(&self, mouse: bool) {
+        if !self.raw.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        unsafe {
+            SetConsoleMode(self.hin, self.raw_input_mode(mouse));
+        }
     }
 
     /// Undo `enter_raw`. Safe to call more than once and from any thread.

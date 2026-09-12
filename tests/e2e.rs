@@ -98,13 +98,37 @@ impl Conn {
             .expect("server closed")
     }
 
-    /// Attach with a command and pump until `Attached`.
-    async fn attach(&mut self, argv: &[&str]) -> String {
+    /// Attach with a command and pump until `Attached`, then the `SetMouse`
+    /// that every attach must be followed by; returns (session, mouse).
+    async fn attach_full(&mut self, argv: &[&str]) -> (String, bool) {
         self.command(argv, true).await;
+        let session = loop {
+            match self.next().await {
+                ServerMsg::Attached { session } => break session,
+                ServerMsg::Error(e) => panic!("attach failed: {e}"),
+                ServerMsg::Output(b) => self.screen.process(&b),
+                _ => {}
+            }
+        };
+        let mouse = loop {
+            match self.next().await {
+                ServerMsg::SetMouse(m) => break m,
+                ServerMsg::Output(b) => self.screen.process(&b),
+                other => panic!("expected SetMouse after Attached, got {other:?}"),
+            }
+        };
+        (session, mouse)
+    }
+
+    async fn attach(&mut self, argv: &[&str]) -> String {
+        self.attach_full(argv).await.0
+    }
+
+    /// Pump until a `SetMouse` arrives; returns its value.
+    async fn wait_set_mouse(&mut self) -> bool {
         loop {
             match self.next().await {
-                ServerMsg::Attached { session } => return session,
-                ServerMsg::Error(e) => panic!("attach failed: {e}"),
+                ServerMsg::SetMouse(m) => return m,
                 ServerMsg::Output(b) => self.screen.process(&b),
                 _ => {}
             }
@@ -275,6 +299,34 @@ async fn attach_type_split_detach() {
     assert_eq!(lines.len(), 3, "{out}");
     assert!(!lines[0].contains("(active)"), "{out}");
 
+    // Prefix , opens a rename prompt pre-filled with the window name; the
+    // template is "rename-window -- %%" so `--` must end flag parsing.
+    c.prefix(',').await;
+    c.wait_for("rename prompt", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("(rename-window) cmd"))
+        .await;
+    c.key(0x08, '\x08', 0).await; // backspace over "cmd"
+    c.key(0x08, '\x08', 0).await;
+    c.key(0x08, '\x08', 0).await;
+    c.type_str("via-comma").await;
+    c.enter().await;
+    c.wait_for("renamed via ,", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:via-comma*")).await;
+
+    // A multi-line error (bad source-file) is shown as an overlay, not flattened.
+    let bad = std::env::temp_dir().join(format!("wmux-bad-{}.conf", std::process::id()));
+    std::fs::write(&bad, "set -g mouse maybe\nfrobnicate\n").unwrap();
+    c.prefix(':').await;
+    c.type_str(&format!("source-file {}", bad.display())).await;
+    c.enter().await;
+    c.wait_for("config errors overlay", |s| {
+        let t = s.contents();
+        // Long lines are clipped at the window width, so match prefixes only.
+        t.contains(":1: bad boolean 'maybe'") && t.contains(":2: unknown command") && t.contains("press any key")
+    })
+    .await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("overlay gone again", |s| !s.contents().contains("press any key")).await;
+    let _ = std::fs::remove_file(&bad);
+
     // Command prompt: rename the window.
     c.prefix(':').await;
     c.type_str("rename-window shell").await;
@@ -359,8 +411,16 @@ async fn pane_exit_closes_window_and_session() {
 async fn mouse_selects_pane_and_copy_mode_scrolls() {
     let h = Harness::start("mouse").await;
     let mut c = h.connect().await;
-    c.attach(&["new", "-s", "m", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let (_, mouse) = c.attach_full(&["new", "-s", "m", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    assert!(mouse, "mouse is on by default");
     c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // Toggling the option reaches the attached client's console.
+    let (code, _, _) = h.cli(&["set", "-g", "mouse", "off"]).await;
+    assert_eq!(code, 0);
+    assert!(!c.wait_set_mouse().await);
+    let (code, _, _) = h.cli(&["set", "-g", "mouse", "on"]).await;
+    assert_eq!(code, 0);
+    assert!(c.wait_set_mouse().await);
     c.prefix('%').await;
     c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
     // Right pane is active after the split (green border on the right side).

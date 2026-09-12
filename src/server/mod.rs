@@ -193,6 +193,8 @@ pub struct Server {
     had_session: bool,
     started: Instant,
     quit: bool,
+    /// Errors from the config file, pending display on the first attach.
+    config_errors: Option<Vec<String>>,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -366,6 +368,7 @@ impl Server {
             had_session: false,
             started: Instant::now(),
             quit: false,
+            config_errors: None,
         }
     }
 
@@ -379,7 +382,11 @@ impl Server {
         if let Some(path) = crate::config::find_config() {
             match self.source_file(&path.to_string_lossy()) {
                 Ok(n) => log::info!("loaded {} ({n} commands)", path.display()),
-                Err(e) => log::error!("config {}: {e}", path.display()),
+                Err(e) => {
+                    log::error!("config {}: {e}", path.display());
+                    // Shown to the first client that attaches, like tmux does.
+                    self.config_errors = Some(e.lines().map(str::to_string).collect());
+                }
             }
         }
     }
@@ -518,11 +525,7 @@ impl Server {
             }
             Outcome::Text(t) => {
                 if c.session.is_some() {
-                    if t.contains('\n') {
-                        c.overlay = Some(t.lines().map(str::to_string).collect());
-                    } else {
-                        self.message(cid, &t);
-                    }
+                    self.show(cid, &t);
                     return;
                 }
                 c.send(ServerMsg::Text(t));
@@ -530,7 +533,7 @@ impl Server {
             }
             Outcome::Error(e) => {
                 if c.session.is_some() {
-                    self.message(cid, &e);
+                    self.show(cid, &e);
                     return;
                 }
                 c.send(ServerMsg::Error(e));
@@ -539,12 +542,21 @@ impl Server {
             Outcome::Attach(sid) => {
                 let (cols, rows) = (c.cols, c.rows);
                 let name = self.sessions.iter().find(|s| s.id == sid).map(|s| s.name.clone()).unwrap_or_default();
+                let mouse = self.opts.mouse;
+                let config_errors = self.config_errors.take();
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.session = Some(sid);
                 c.last_grid = None;
+                c.last_cursor = None;
                 c.prefix = false;
                 c.prompt = None;
+                c.overlay = config_errors;
+                c.message = None;
+                c.drag = None;
+                c.mouse_buttons = 0;
+                c.swallow_up.clear();
                 c.send(ServerMsg::Attached { session: name });
+                c.send(ServerMsg::SetMouse(mouse));
                 self.resize_session(sid, cols, rows);
                 if let Some(s) = self.session_mut(sid) {
                     s.last_used = Instant::now();
@@ -553,10 +565,20 @@ impl Server {
         }
     }
 
-    fn message(&mut self, cid: ClientId, text: &str) {
+    /// One-line text goes to the status line for `display-time`; multi-line
+    /// text becomes an overlay that stays until a key is pressed.
+    fn show(&mut self, cid: ClientId, text: &str) {
         if let Some(c) = self.clients.get_mut(&cid) {
-            c.message = Some((text.replace(['\r', '\n'], " "), Instant::now()));
+            if text.contains('\n') {
+                c.overlay = Some(text.lines().map(str::to_string).collect());
+            } else {
+                c.message = Some((text.replace('\r', " "), Instant::now()));
+            }
         }
+    }
+
+    fn message(&mut self, cid: ClientId, text: &str) {
+        self.show(cid, text);
     }
 
     fn detach(&mut self, cid: ClientId, reason: &str) {
@@ -1373,8 +1395,12 @@ impl Server {
                     for sid in ids {
                         self.relayout_session(sid);
                     }
+                    let mouse = self.opts.mouse;
                     for c in self.clients.values_mut() {
                         c.last_grid = None;
+                        if name == "mouse" && c.session.is_some() {
+                            c.send(ServerMsg::SetMouse(mouse));
+                        }
                     }
                 }
                 r.into()

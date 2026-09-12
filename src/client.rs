@@ -162,7 +162,7 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
                     }
                 }
             }
-            ServerMsg::Output(_) | ServerMsg::Detached { .. } => {}
+            ServerMsg::Output(_) | ServerMsg::Detached { .. } | ServerMsg::SetMouse(_) => {}
         }
     }
 }
@@ -223,6 +223,7 @@ where
                     Some(ServerMsg::Output(b)) => console.write_bytes(&b),
                     Some(ServerMsg::Detached { reason: r }) => { reason = Some(format!("{r} (from session {session})")); break; }
                     Some(ServerMsg::Error(e)) => { reason = Some(format!("error: {e}")); break; }
+                    Some(ServerMsg::SetMouse(on)) => console.set_mouse(on),
                     Some(ServerMsg::Text(_) | ServerMsg::Done { .. } | ServerMsg::Attached { .. }) => {}
                 }
             }

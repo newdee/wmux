@@ -530,8 +530,17 @@ impl<'a> Args<'a> {
         self.pos = self.words.len();
         r
     }
-    fn is_flag(&self) -> bool {
-        matches!(self.peek(), Some(w) if w.len() > 1 && w.starts_with('-') && w != "--")
+    /// True if the next word is a flag. A bare `--` ends flag parsing and is
+    /// consumed, so `rename-window -- -x` names the window `-x`.
+    fn is_flag(&mut self) -> bool {
+        match self.peek() {
+            Some("--") => {
+                self.pos += 1;
+                false
+            }
+            Some(w) => w.len() > 1 && w.starts_with('-'),
+            None => false,
+        }
     }
     fn value(&mut self, flag: &str) -> Result<&'a str, String> {
         self.next().ok_or_else(|| format!("{flag}: missing value"))
@@ -611,9 +620,6 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     }
                     f => return Err(bad_flag(n, f)),
                 }
-            }
-            if a.peek() == Some("--") {
-                a.next();
             }
             Cmd::NewSession { name, window_name, cwd, detached, argv: a.rest(), attach_existing }
         }
@@ -697,9 +703,6 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            if a.peek() == Some("--") {
-                a.next();
-            }
             Cmd::NewWindow { name, cwd, target, argv: a.rest(), detached }
         }
         "select-window" => {
@@ -749,9 +752,6 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "-f" => full = true,
                     f => return Err(bad_flag(n, f)),
                 }
-            }
-            if a.peek() == Some("--") {
-                a.next();
             }
             Cmd::SplitWindow { horizontal, cwd, target, argv: a.rest(), detached, before, full }
         }
@@ -1030,6 +1030,20 @@ mod tests {
         );
         assert!(matches!(p("new -A -s x"), Cmd::NewSession { attach_existing: true, detached: false, .. }));
         assert!(matches!(p("new -Ad -s x"), Cmd::NewSession { attach_existing: true, detached: true, .. }));
+    }
+
+    #[test]
+    fn double_dash_ends_flags() {
+        // The default `,` binding expands to exactly this.
+        assert_eq!(p("rename-window -- shell"), Cmd::RenameWindow { target: None, name: "shell".into() });
+        assert_eq!(p("rename-session -- -weird"), Cmd::RenameSession { target: None, name: "-weird".into() });
+        assert!(matches!(p("new-window -- -x"), Cmd::NewWindow { argv, .. } if argv == vec!["-x".to_string()]));
+        assert!(
+            matches!(p("send-keys -- -l"), Cmd::SendKeys { keys, literal: false, .. } if keys == vec!["-l".to_string()])
+        );
+        assert!(
+            matches!(p("split-window -h -- pwsh -NoLogo"), Cmd::SplitWindow { horizontal: true, argv, .. } if argv.len() == 2)
+        );
     }
 
     #[test]

@@ -82,6 +82,9 @@ pub enum ServerMsg {
         reason: String,
     },
     Error(String),
+    /// Whether the console should capture mouse events for wmux (`mouse`
+    /// option). When false the host terminal keeps its native selection.
+    SetMouse(bool),
 }
 
 pub async fn write_frame<W, T>(w: &mut W, msg: &T) -> Result<()>
