@@ -176,6 +176,12 @@ pub enum Cmd {
     },
     ListKeys,
     ClearHistory,
+    /// `capture-pane -p`: print the visible text of a pane (`-S -N` adds N
+    /// lines of scrollback above it).
+    CapturePane {
+        target: Option<Target>,
+        history: usize,
+    },
     SourceFile {
         path: String,
     },
@@ -395,6 +401,13 @@ impl fmt::Display for Cmd {
             }
             Cmd::ListKeys => f.write_str("list-keys"),
             Cmd::ClearHistory => f.write_str("clear-history"),
+            Cmd::CapturePane { target, history } => {
+                f.write_str("capture-pane -p")?;
+                if *history > 0 {
+                    write!(f, " -S -{history}")?;
+                }
+                fmt_target(f, target)
+            }
             Cmd::SourceFile { path } => write!(f, "source-file {}", quote(path)),
             Cmd::Version => f.write_str("version"),
         }
@@ -598,6 +611,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "switch-client" | "switchc" => "switch-client",
         "list-keys" | "lsk" => "list-keys",
         "clear-history" | "clearhist" => "clear-history",
+        "capture-pane" | "capturep" => "capture-pane",
         "source-file" | "source" => "source-file",
         "version" | "-V" | "--version" => "version",
         other => return Err(format!("unknown command: {other}")),
@@ -942,6 +956,27 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         }
         "list-keys" => Cmd::ListKeys,
         "clear-history" => Cmd::ClearHistory,
+        "capture-pane" => {
+            let (mut target, mut history) = (None, 0usize);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-S" => {
+                        let v = a.value("-S")?;
+                        history = match v {
+                            "-" => usize::MAX,
+                            v => {
+                                v.trim_start_matches('-').parse().map_err(|_| format!("capture-pane: bad -S '{v}'"))?
+                            }
+                        };
+                    }
+                    "-p" | "-e" | "-J" => {} // always printed, plain text
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::CapturePane { target, history }
+        }
         "source-file" => {
             let path = a.next().ok_or("source-file: path required")?.to_string();
             a.none_left(n)?;
@@ -1127,6 +1162,7 @@ mod tests {
             "kill-window -a -t :2",
             "kill-pane -a",
             "kill-session -a -t x",
+            "capture-pane -p -S -100 -t w:1",
             "confirm-before -p \"kill? (y/n)\" \"kill-window\"",
             "bind-key -n M-h select-pane -L",
             "set-option prefix C-a",

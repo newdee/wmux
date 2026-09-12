@@ -147,6 +147,7 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
             ServerMsg::Attached { session } => {
                 let Some(mut c) = console.take() else { bail!("attached without a console") };
                 c.enter_raw()?;
+                c.set_title(&format!("wmux: {session}"));
                 let c = Arc::new(c);
                 let reason = attached(Arc::clone(&c), &session, &mut rd, &mut wr).await;
                 // The input thread still holds a reference; restore explicitly.

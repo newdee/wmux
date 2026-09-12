@@ -34,6 +34,7 @@ wmux new -d -s bg wsl.exe # detached session running WSL
 wmux ls                   # list sessions
 wmux attach -t work       # re-attach (works from a different terminal window)
 wmux send-keys -t work "git status" Enter
+wmux capture-pane -p -t work   # print what the pane shows (-S -200 adds scrollback)
 wmux kill-server
 ```
 
@@ -118,6 +119,10 @@ kill-on-close job object, so `kill-pane`, `kill-session` and a server exit
 take the whole process tree down (the equivalent of tmux hanging up the
 process group), and a slow client console never makes the server buffer
 frames without bound: it drops to a full redraw instead.
+
+`vendor/vt100` is vt100 0.16.2 with a one-function fix for a panic when a
+pane shrinks through a wide (CJK) character; see `vendor/vt100/WMUX-PATCH.md`.
+The server also logs and survives any panic in a command (`server.log`).
 
 ## Development
 

@@ -327,11 +327,21 @@ pub async fn run(socket: String) -> Result<()> {
             ev = rx.recv() => match ev { Some(ev) => ev, None => break },
             _ = tokio::time::sleep(Duration::from_millis(1000)) => Event::Tick,
         };
-        srv.handle(ev);
-        while let Ok(ev) = rx.try_recv() {
+        // A bug in one command must not take every session down with it:
+        // log the panic and keep serving (the panic hook writes the details).
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             srv.handle(ev);
+            while let Ok(ev) = rx.try_recv() {
+                srv.handle(ev);
+            }
+            srv.render_all();
+        }));
+        if r.is_err() {
+            log::error!("recovered from a panic; state may be inconsistent");
+            for c in srv.clients.values_mut() {
+                c.last_grid = None;
+            }
         }
-        srv.render_all();
         if srv.quit {
             break;
         }
@@ -1484,6 +1494,24 @@ impl Server {
                     self.prefix_binds.iter().map(|(k, c)| format!("bind-key -T prefix {k:<10} {c}")).collect();
                 lines.extend(self.root_binds.iter().map(|(k, c)| format!("bind-key -T root   {k:<10} {c}")));
                 lines.sort();
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::CapturePane { target, history } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                let total = p.scrollback_len();
+                let rows = p.rows as usize;
+                let from = total.saturating_sub(history);
+                let mut lines: Vec<String> = Vec::with_capacity(total - from + rows);
+                for abs in from..total + rows {
+                    lines.push(p.line_text(abs).0.trim_end().to_string());
+                }
+                while lines.last().is_some_and(|l| l.is_empty()) {
+                    lines.pop();
+                }
                 Outcome::Text(lines.join("\n"))
             }
             Cmd::ClearHistory => {

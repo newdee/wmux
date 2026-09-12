@@ -380,6 +380,17 @@ async fn attach_type_split_detach() {
     assert_eq!(code, 0);
     let (code, _, _) = h.cli(&["send-keys", "-t", "w", "Enter"]).await;
     assert_eq!(code, 0);
+    // capture-pane prints the pane text from the CLI.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, out, _) = h.cli(&["capture-pane", "-p", "-t", "w"]).await;
+        assert_eq!(code, 0);
+        if out.contains("rem literal-Enter-word") && out.ends_with("wmux>") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "capture-pane: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     // Re-attach: full redraw restores the view; the literal send-keys text is there.
     let mut c2 = h.connect().await;

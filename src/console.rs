@@ -7,7 +7,7 @@ use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{
     CONSOLE_SCREEN_BUFFER_INFO, GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle,
     INPUT_RECORD, ReadConsoleInputW, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode,
-    SetConsoleOutputCP, WriteConsoleW,
+    SetConsoleOutputCP, SetConsoleTitleW, WriteConsoleW,
 };
 
 const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
@@ -92,6 +92,12 @@ impl Console {
         // (full key fidelity under Windows Terminal; ignored elsewhere).
         self.write_str("\x1b[?1049h\x1b[2J\x1b[H\x1b[?9001h");
         Ok(())
+    }
+
+    /// Title of the hosting window/tab (tmux `set-titles`).
+    pub fn set_title(&self, title: &str) {
+        let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { SetConsoleTitleW(wide.as_ptr()) };
     }
 
     /// Raw input mode: no line editing/echo, window events, and either mouse

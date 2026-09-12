@@ -372,6 +372,30 @@ mod tests {
         assert!(!marker.exists(), "grandchild survived the pane kill");
     }
 
+    /// A wide character straddling the new right edge after a shrink used to
+    /// leave a half-wide cell in the last column; the next erase then indexed
+    /// past the row (vt100 0.16.2 `Row::clear_wide`). Seen live with a CJK
+    /// IME in a 50-column pane.
+    #[test]
+    fn shrink_through_wide_char_then_erase_does_not_panic() {
+        let mut p = vt100::Parser::new(5, 100, 0);
+        let line = format!("{}中x", "a".repeat(49)); // 中 occupies cols 49-50
+        p.process(line.as_bytes());
+        p.screen_mut().set_size(5, 50);
+        // Cursor to the last column, erase to end of line, then overwrite.
+        p.process(b"\x1b[1;50H\x1b[K\x1b[1;49H\x1b[2X\x1b[1;1H\x1b[P");
+        let row: String = p.screen().rows(0, 50).next().unwrap();
+        assert!(!row.contains('中'), "{row:?}");
+        // The same through a Pane resize (what a split does).
+        let (tx, _rx) = channel();
+        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let mut pane = Pane::spawn(11, &argv, None, 100, 5, 10, &[], tx).unwrap();
+        pane.parser.process(line.as_bytes());
+        pane.resize(50, 5);
+        pane.parser.process(b"\x1b[1;50H\x1b[K");
+        assert_eq!(pane.screen().size(), (5, 50));
+    }
+
     #[test]
     fn dsr_is_answered() {
         let (tx, _rx) = channel();

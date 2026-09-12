@@ -17,7 +17,7 @@ Windows / panes (from inside a session, or with -t):
   select-window -t N   next-window   previous-window   last-window   list-windows
   split-window (splitw) [-h|-v] [-c dir] [command...]  kill-pane   select-pane -L|-R|-U|-D
   resize-pane -L|-R|-U|-D [n] | -Z   swap-pane -U|-D   break-pane   list-panes
-  send-keys [-t target] keys...   copy-mode   paste-buffer   list-keys
+  send-keys [-t target] keys...   capture-pane -p [-S -N]   copy-mode   paste-buffer   list-keys
 Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, ...)
 Default prefix: C-b.  Prefix ? lists key bindings.";
 
@@ -56,6 +56,10 @@ fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     let code = if args[0] == "__server" {
         logger::init("server");
+        // The server has no console; a panic would otherwise vanish.
+        std::panic::set_hook(Box::new(|info| {
+            log::error!("panic: {info}");
+        }));
         match rt.block_on(server::run(socket)) {
             Ok(()) => 0,
             Err(e) => {
