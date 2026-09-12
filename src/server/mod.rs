@@ -365,10 +365,14 @@ pub async fn run(socket: String) -> Result<()> {
 
     let mut srv = Server::new(pane_tx, socket, tx.clone());
     srv.load_config();
+    // A persistent interval: a fresh `sleep` per iteration would never fire
+    // while events keep arriving, and autosave / idle-exit hang off the tick.
+    let mut tick = tokio::time::interval(Duration::from_millis(1000));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let ev = tokio::select! {
             ev = rx.recv() => match ev { Some(ev) => ev, None => break },
-            _ = tokio::time::sleep(Duration::from_millis(1000)) => Event::Tick,
+            _ = tick.tick() => Event::Tick,
         };
         // A bug in one command must not take every session down with it:
         // log the panic and keep serving (the panic hook writes the details).
@@ -1589,6 +1593,10 @@ impl Server {
             }
             Cmd::DeleteSaved { name } => {
                 let dir = self.sessions_dir();
+                if self.opts.autosave && self.sessions.iter().any(|s| s.name == name) {
+                    // Autosave would write it right back on the next tick.
+                    return Outcome::Error(format!("session {name} is running; kill it first (or set autosave off)"));
+                }
                 match crate::resurrect::find(&dir, &name) {
                     Some(p) => match std::fs::remove_file(&p) {
                         Ok(()) => {
@@ -1609,7 +1617,16 @@ impl Server {
                 }
                 match self.resolve_session(target.as_ref(), cid) {
                     Ok(sid) => {
-                        self.session_mut(sid).unwrap().name = name;
+                        let old = std::mem::replace(&mut self.session_mut(sid).unwrap().name, name.clone());
+                        // The saved file follows the name; no ghost entry under the old one.
+                        let dir = self.sessions_dir();
+                        if let Some(p) = crate::resurrect::find(&dir, &old) {
+                            let to = crate::resurrect::file_for(&dir, &name);
+                            if let Err(e) = std::fs::rename(&p, &to) {
+                                log::warn!("rename saved session {old} -> {name}: {e}");
+                            }
+                            self.last_saved.remove(&p.to_string_lossy().into_owned());
+                        }
                         Outcome::Ok
                     }
                     Err(e) => Outcome::Error(e),

@@ -18,11 +18,8 @@ set -g pane-active-border-style fg=green
 set -g base-index 0
 set -g display-time 1500
 
-# vim-style pane movement
-bind h select-pane -L
-bind j select-pane -D
-bind k select-pane -U
-bind l select-pane -R
+# vim-style pane movement (h/j/k/l move, H/J/K/L resize) is the default;
+# `prefix Tab` is last-window. Put `bind l last-window` here to get tmux's l back.
 
 # easier splits
 bind | split-window -h
@@ -42,6 +39,11 @@ bind r source-file ~/.wmux.conf
 set -g status-left "#[bold][#S] "
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -Command (Get-Date).ToString('HH:mm'))#[default] #H"
 set -g status-interval 15
+
+# resume after a reboot: sessions autosave; `wmux resume [name]` brings them back
+set -g autosave on
+# set -g restore-on-start on      # a fresh server restores everything by itself
+# set -g sessions-dir ~/.wmux/sessions
 
 # plugins: directories under plugin-path holding <name>.wmux
 # set -g plugin-path ~/.wmux/plugins

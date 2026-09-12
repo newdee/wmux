@@ -670,10 +670,27 @@ async fn save_and_resume_sessions() {
     let (code, _, err) = h.cli(&["resume", "nope"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("no saved session"), "{err}");
+    // A running session cannot be forgotten (autosave would bring it back).
+    let (code, _, err) = h.cli(&["delete-saved", "other"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("is running"), "{err}");
+    h.cli(&["kill-session", "-t", "other"]).await;
     let (code, _, _) = h.cli(&["delete-saved", "other"]).await;
     assert_eq!(code, 0);
     let (_, out, _) = h.cli(&["list-saved"]).await;
     assert!(!out.contains("other:"), "{out}");
+    // Renaming a session moves its saved file: no ghost under the old name.
+    h.cli(&["rename-session", "-t", "work", "work2"]).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, out, _) = h.cli(&["list-saved"]).await;
+        if out.contains("work2:") && !out.lines().any(|l| l.starts_with("work:")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    h.cli(&["rename-session", "-t", "work2", "work"]).await;
 
     // Autosave: a structural change is on disk within a couple of ticks.
     h.cli(&["rename-window", "-t", "work:1", "renamed-by-autosave"]).await;
