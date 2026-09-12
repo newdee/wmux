@@ -20,6 +20,7 @@ Windows / panes (from inside a session, or with -t):
   send-keys [-t target] keys...   capture-pane -p [-S -N]   copy-mode   paste-buffer   list-keys
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
+  set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]

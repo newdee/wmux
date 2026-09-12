@@ -19,6 +19,8 @@ pub struct Context {
     pub pane_index: usize,
     pub pane_title: String,
     pub pane_command: String,
+    /// Last known working directory of the pane (`#{pane_current_path}`).
+    pub pane_path: String,
     pub host: String,
     /// Window flags: `*` current, `-` last, `Z` zoomed.
     pub flags: String,
@@ -33,6 +35,7 @@ impl Context {
             "pane_index" | "P" => self.pane_index.to_string(),
             "pane_title" | "T" => self.pane_title.clone(),
             "pane_current_command" => self.pane_command.clone(),
+            "pane_current_path" => self.pane_path.clone(),
             "host" | "host_short" | "H" => self.host.clone(),
             "window_flags" | "F" => self.flags.clone(),
             _ => return None,
@@ -206,6 +209,7 @@ mod tests {
             pane_index: 1,
             pane_title: "pwsh".into(),
             pane_command: "pwsh".into(),
+            pane_path: "C:\\src".into(),
             host: "BOX".into(),
             flags: "*".into(),
         }
@@ -221,6 +225,8 @@ mod tests {
         let mut cache = ShellCache::default();
         let s = expand("[#S] #I:#W#F #{pane_title}/#P @#H %H:%M %%", &ctx(), &mut cache, Style::default(), now());
         assert_eq!(plain(&s), "[main] 2:shell* pwsh/1 @BOX 18:30 %");
+        let s = expand("#{pane_current_path}", &ctx(), &mut cache, Style::default(), now());
+        assert_eq!(plain(&s), "C:\\src");
         assert_eq!(s.len(), 1);
     }
 

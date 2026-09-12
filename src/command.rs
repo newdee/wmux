@@ -223,6 +223,13 @@ pub enum Cmd {
         target: Option<Target>,
         history: usize,
     },
+    /// `set-cwd [-t target] [dir]`: record a pane's working directory (used
+    /// by save/resume and `#{pane_current_path}`); no `dir` means the
+    /// calling client's current directory.
+    SetCwd {
+        target: Option<Target>,
+        dir: Option<String>,
+    },
     SourceFile {
         path: String,
     },
@@ -489,6 +496,14 @@ impl fmt::Display for Cmd {
             Cmd::ListSaved => f.write_str("list-saved"),
             Cmd::DeleteSaved { name } => write!(f, "delete-saved {}", quote(name)),
             Cmd::ClearHistory => f.write_str("clear-history"),
+            Cmd::SetCwd { target, dir } => {
+                f.write_str("set-cwd")?;
+                fmt_target(f, target)?;
+                if let Some(d) = dir {
+                    write!(f, " {}", quote(d))?;
+                }
+                Ok(())
+            }
             Cmd::CapturePane { target, history } => {
                 f.write_str("capture-pane -p")?;
                 if *history > 0 {
@@ -714,6 +729,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "delete-saved" | "forget" => "delete-saved",
         "clear-history" | "clearhist" => "clear-history",
         "capture-pane" | "capturep" => "capture-pane",
+        "set-cwd" | "cwd" => "set-cwd",
         "source-file" | "source" => "source-file",
         "version" | "-V" | "--version" => "version",
         other => return Err(format!("unknown command: {other}")),
@@ -1176,6 +1192,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::DeleteSaved { name }
         }
         "clear-history" => Cmd::ClearHistory,
+        "set-cwd" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let dir = a.next().map(str::to_string);
+            a.none_left(n)?;
+            Cmd::SetCwd { target, dir }
+        }
         "capture-pane" => {
             let (mut target, mut history) = (None, 0usize);
             while a.is_flag() {
@@ -1442,6 +1470,8 @@ mod tests {
             "restore-session \"my session\"",
             "list-saved",
             "delete-saved old",
+            "set-cwd",
+            "set-cwd -t w:0.1 \"C:\\my dir\"",
             "confirm-before -p \"kill? (y/n)\" \"kill-window\"",
             "bind-key -n M-h select-pane -L",
             "set-option prefix C-a",

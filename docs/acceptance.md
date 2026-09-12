@@ -305,3 +305,28 @@ IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成�
 ## 结论（第四次验收）
 
 第 22、23、24 轮连续零发现，验收通过。本次新增修复 5 项（含一个影响全局的 tick 饥饿 bug），新增测试 5 项；最终 81 项自动化测试。
+
+---
+
+# 第五次验收：pane 目录跟随（set-cwd / OSC 7 / OSC 9;9）
+
+新增：`set-cwd [-t target] [dir]`（无参用调用方 cwd；无 `-t` 时优先 `WMUX_PANE` 所在 pane）；vt100 回调解析 OSC 7（`file://host/path`）与 OSC 9;9，`/mnt/<盘>/...` 映射回 Windows 路径，纯 Linux 路径忽略；`#{pane_current_path}`；`list-panes` 显示目录。
+
+## 第 25 轮（不计数）— 视角：机制通路
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | （测试自身）用 `echo` 在 cmd 里打 ESC 序列，ESC 键被 cmd 行编辑当作"清行"，OSC 根本没发出 | 改为 `pwsh -Command Write-Host ([char]27+...)`；证实 OSC 9;9 能穿过 ConPTY 到达 server |
+| 2 | clippy 3 处（`?` 简化、`is_empty`、`+ 0`） | 修 |
+
+## 第 26 轮（不计数）— 视角：真机 + 边界输入
+
+真机数据（release，pwsh prompt 发 OSC 9;9）：pane 起始目录 `C:\Users\stebe` → `cd Documents` 后 `list-panes` 显示 `[C:\Users\stebe\Documents]` → 强杀 server → `resume w` → pane 提示符 `PS C:\Users\stebe\Documents>`；`set-cwd -t keep`（无参）记录为 CLI 的当前目录；日志无 panic。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `set-cwd 相对路径` 相对 server 进程目录检查，而非调用方目录 | 相对路径拼到客户端 cwd 上；e2e 覆盖 |
+
+## 第 27 轮（计数 1/3）— 视角：可复现性 + 静态一致性
+
+（待填）

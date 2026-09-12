@@ -699,6 +699,58 @@ async fn save_and_resume_sessions() {
     }
     h.cli(&["rename-session", "-t", "work2", "work"]).await;
 
+    // set-cwd records the directory a pane will be resumed in: explicit, or
+    // the calling client's own (the harness sends temp_dir as its cwd).
+    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.1", "C:\\Windows"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, _) = h.cli(&["set-cwd", "-t", "work:0.2"]).await;
+    assert_eq!(code, 0);
+    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.0", "C:\\definitely\\not\\here"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("not a directory"), "{err}");
+    // Relative directories resolve against the client's cwd (temp_dir here).
+    let sub = std::env::temp_dir().join(format!("wmux-rel-{}", std::process::id()));
+    std::fs::create_dir_all(&sub).unwrap();
+    let rel = sub.file_name().unwrap().to_string_lossy().into_owned();
+    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.0", &rel]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
+    assert!(out.lines().next().is_some_and(|l| l.contains(&rel)), "{out}");
+    let _ = std::fs::remove_dir_all(&sub);
+    let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
+    let tmp = std::env::temp_dir().to_string_lossy().trim_end_matches('\\').to_string();
+    assert!(out.contains("[C:\\Windows]") && out.contains(&format!("[{tmp}")), "{out}");
+    // The shell itself can announce its directory (OSC 9;9), as a prompt
+    // function would; it travels through ConPTY like a title change does.
+    h.cli(&[
+        "send-keys",
+        "-t",
+        "work:0.0",
+        "pwsh -NoProfile -Command \"Write-Host ([char]27+']9;9;C:\\Users'+[char]7)\"",
+        "Enter",
+    ])
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
+        if out.lines().next().is_some_and(|l| l.contains("[C:\\Users]")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "OSC cwd not picked up: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // ...and all of that lands in the saved file.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let f = wmux::resurrect::SavedFile::load(&wmux::resurrect::find(&dir, "work").unwrap()).unwrap();
+        let cwds: Vec<Option<String>> = f.session.windows[0].layout.panes().iter().map(|p| p.cwd.clone()).collect();
+        if cwds[0].as_deref() == Some("C:\\Users") && cwds[1].as_deref() == Some("C:\\Windows") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "saved cwds: {cwds:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
     // Autosave: a structural change is on disk within a couple of ticks.
     h.cli(&["rename-window", "-t", "work:1", "renamed-by-autosave"]).await;
     let deadline = Instant::now() + Duration::from_secs(5);

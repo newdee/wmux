@@ -83,11 +83,28 @@ wmux save-session -a     # save everything right now (prefix C-s saves the curre
 ```
 
 Resuming recreates the pane tree and starts each pane's original command
-in its original directory (the shell, or whatever `new-window`/`split-window`
-were given). Like tmux-resurrect, it does not bring back what those programs
-were doing or what was on screen. `set -g restore-on-start on` makes a fresh
-server restore everything by itself; `set -g autosave off` turns saving off;
-`sessions-dir` moves the files.
+in the pane's last known directory. Like tmux-resurrect, it does not bring
+back what those programs were doing or what was on screen. `set -g
+restore-on-start on` makes a fresh server restore everything by itself;
+`set -g autosave off` turns saving off; `sessions-dir` moves the files.
+
+A pane's directory starts as the directory it was created in. Keep it
+current the way terminals do, by letting the shell announce `cd`s (OSC 9;9,
+which Windows Terminal understands too, or OSC 7 from bash/zsh), or set it
+by hand with `wmux set-cwd` (no argument: the directory you run it from):
+
+```powershell
+# PowerShell profile: announce the directory at every prompt
+function prompt { "`e]9;9;$PWD`e\" + "PS $PWD> " }
+```
+
+```bash
+# WSL bash: /mnt/<drive>/... paths map back to Windows drives
+PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
+```
+
+`list-panes` shows the recorded directory, and `#{pane_current_path}` puts
+it on the status line.
 
 ## Configuration
 

@@ -1480,10 +1480,11 @@ impl Server {
                         let r = w.rect_of(*id).unwrap_or_default();
                         let p = w.pane(*id);
                         format!(
-                            "{i}: [{}x{}] %{id} {}{}",
+                            "{i}: [{}x{}] %{id} {}{}{}",
                             r.w,
                             r.h,
                             p.map(|p| p.display_title()).unwrap_or(""),
+                            p.and_then(|p| p.cwd.as_deref()).map(|d| format!(" [{d}]")).unwrap_or_default(),
                             if *id == w.active { " (active)" } else { "" }
                         )
                     })
@@ -2046,6 +2047,37 @@ impl Server {
                 lines.extend(self.root_binds.iter().map(|(k, c)| format!("bind-key -T root   {k:<10} {c}")));
                 lines.sort();
                 Outcome::Text(lines.join("\n"))
+            }
+            Cmd::SetCwd { target, dir } => {
+                // No target: the pane the client runs in (WMUX_PANE), else the active one.
+                let pid = match (&target, cid.and_then(|c| self.clients.get(&c)).and_then(|c| c.pane_env)) {
+                    (None, Some(p)) if self.find_pane_mut(p).is_some() => p,
+                    _ => match self.resolve(target.as_ref(), cid) {
+                        Ok((_, _, p)) => p,
+                        Err(e) => return Outcome::Error(e),
+                    },
+                };
+                let client_cwd = self.client_cwd(cid);
+                let dir = match dir.clone().or_else(|| client_cwd.clone()) {
+                    Some(d) => expand_home(&d),
+                    None => return Outcome::Error("set-cwd: no directory given and the client has none".into()),
+                };
+                let dir = pane::windows_path_from_announced(&dir).unwrap_or(dir);
+                // A relative directory is relative to where the client runs, not the server.
+                let dir = match (std::path::Path::new(&dir).is_relative(), &client_cwd) {
+                    (true, Some(base)) => std::path::Path::new(base).join(&dir).to_string_lossy().into_owned(),
+                    _ => dir,
+                };
+                if !std::path::Path::new(&dir).is_dir() {
+                    return Outcome::Error(format!("set-cwd: not a directory: {dir}"));
+                }
+                match self.find_pane_mut(pid) {
+                    Some(p) => {
+                        p.cwd = Some(dir);
+                        Outcome::Ok
+                    }
+                    None => Outcome::Error("no such pane".into()),
+                }
             }
             Cmd::CapturePane { target, history } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
@@ -2677,6 +2709,7 @@ impl Server {
                     pane_index: pidx,
                     pane_title: pane.map(|p| truncate(p.display_title(), 30)).unwrap_or_default(),
                     pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
+                    pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
                     host: host.clone(),
                     flags: format!(
                         "{}{}",

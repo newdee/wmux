@@ -19,6 +19,59 @@ pub struct Callbacks {
     pub responses: Vec<u8>,
     pub title: Option<String>,
     pub bell: bool,
+    /// Working directory the shell announced (OSC 7 / OSC 9;9), as a Windows path.
+    pub cwd: Option<String>,
+}
+
+/// Turn a shell-announced directory into a Windows path usable as a process
+/// working directory: `file:///C:/x`, `file://host/C:/x`, `C:\x`, `/mnt/c/x`
+/// (WSL) all become `C:\x`; other Linux paths are not usable and yield None.
+pub fn windows_path_from_announced(raw: &str) -> Option<String> {
+    let mut s = raw.trim().to_string();
+    if let Some(rest) = s.strip_prefix("file://") {
+        // file://host/C:/x or file:///C:/x
+        let path = &rest[rest.find('/')?..];
+        s = percent_decode(path);
+    }
+    // /C:/x  or  /c/x (some shells) -> C:/x
+    if s.len() >= 3 && s.as_bytes()[0] == b'/' && s.as_bytes()[2] == b':' {
+        s = s[1..].to_string();
+    }
+    if let Some(rest) = s.strip_prefix("/mnt/")
+        && !rest.is_empty()
+        && rest.as_bytes()[0].is_ascii_alphabetic()
+        && (rest.len() == 1 || rest.as_bytes()[1] == b'/')
+    {
+        let drive = rest.as_bytes()[0].to_ascii_uppercase() as char;
+        s = format!("{drive}:{}", &rest[1..]);
+    }
+    if s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
+        let mut p = s.replace('/', "\\");
+        if p.len() == 2 {
+            p.push('\\');
+        }
+        return Some(p);
+    }
+    None
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16)
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -58,6 +111,20 @@ impl vt100::Callbacks for Callbacks {
             (None, 'c') => self.responses.extend_from_slice(b"\x1b[?62;22c"),
             (Some(b'>'), 'c') => self.responses.extend_from_slice(b"\x1b[>0;10;1c"),
             _ => {}
+        }
+    }
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        // OSC 7 ; file://host/path   (bash/zsh/fish shell integration)
+        // OSC 9 ; 9 ; path           (ConEmu / Windows Terminal "current directory")
+        let raw = match params {
+            [b"7", p] => Some(*p),
+            [b"9", b"9", p] => Some(*p),
+            _ => None,
+        };
+        if let Some(raw) = raw
+            && let Some(p) = windows_path_from_announced(&String::from_utf8_lossy(raw))
+        {
+            self.cwd = Some(p);
         }
     }
 }
@@ -197,6 +264,9 @@ impl Pane {
         let cb = self.parser.callbacks_mut();
         if let Some(t) = cb.title.take() {
             self.title = t;
+        }
+        if let Some(d) = cb.cwd.take() {
+            self.cwd = Some(d);
         }
         if cb.bell {
             cb.bell = false;
@@ -397,6 +467,38 @@ mod tests {
         pane.resize(50, 5);
         pane.parser.process(b"\x1b[1;50H\x1b[K");
         assert_eq!(pane.screen().size(), (5, 50));
+    }
+
+    #[test]
+    fn announced_directories_become_windows_paths() {
+        let w = windows_path_from_announced;
+        assert_eq!(w("file:///C:/Users/x").as_deref(), Some("C:\\Users\\x"));
+        assert_eq!(w("file://BOX/C:/Users/x%20y").as_deref(), Some("C:\\Users\\x y"));
+        assert_eq!(w("C:\\src").as_deref(), Some("C:\\src"));
+        assert_eq!(w("C:/src/a").as_deref(), Some("C:\\src\\a"));
+        assert_eq!(w("D:").as_deref(), Some("D:\\"));
+        assert_eq!(w("/mnt/c/Users/x").as_deref(), Some("C:\\Users\\x"));
+        assert_eq!(w("/mnt/d").as_deref(), Some("D:\\"));
+        assert_eq!(w("file://DFINE/mnt/c/x").as_deref(), Some("C:\\x"));
+        assert_eq!(w("/home/user"), None);
+        assert_eq!(w("/mnt/wsl/x"), None);
+        assert_eq!(w(""), None);
+        assert_eq!(w("file://"), None);
+    }
+
+    #[test]
+    fn osc_cwd_updates_the_pane() {
+        let (tx, _rx) = channel();
+        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let mut p = Pane::spawn(12, &argv, Some("C:\\"), 20, 5, 10, &[], tx).unwrap();
+        assert_eq!(p.cwd.as_deref(), Some("C:\\"));
+        p.process_output(b"\x1b]9;9;C:\\Users\x07");
+        assert_eq!(p.cwd.as_deref(), Some("C:\\Users"));
+        p.process_output(b"\x1b]7;file://DFINE/mnt/c/Windows\x1b\\");
+        assert_eq!(p.cwd.as_deref(), Some("C:\\Windows"));
+        // A Linux-only path cannot be a Windows working directory: keep the last one.
+        p.process_output(b"\x1b]7;file://DFINE/home/dfine\x07");
+        assert_eq!(p.cwd.as_deref(), Some("C:\\Windows"));
     }
 
     #[test]
