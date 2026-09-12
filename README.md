@@ -42,11 +42,13 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 
 | Key | Action |
 | --- | --- |
-| `c` / `n` / `p` / `l` / `0-9` | new window / next / previous / last / select by index |
+| `c` / `n` / `p` / `Tab` / `0-9` | new window / next / previous / last / select by index |
 | `,` / `&` | rename / kill window |
 | `%` / `"` | split left-right / top-bottom |
-| arrows / `o` / `;` | move between panes / next pane / last pane |
-| `Ctrl`+arrows, `Alt`+arrows | resize the current pane by 1 / by 5 |
+| `h` `j` `k` `l` or arrows / `o` / `;` | move between panes (vim keys) / next pane / last pane |
+| `H` `J` `K` `L`, `Alt`+arrows / `Ctrl`+arrows | resize the current pane by 5 / by 1 |
+| `S` | toggle `synchronize-panes` (type into every pane of the window; `S` flag on the status line) |
+| `C-s` / `C-r` | save the session / restore saved sessions (see Resume) |
 | `z` | zoom (toggle) the current pane |
 | `x` | kill the current pane |
 | `{` / `}` | swap pane with previous / next |
@@ -64,6 +66,28 @@ the status line to select it, wheel scrolls (enters copy mode on the normal
 screen, sends arrow keys to full-screen programs, and is passed through to
 programs that ask for mouse events). Drag to select text; the selection is
 copied to the Windows clipboard on release.
+
+## Resume after a reboot
+
+Every session is saved to its own file under `%LOCALAPPDATA%\wmux\sessions`
+whenever its shape changes (windows, panes, layout, names, start commands
+and directories) and when the server exits. A reboot, a crash or a
+`kill-session` does not lose that file, so:
+
+```powershell
+wmux resume              # bring back every saved session, attach to the first
+wmux resume work         # bring back (or just attach to) the session "work"
+wmux list-saved          # what can be resumed, newest first
+wmux delete-saved old    # forget one
+wmux save-session -a     # save everything right now (prefix C-s saves the current one)
+```
+
+Resuming recreates the pane tree and starts each pane's original command
+in its original directory (the shell, or whatever `new-window`/`split-window`
+were given). Like tmux-resurrect, it does not bring back what those programs
+were doing or what was on screen. `set -g restore-on-start on` makes a fresh
+server restore everything by itself; `set -g autosave off` turns saving off;
+`sessions-dir` moves the files.
 
 ## Configuration
 
@@ -190,7 +214,8 @@ covered without a human at the keyboard.
 
 ## Not (yet) implemented
 
-Relative to tmux: multiple clients on the same session see the same size
+Relative to tmux: `synchronize-panes` applies to the current window (no
+`-t`), multiple clients on the same session see the same size
 (last attach wins, no per-client viewport), only the hooks listed above, no
 `#{?cond,a,b}` conditionals in formats, no named paste buffers (the Windows
 clipboard is the only buffer), no `choose-tree` UI, no window layout presets

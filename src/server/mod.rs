@@ -16,6 +16,7 @@ use layout::{Node, PaneId, Rect};
 use pane::{CopyMode, Pane, PaneEvent};
 use render::{CopyView, Frame, Grid, PaneView, StatusLine};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::mpsc;
@@ -159,6 +160,8 @@ struct Window {
     active: PaneId,
     last_pane: Option<PaneId>,
     zoomed: bool,
+    /// `synchronize-panes`: input goes to every pane of the window.
+    synchronized: bool,
     rects: Vec<(PaneId, Rect)>,
 }
 
@@ -269,6 +272,8 @@ pub struct Server {
     /// Plugin directories loaded so far.
     plugins: Vec<String>,
     events: mpsc::UnboundedSender<Event>,
+    /// JSON of every session as last autosaved, to detect structural change.
+    last_saved: HashMap<String, String>,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -411,6 +416,15 @@ fn default_bindings() -> HashMap<Key, Cmd> {
         ("Down", "select-pane -D"),
         ("Left", "select-pane -L"),
         ("Right", "select-pane -R"),
+        // vim keys: h/j/k/l move, H/J/K/L resize (tmux-pain-control style).
+        ("h", "select-pane -L"),
+        ("j", "select-pane -D"),
+        ("k", "select-pane -U"),
+        ("l", "select-pane -R"),
+        ("H", "resize-pane -L 5"),
+        ("J", "resize-pane -D 5"),
+        ("K", "resize-pane -U 5"),
+        ("L", "resize-pane -R 5"),
         ("C-Up", "resize-pane -U 1"),
         ("C-Down", "resize-pane -D 1"),
         ("C-Left", "resize-pane -L 1"),
@@ -421,7 +435,7 @@ fn default_bindings() -> HashMap<Key, Cmd> {
         ("M-Right", "resize-pane -R 5"),
         ("n", "next-window"),
         ("p", "previous-window"),
-        ("l", "last-window"),
+        ("Tab", "last-window"),
         ("z", "resize-pane -Z"),
         ("[", "copy-mode"),
         ("PPage", "copy-mode -u"),
@@ -436,6 +450,9 @@ fn default_bindings() -> HashMap<Key, Cmd> {
         ("w", "list-windows"),
         ("s", "list-sessions"),
         ("i", "display-message \"#S:#W.#P #T\""),
+        ("C-s", "save-session"),
+        ("C-r", "restore-session"),
+        ("S", "set-option -w synchronize-panes"),
     ];
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
@@ -474,7 +491,173 @@ impl Server {
             shell_last_refresh: None,
             plugins: Vec::new(),
             events,
+            last_saved: HashMap::new(),
         }
+    }
+
+    // ------------------------------------------------------------- resurrect
+
+    fn sessions_dir(&self) -> PathBuf {
+        if self.opts.sessions_dir.is_empty() {
+            crate::resurrect::default_dir()
+        } else {
+            PathBuf::from(expand_home(&self.opts.sessions_dir))
+        }
+    }
+
+    /// Describe one live session.
+    fn snapshot(&self, s: &Session) -> crate::resurrect::SavedSession {
+        use crate::resurrect::*;
+        SavedSession {
+            name: s.name.clone(),
+            current: s.cur,
+            windows: s
+                .windows
+                .iter()
+                .map(|w| {
+                    let lookup =
+                        |id: PaneId| w.pane(id).map(|p| SavedPane { argv: p.argv.clone(), cwd: p.cwd.clone() });
+                    let order = w.layout.panes();
+                    SavedWindow {
+                        name: w.name.clone(),
+                        layout: SavedNode::from_layout(&w.layout, &lookup)
+                            .unwrap_or(SavedNode::Pane { pane: SavedPane { argv: Vec::new(), cwd: None } }),
+                        active: order.iter().position(|p| *p == w.active).unwrap_or(0),
+                        zoomed: w.zoomed,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Save one session to its file; returns the path.
+    fn save_session_file(&mut self, sid: SessionId) -> Result<PathBuf, String> {
+        let s = self.session(sid).ok_or("no such session")?;
+        let saved = self.snapshot(s);
+        let key = serde_json::to_string(&saved).unwrap_or_default();
+        let path = crate::resurrect::file_for(&self.sessions_dir(), &saved.name);
+        crate::resurrect::SavedFile::new(saved).save(&path)?;
+        self.last_saved.insert(path.to_string_lossy().into_owned(), key);
+        Ok(path)
+    }
+
+    /// Autosave every session whose structure changed since its last save
+    /// (called from the tick; cheap: the tree is tiny).
+    fn autosave_changed(&mut self) {
+        if !self.opts.autosave {
+            return;
+        }
+        let dir = self.sessions_dir();
+        let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
+        for sid in ids {
+            let Some(s) = self.session(sid) else { continue };
+            let saved = self.snapshot(s);
+            let key = serde_json::to_string(&saved).unwrap_or_default();
+            let path = crate::resurrect::file_for(&dir, &saved.name).to_string_lossy().into_owned();
+            if self.last_saved.get(&path) == Some(&key) {
+                continue;
+            }
+            match self.save_session_file(sid) {
+                Ok(_) => {}
+                Err(e) => {
+                    log::warn!("autosave {}: {e}", saved.name);
+                    // Do not retry every second.
+                    self.last_saved.insert(path, key);
+                }
+            }
+        }
+    }
+
+    /// Recreate one saved session (its name must be free). Returns its id.
+    fn restore_session_file(
+        &mut self,
+        path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(SessionId, Vec<String>), String> {
+        use crate::resurrect::*;
+        let ss = SavedFile::load(path)?.session;
+        if self.sessions.iter().any(|s| s.name == ss.name) {
+            return Err(format!("session {} already exists", ss.name));
+        }
+        let first = ss.windows.first().ok_or_else(|| format!("session {} has no windows", ss.name))?;
+        let mut problems = Vec::new();
+        // The session comes with its first window; the placeholder pane of
+        // every window is replaced by the saved layout afterwards.
+        let sid = self.new_session(Some(ss.name.clone()), Some(first.name.clone()), None, &[], cols, rows)?;
+        for (i, sw) in ss.windows.iter().enumerate() {
+            if i > 0
+                && let Err(e) = self.new_window(sid, Some(sw.name.clone()), None, &[])
+            {
+                problems.push(format!("{}:{}: {e}", ss.name, sw.name));
+                continue;
+            }
+            if let Err(e) = self.rebuild_window(sid, i, sw) {
+                problems.push(format!("{}:{}: {e}", ss.name, sw.name));
+            }
+        }
+        if let Some(s) = self.session_mut(sid) {
+            s.cur = ss.current.min(s.windows.len().saturating_sub(1));
+            s.last = None;
+        }
+        self.relayout_session(sid);
+        Ok((sid, problems))
+    }
+
+    /// Restore every saved session whose name is free.
+    fn restore_all(&mut self, cols: u16, rows: u16) -> (Vec<SessionId>, Vec<String>) {
+        let mut created = Vec::new();
+        let mut problems = Vec::new();
+        for (name, _, path) in crate::resurrect::list(&self.sessions_dir()) {
+            if self.sessions.iter().any(|s| s.name == name) {
+                continue;
+            }
+            match self.restore_session_file(&path, cols, rows) {
+                Ok((sid, p)) => {
+                    created.push(sid);
+                    problems.extend(p);
+                }
+                Err(e) => problems.push(e),
+            }
+        }
+        (created, problems)
+    }
+
+    /// Replace window `widx`'s panes by the saved layout, spawning one pane
+    /// per saved leaf (the placeholder pane created with the window is killed).
+    fn rebuild_window(
+        &mut self,
+        sid: SessionId,
+        widx: usize,
+        sw: &crate::resurrect::SavedWindow,
+    ) -> Result<(), String> {
+        let area = {
+            let s = self.session(sid).ok_or("no such session")?;
+            self.window_area(s.cols, s.rows)
+        };
+        let mut panes = Vec::new();
+        for saved in sw.layout.panes() {
+            let argv: Vec<String> = saved.argv.clone();
+            let cwd = saved.cwd.as_deref().filter(|d| std::path::Path::new(d).is_dir());
+            // Sizes are refitted by relayout; spawn at the window size.
+            panes.push(self.spawn_pane(&argv, cwd, area.w, area.h)?);
+        }
+        let mut ids = panes.iter().map(|p| p.id);
+        let layout = sw.layout.to_layout(&mut ids).ok_or("layout/pane count mismatch")?;
+        let order = layout.panes();
+        let active = order.get(sw.active).or(order.first()).copied().ok_or("empty layout")?;
+        let s = self.session_mut(sid).ok_or("no such session")?;
+        let w = s.windows.get_mut(widx).ok_or("no such window")?;
+        for p in &mut w.panes {
+            p.kill();
+        }
+        w.panes = panes;
+        w.layout = layout;
+        w.active = active;
+        w.last_pane = None;
+        w.zoomed = sw.zoomed && w.panes.len() > 1;
+        w.relayout(area);
+        Ok(())
     }
 
     fn alloc_id(&mut self) -> u32 {
@@ -492,6 +675,13 @@ impl Server {
                     // Shown to the first client that attaches, like tmux does.
                     self.config_errors = Some(e.lines().map(str::to_string).collect());
                 }
+            }
+        }
+        if self.opts.restore_on_start && self.sessions.is_empty() {
+            let (created, problems) = self.restore_all(80, 24);
+            log::info!("restore-on-start: {} session(s)", created.len());
+            for p in problems {
+                log::warn!("restore-on-start: {p}");
             }
         }
     }
@@ -704,6 +894,7 @@ impl Server {
                 self.shell_cache.results.insert(command, line);
             }
             Event::Tick => {
+                self.autosave_changed();
                 // A server nobody uses has no reason to live (e.g. started by
                 // `wmux attach` when there was nothing to attach to).
                 if self.sessions.is_empty()
@@ -1069,6 +1260,7 @@ impl Server {
             panes: vec![pane],
             last_pane: None,
             zoomed: false,
+            synchronized: false,
             rects: Vec::new(),
         };
         w.relayout(area);
@@ -1310,12 +1502,103 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::KillServer => {
+                // Last chance to save before the tree is gone.
+                self.autosave_changed();
                 let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
                 for sid in ids {
                     self.kill_session(sid, "server exited");
                 }
                 self.quit = true;
                 Outcome::Ok
+            }
+            Cmd::SaveSession { target, all } => {
+                let ids: Vec<SessionId> = if all {
+                    self.sessions.iter().map(|s| s.id).collect()
+                } else {
+                    match self.resolve_session(target.as_ref(), cid) {
+                        Ok(s) => vec![s],
+                        Err(e) => return Outcome::Error(e),
+                    }
+                };
+                let mut lines = Vec::new();
+                for sid in ids {
+                    match self.save_session_file(sid) {
+                        Ok(p) => lines.push(format!("saved {}", p.display())),
+                        Err(e) => return Outcome::Error(e),
+                    }
+                }
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::RestoreSession { name, attach } => {
+                let client = cid.and_then(|c| self.clients.get(&c));
+                let interactive = client.is_some_and(|c| c.interactive && c.session.is_none());
+                let (cols, rows) = client.map(|c| (c.cols, c.rows)).unwrap_or((80, 24));
+                let dir = self.sessions_dir();
+                let (created, problems, target_sid) = match &name {
+                    Some(n) => {
+                        // Already running: resuming just means attaching.
+                        if let Some(s) = self.sessions.iter().find(|s| s.name == *n) {
+                            (Vec::new(), Vec::new(), Some(s.id))
+                        } else {
+                            let Some(path) = crate::resurrect::find(&dir, n) else {
+                                return Outcome::Error(format!("no saved session named {n} (see list-saved)"));
+                            };
+                            match self.restore_session_file(&path, cols, rows) {
+                                Ok((sid, p)) => (vec![sid], p, Some(sid)),
+                                Err(e) => return Outcome::Error(e),
+                            }
+                        }
+                    }
+                    None => {
+                        let (c, p) = self.restore_all(cols, rows);
+                        let first = c.first().copied().or_else(|| self.resolve_session(None, cid).ok());
+                        (c, p, first)
+                    }
+                };
+                if attach
+                    && interactive
+                    && let Some(sid) = target_sid
+                {
+                    for p in &problems {
+                        log::warn!("resume: {p}");
+                    }
+                    return Outcome::Attach(sid);
+                }
+                let mut lines = vec![format!("restored {} session(s)", created.len())];
+                lines.extend(problems);
+                if created.is_empty() && lines.len() == 1 && name.is_none() {
+                    lines[0] = "nothing to restore (see list-saved)".into();
+                }
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::ListSaved => {
+                let dir = self.sessions_dir();
+                let running: Vec<String> = self.sessions.iter().map(|s| s.name.clone()).collect();
+                let lines: Vec<String> = crate::resurrect::list(&dir)
+                    .into_iter()
+                    .map(|(n, at, _)| {
+                        let at = at.get(..19).unwrap_or(&at).replace('T', " ");
+                        format!("{n}: saved {at}{}", if running.contains(&n) { " (running)" } else { "" })
+                    })
+                    .collect();
+                if lines.is_empty() {
+                    Outcome::Text(format!("no saved sessions in {}", dir.display()))
+                } else {
+                    Outcome::Text(lines.join("\n"))
+                }
+            }
+            Cmd::DeleteSaved { name } => {
+                let dir = self.sessions_dir();
+                match crate::resurrect::find(&dir, &name) {
+                    Some(p) => match std::fs::remove_file(&p) {
+                        Ok(()) => {
+                            self.last_saved.remove(&p.to_string_lossy().into_owned());
+                            Outcome::Ok
+                        }
+                        Err(e) => Outcome::Error(format!("{}: {e}", p.display())),
+                    },
+                    None => Outcome::Error(format!("no saved session named {name}")),
+                }
             }
             Cmd::RenameSession { target, name } => {
                 if name.is_empty() || name.contains(':') || name.contains('.') {
@@ -1558,6 +1841,7 @@ impl Server {
                     panes: vec![pane],
                     last_pane: None,
                     zoomed: false,
+                    synchronized: false,
                     rects: Vec::new(),
                 });
                 let idx = s.windows.len() - 1;
@@ -1580,7 +1864,26 @@ impl Server {
                         bytes.extend(input::encode_send_key(k, app));
                     }
                 }
-                p.write_input(&bytes);
+                // With synchronize-panes on, send-keys reaches the whole window too.
+                let synced = self
+                    .sessions
+                    .iter()
+                    .flat_map(|s| s.windows.iter())
+                    .find(|w| w.pane(pid).is_some())
+                    .is_some_and(|w| w.synchronized);
+                if synced {
+                    let w = self
+                        .sessions
+                        .iter_mut()
+                        .flat_map(|s| s.windows.iter_mut())
+                        .find(|w| w.pane(pid).is_some())
+                        .unwrap();
+                    for p in &mut w.panes {
+                        p.write_input(&bytes);
+                    }
+                } else if let Some(p) = self.find_pane_mut(pid) {
+                    p.write_input(&bytes);
+                }
                 Outcome::Ok
             }
             Cmd::CopyMode { page_up } => {
@@ -1657,6 +1960,22 @@ impl Server {
                 }
                 None => Outcome::Error(format!("unknown key: {key}")),
             },
+            Cmd::SetOption { name, value } if name == "synchronize-panes" => {
+                // Window-scoped in tmux; here it applies to the current window.
+                let on = match value.trim().to_ascii_lowercase().as_str() {
+                    "on" | "true" | "yes" | "1" => Some(true),
+                    "off" | "false" | "no" | "0" => Some(false),
+                    "" => None, // toggle
+                    v => return Outcome::Error(format!("bad boolean '{v}'")),
+                };
+                let (sid, widx, _) = match self.resolve(None, cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                w.synchronized = on.unwrap_or(!w.synchronized);
+                Outcome::Ok
+            }
             Cmd::SetOption { name, value } => {
                 let r = self.opts.set(&name, &value);
                 if r.is_ok() {
@@ -1888,8 +2207,15 @@ impl Server {
         self.write_active(sid, &input::encode_key_record(&rec));
     }
 
+    /// Input for the current window: the active pane, or every pane when
+    /// `synchronize-panes` is on.
     fn write_active(&mut self, sid: SessionId, bytes: &[u8]) {
-        if let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut()) {
+        let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) else { return };
+        if w.synchronized {
+            for p in &mut w.panes {
+                p.write_input(bytes);
+            }
+        } else if let Some(p) = w.active_pane_mut() {
             p.write_input(bytes);
         }
     }
@@ -2344,7 +2670,12 @@ impl Server {
                         } else {
                             ""
                         },
-                        if w.zoomed { "Z" } else { "" }
+                        match (w.zoomed, w.synchronized) {
+                            (true, true) => "ZS",
+                            (true, false) => "Z",
+                            (false, true) => "S",
+                            (false, false) => "",
+                        }
                     ),
                 }
             };

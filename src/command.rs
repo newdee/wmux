@@ -199,6 +199,23 @@ pub enum Cmd {
         path: String,
     },
     ListPlugins,
+    /// `save-session [-t target]`: write one session (or, with `-a`, all).
+    SaveSession {
+        target: Option<Target>,
+        all: bool,
+    },
+    /// `restore-session [-a] [name]` / `resume [name]`: recreate a saved
+    /// session (or every saved one); `-a` attaches to it afterwards.
+    RestoreSession {
+        name: Option<String>,
+        attach: bool,
+    },
+    /// `list-saved`: saved sessions, newest first.
+    ListSaved,
+    /// `delete-saved name`: forget a saved session.
+    DeleteSaved {
+        name: String,
+    },
     ClearHistory,
     /// `capture-pane -p`: print the visible text of a pane (`-S -N` adds N
     /// lines of scrollback above it).
@@ -452,6 +469,25 @@ impl fmt::Display for Cmd {
             Cmd::ShowHooks => f.write_str("show-hooks -g"),
             Cmd::LoadPlugin { path } => write!(f, "load-plugin {}", quote(path)),
             Cmd::ListPlugins => f.write_str("list-plugins"),
+            Cmd::SaveSession { target, all } => {
+                f.write_str("save-session")?;
+                if *all {
+                    f.write_str(" -a")?;
+                }
+                fmt_target(f, target)
+            }
+            Cmd::RestoreSession { name, attach } => {
+                f.write_str("restore-session")?;
+                if *attach {
+                    f.write_str(" -a")?;
+                }
+                if let Some(n) = name {
+                    write!(f, " {}", quote(n))?;
+                }
+                Ok(())
+            }
+            Cmd::ListSaved => f.write_str("list-saved"),
+            Cmd::DeleteSaved { name } => write!(f, "delete-saved {}", quote(name)),
             Cmd::ClearHistory => f.write_str("clear-history"),
             Cmd::CapturePane { target, history } => {
                 f.write_str("capture-pane -p")?;
@@ -610,6 +646,9 @@ impl<'a> Args<'a> {
     fn value(&mut self, flag: &str) -> Result<&'a str, String> {
         self.next().ok_or_else(|| format!("{flag}: missing value"))
     }
+    fn none_flags(&mut self, name: &str) -> Result<(), String> {
+        if self.is_flag() { Err(format!("{name}: unknown flag '{}'", self.words[self.pos])) } else { Ok(()) }
+    }
     fn none_left(&self, name: &str) -> Result<(), String> {
         if self.pos < self.words.len() {
             Err(format!("{name}: unexpected argument '{}'", self.words[self.pos]))
@@ -668,6 +707,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "show-hooks" => "show-hooks",
         "load-plugin" => "load-plugin",
         "list-plugins" => "list-plugins",
+        "save-session" | "save" => "save-session",
+        "restore-session" | "restore" => "restore-session",
+        "resume" => "resume",
+        "list-saved" | "saved" => "list-saved",
+        "delete-saved" | "forget" => "delete-saved",
         "clear-history" | "clearhist" => "clear-history",
         "capture-pane" | "capturep" => "capture-pane",
         "source-file" | "source" => "source-file",
@@ -1090,6 +1134,47 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::LoadPlugin { path }
         }
         "list-plugins" => Cmd::ListPlugins,
+        "save-session" => {
+            let (mut target, mut all) = (None, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-a" => all = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::SaveSession { target, all }
+        }
+        "restore-session" | "resume" => {
+            let mut attach = n == "resume";
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-a" => attach = true,
+                    "-t" => {
+                        // `resume -t name` reads naturally next to attach -t.
+                        let v = a.value("-t")?.to_string();
+                        a.none_left(n)?;
+                        return Ok(Cmd::RestoreSession { name: Some(v), attach });
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let name = a.next().map(str::to_string);
+            a.none_left(n)?;
+            Cmd::RestoreSession { name, attach }
+        }
+        "list-saved" => {
+            a.none_flags(n)?;
+            a.none_left(n)?;
+            Cmd::ListSaved
+        }
+        "delete-saved" => {
+            a.none_flags(n)?;
+            let name = a.next().ok_or("delete-saved: name required")?.to_string();
+            a.none_left(n)?;
+            Cmd::DeleteSaved { name }
+        }
         "clear-history" => Cmd::ClearHistory,
         "capture-pane" => {
             let (mut target, mut history) = (None, 0usize);
@@ -1245,6 +1330,16 @@ mod tests {
             Cmd::ShowOptions { name: Some("@theme".into()), value_only: true, quiet: true }
         );
         assert_eq!(p("show -g"), Cmd::ShowOptions { name: None, value_only: false, quiet: false });
+        assert_eq!(p("resume"), Cmd::RestoreSession { name: None, attach: true });
+        assert_eq!(p("resume work"), Cmd::RestoreSession { name: Some("work".into()), attach: true });
+        assert_eq!(p("resume -t work"), Cmd::RestoreSession { name: Some("work".into()), attach: true });
+        assert_eq!(p("restore-session"), Cmd::RestoreSession { name: None, attach: false });
+        assert_eq!(p("save -t work"), Cmd::SaveSession { target: Some(Target::parse("work")), all: false });
+        assert_eq!(p("save -a"), Cmd::SaveSession { target: None, all: true });
+        assert_eq!(p("saved"), Cmd::ListSaved);
+        assert_eq!(p("forget old"), Cmd::DeleteSaved { name: "old".into() });
+        assert!(parse_line("save-session -x").is_err());
+        assert!(parse_line("delete-saved").is_err());
         assert_eq!(
             p("show-option -v mouse"),
             Cmd::ShowOptions { name: Some("mouse".into()), value_only: true, quiet: false }
@@ -1341,6 +1436,12 @@ mod tests {
             "show-hooks -g",
             "show-options -g -v -q @x",
             "show-options -g",
+            "save-session -a",
+            "save-session -t work",
+            "restore-session -a",
+            "restore-session \"my session\"",
+            "list-saved",
+            "delete-saved old",
             "confirm-before -p \"kill? (y/n)\" \"kill-window\"",
             "bind-key -n M-h select-pane -L",
             "set-option prefix C-a",

@@ -38,6 +38,12 @@ pub struct Options {
     /// tmux-style user options (`@name`), readable by plugins via
     /// `show-options -gv @name`.
     pub user: Vec<(String, String)>,
+    /// Save the session tree after every structural change and on exit.
+    pub autosave: bool,
+    /// Restore every saved session when the server starts with no sessions.
+    pub restore_on_start: bool,
+    /// Directory holding one file per saved session (`sessions-dir`); empty = default.
+    pub sessions_dir: String,
 }
 
 /// Options `show-options` can print, in display order.
@@ -59,6 +65,9 @@ pub const SHOWABLE: &[&str] = &[
     "base-index",
     "display-time",
     "plugin-path",
+    "autosave",
+    "restore-on-start",
+    "sessions-dir",
 ];
 
 impl Default for Options {
@@ -87,6 +96,9 @@ impl Default for Options {
             plugin_path: "~/.wmux/plugins".into(),
             pending_plugins: Vec::new(),
             user: Vec::new(),
+            autosave: true,
+            restore_on_start: false,
+            sessions_dir: String::new(),
         }
     }
 }
@@ -219,6 +231,9 @@ impl Options {
             "window-status-format" => self.window_status_format = value.to_string(),
             "window-status-current-format" => self.window_status_current_format = value.to_string(),
             "plugin-path" => self.plugin_path = value.to_string(),
+            "autosave" => self.autosave = parse_bool(value)?,
+            "restore-on-start" => self.restore_on_start = parse_bool(value)?,
+            "sessions-dir" => self.sessions_dir = value.to_string(),
             "@plugin" => {
                 self.pending_plugins.push(value.to_string());
                 self.user.push(("@plugin".into(), value.to_string()));
@@ -278,6 +293,15 @@ impl Options {
             "base-index" => self.base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
             "plugin-path" => self.plugin_path.clone(),
+            "autosave" => onoff(self.autosave),
+            "restore-on-start" => onoff(self.restore_on_start),
+            "sessions-dir" => {
+                if self.sessions_dir.is_empty() {
+                    crate::resurrect::default_dir().to_string_lossy().into_owned()
+                } else {
+                    self.sessions_dir.clone()
+                }
+            }
             _ => return None,
         })
     }

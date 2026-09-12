@@ -9,6 +9,17 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+fn sessions_dir() -> String {
+    std::env::temp_dir().join(format!("wmux-console-sessions-{}", std::process::id())).to_string_lossy().into_owned()
+}
+
+/// The real client binary with the test environment.
+fn wmux() -> std::process::Command {
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_wmux"));
+    c.env("WMUX_SESSIONS_DIR", sessions_dir());
+    c
+}
+
 struct Term {
     parser: vt100::Parser,
     rx: mpsc::Receiver<Vec<u8>>,
@@ -29,6 +40,7 @@ impl Term {
         cmd.args(args);
         cmd.env_remove("WMUX_PANE"); // make sure we do not look nested
         cmd.env_remove("WMUX");
+        cmd.env("WMUX_SESSIONS_DIR", sessions_dir()); // keep autosave out of the real directory
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -147,11 +159,10 @@ fn real_client_in_conpty() {
     assert!(raw.contains("\x1b[?1049l"), "alternate screen never left");
 
     // The session survived the detach; kill it through the CLI.
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["-L", &socket, "ls"]).output().unwrap();
+    let out = wmux().args(["-L", &socket, "ls"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("t: 1 windows"), "{stdout}");
-    let out =
-        std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["-L", &socket, "kill-server"]).output().unwrap();
+    let out = wmux().args(["-L", &socket, "kill-server"]).output().unwrap();
     assert!(out.status.success());
 }
 
@@ -159,10 +170,7 @@ fn real_client_in_conpty() {
 fn nested_new_is_refused_and_detached_flag_allowed() {
     let socket = format!("nested-{}", std::process::id());
     // Start a server with a session, then run a client pretending to be inside a pane.
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_wmux"))
-        .args(["-L", &socket, "new", "-d", "-s", "outer", "cmd.exe", "/c", "pause"])
-        .output()
-        .unwrap();
+    let out = wmux().args(["-L", &socket, "new", "-d", "-s", "outer", "cmd.exe", "/c", "pause"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     // Inside a pane (WMUX_PANE set), `new` without -d is refused like tmux does.
     let mut t = Term::spawn_env(&["-L", &socket, "new", "-s", "inner"], 80, 24, &[("WMUX_PANE", "1")]);
@@ -176,8 +184,8 @@ fn nested_new_is_refused_and_detached_flag_allowed() {
     // With -d it is allowed.
     let mut t = Term::spawn_env(&["-L", &socket, "new", "-d", "-s", "inner"], 80, 24, &[("WMUX_PANE", "1")]);
     assert_eq!(t.wait_exit(), 0);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["-L", &socket, "ls"]).output().unwrap();
+    let out = wmux().args(["-L", &socket, "ls"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("outer:") && stdout.contains("inner:"), "{stdout}");
-    let _ = std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["-L", &socket, "kill-server"]).output();
+    let _ = wmux().args(["-L", &socket, "kill-server"]).output();
 }

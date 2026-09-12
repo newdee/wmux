@@ -108,6 +108,13 @@ fn needs_server(argv: &[String]) -> bool {
                 | "bind"
                 | "set-option"
                 | "set"
+                | "restore-session"
+                | "restore"
+                | "resume"
+                | "list-saved"
+                | "saved"
+                | "delete-saved"
+                | "forget"
         )
     )
 }

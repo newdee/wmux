@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use wmux::ipc::{ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame};
-use wmux::keys::{LEFT_CTRL_PRESSED, VK_RETURN};
+use wmux::keys::{LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_RETURN};
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -34,15 +34,23 @@ impl Harness {
         // Make every implicitly spawned pane a predictable cmd.exe prompt.
         let (code, _, err) = h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt wmux$g"]).await;
         assert_eq!(code, 0, "{err}");
+        // Autosave must never touch the real sessions directory from a test.
+        let dir = std::env::temp_dir().join(format!("wmux-test-sessions-{}-{name}", std::process::id()));
+        let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
+        assert_eq!(code, 0, "{err}");
         h
     }
 
     async fn connect(&self) -> Conn {
         let pipe = pipe_name(&self.socket);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let c = loop {
             match ClientOptions::new().open(&pipe) {
                 Ok(c) => break c,
-                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Err(e) => {
+                    assert!(Instant::now() < deadline, "server {} not reachable: {e}", self.socket);
+                    tokio::time::sleep(Duration::from_millis(20)).await
+                }
             }
         };
         let (rd, wr) = tokio::io::split(c);
@@ -191,8 +199,13 @@ impl Conn {
     /// Prefix (C-b) followed by a key.
     async fn prefix(&mut self, ch: char) {
         self.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
-        let vk = if ch.is_ascii_alphabetic() { ch.to_ascii_uppercase() as u16 } else { 0 };
-        self.key(vk, ch, 0).await;
+        let (vk, ctrl) = match ch {
+            '\t' => (0x09, 0),
+            c if c.is_ascii_uppercase() => (c as u16, SHIFT_PRESSED),
+            c if c.is_ascii_alphabetic() => (c.to_ascii_uppercase() as u16, 0),
+            _ => (0, 0),
+        };
+        self.key(vk, ch, ctrl).await;
     }
 
     fn text(&self) -> String {
@@ -581,6 +594,145 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     assert!(out.contains("1: hooked*"), "{out}");
     h.cli(&["kill-server"]).await;
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn save_and_resume_sessions() {
+    let h = Harness::start("resume").await;
+    let dir = std::env::temp_dir().join(format!("wmux-sessions-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
+    assert_eq!(code, 0, "{err}");
+
+    // A second session keeps the server alive while "work" is killed below.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "keeper"]).await;
+    assert_eq!(code, 0, "{err}");
+    // Build a session: two windows, the first split in three, second window renamed.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "work", "-n", "edit", "cmd.exe", "/q", "/k", "prompt A$g"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["split-window", "-h", "-t", "work:0", "cmd.exe", "/q", "/k", "prompt B$g"]).await;
+    h.cli(&["split-window", "-v", "-t", "work:0", "cmd.exe", "/q", "/k", "prompt C$g"]).await;
+    h.cli(&["new-window", "-t", "work", "-n", "logs", "cmd.exe", "/q", "/k", "prompt D$g"]).await;
+    h.cli(&["select-window", "-t", "work:0"]).await;
+    // Autosave happens on the tick; the explicit command is immediate.
+    let (code, out, err) = h.cli(&["save-session", "-t", "work"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("saved "), "{out}");
+    let (_, out, _) = h.cli(&["list-saved"]).await;
+    assert!(out.contains("work: saved") && out.contains("(running)"), "{out}");
+
+    // Kill it: the file survives; resuming by name brings it back with the
+    // same shape and commands.
+    let (code, _, _) = h.cli(&["kill-session", "-t", "work"]).await;
+    assert_eq!(code, 0);
+    let (code, _, err) = h.cli(&["has-session", "-t", "work"]).await;
+    assert_eq!(code, 1, "{err}");
+    let (_, out, _) = h.cli(&["list-saved"]).await;
+    let work_line = out.lines().find(|l| l.starts_with("work:")).unwrap_or_default();
+    assert!(work_line.contains("saved") && !work_line.contains("(running)"), "{out}");
+    let (_, out, _) = h.cli(&["ls"]).await;
+    assert!(!out.contains("work") && out.contains("keeper"), "{out}");
+
+    let mut c = h.connect().await;
+    let session = c.attach(&["resume", "work"]).await;
+    assert_eq!(session, "work");
+    let (_, out, _) = h.cli(&["list-windows", "-t", "work"]).await;
+    assert!(out.contains("0: edit* (3 panes)") && out.contains("1: logs"), "{out}");
+    let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
+    assert_eq!(out.lines().count(), 3, "{out}");
+    // Each pane came back with its own command line: three different prompts.
+    c.wait_for("restored prompts", |s| ["A>", "B>", "C>"].iter().all(|p| s.contents().contains(p))).await;
+    // The layout (left | (top / bottom)) is the same: a vertical border and a
+    // horizontal one in the right half.
+    assert!(c.screen.screen().cell(0, COLS / 2).is_some_and(|x| x.contents() == "│"), "{}", c.text());
+    assert!(
+        (COLS / 2 + 1..COLS).any(|x| c.screen.screen().cell((ROWS - 1) / 2, x).is_some_and(|c| c.contents() == "─")),
+        "{}",
+        c.text()
+    );
+
+    // Resuming a running session is just an attach for a second client.
+    let mut c2 = h.connect().await;
+    assert_eq!(c2.attach(&["resume", "work"]).await, "work");
+    c2.wait_for("attached", |s| s.contents().contains("A>")).await;
+
+    // `resume` with no name restores everything that is not running.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "other"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["save-session", "-t", "other"]).await;
+    h.cli(&["kill-session", "-t", "other"]).await;
+    let (code, out, _) = h.cli(&["restore-session"]).await;
+    assert_eq!(code, 0);
+    assert!(out.starts_with("restored 1 session"), "{out}");
+    let (code, _, _) = h.cli(&["has-session", "-t", "other"]).await;
+    assert_eq!(code, 0);
+    // Unknown names and deletion.
+    let (code, _, err) = h.cli(&["resume", "nope"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no saved session"), "{err}");
+    let (code, _, _) = h.cli(&["delete-saved", "other"]).await;
+    assert_eq!(code, 0);
+    let (_, out, _) = h.cli(&["list-saved"]).await;
+    assert!(!out.contains("other:"), "{out}");
+
+    // Autosave: a structural change is on disk within a couple of ticks.
+    h.cli(&["rename-window", "-t", "work:1", "renamed-by-autosave"]).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let path = wmux::resurrect::find(&dir, "work").unwrap();
+        let f = wmux::resurrect::SavedFile::load(&path).unwrap();
+        if f.session.windows.iter().any(|w| w.name == "renamed-by-autosave") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "autosave did not pick up the rename");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vim_keys_and_synchronize_panes() {
+    let h = Harness::start("vim").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "v"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.prefix('%').await; // left | right, right active
+    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    // prefix h -> left pane active, prefix l -> right again.
+    c.prefix('h').await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
+    assert!(out.lines().next().unwrap().contains("(active)"), "{out}");
+    c.prefix('l').await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
+    assert!(out.lines().nth(1).unwrap().contains("(active)"), "{out}");
+    // prefix H shrinks the right pane's left edge... i.e. resizes; widths change.
+    c.prefix('H').await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
+    // 80 columns: 35 + border + 44.
+    assert!(out.contains("[44x") && out.contains("[35x"), "{out}");
+    // prefix Tab is last-window now that l is taken.
+    c.prefix('c').await;
+    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    c.prefix('\t').await;
+    c.wait_for("back to 0", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*")).await;
+
+    // synchronize-panes: typing lands in both panes; the S flag shows.
+    c.prefix('S').await;
+    c.wait_for("S flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*S")).await;
+    c.type_str("echo both-panes").await;
+    c.enter().await;
+    c.wait_for("echoed twice", |s| s.contents().matches("both-panes").count() >= 4).await;
+    let (_, a, _) = h.cli(&["capture-pane", "-p", "-t", "v:0.0"]).await;
+    let (_, b, _) = h.cli(&["capture-pane", "-p", "-t", "v:0.1"]).await;
+    assert!(a.contains("both-panes") && b.contains("both-panes"), "{a}\n---\n{b}");
+    // send-keys follows the flag too; then off again.
+    h.cli(&["send-keys", "-t", "v:0.0", "echo via-send", "Enter"]).await;
+    c.wait_for("send-keys to both", |s| s.contents().matches("via-send").count() >= 4).await;
+    let (code, _, _) = h.cli(&["set", "-w", "synchronize-panes", "off"]).await;
+    assert_eq!(code, 0);
+    c.wait_for("S flag gone", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*S")).await;
+    h.cli(&["kill-server"]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

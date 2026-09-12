@@ -84,6 +84,8 @@ pub struct Pane {
     job: Option<crate::winsec::KillOnCloseJob>,
     pub title: String,
     pub command: String,
+    /// The command line this pane was started with (for save/restore).
+    pub argv: Vec<String>,
     pub cwd: Option<String>,
     pub exit_code: Option<u32>,
     pub copy: Option<CopyMode>,
@@ -179,6 +181,7 @@ impl Pane {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| argv[0].clone()),
+            argv: argv.to_vec(),
             cwd: cwd.map(str::to_string),
             exit_code: None,
             copy: None,
