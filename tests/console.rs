@@ -132,8 +132,11 @@ fn real_client_in_conpty() {
     t.wait_for("prompt", |s| s.contents().contains("wmux>"));
     t.wait_for("status", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[t] 0:cmd*"));
     assert!(t.parser.screen().alternate_screen(), "client should use the alternate screen");
-    // cmd.exe sets its window title via OSC; it lands on the right of the status line.
-    assert!(t.row(23).contains("cmd.exe\""), "pane title on the right: {:?}", t.row(23));
+    // cmd.exe sets its window title (its own path, prefixed with
+    // "Administrator: " when elevated, as on CI) via OSC; it lands on the
+    // right of the status line, quoted and possibly truncated.
+    let row = t.row(23);
+    assert!(row.contains("\"") && row.to_ascii_lowercase().contains("c:\\"), "pane title on the right: {row:?}");
 
     // Keystrokes travel: pty -> conhost -> ReadConsoleInputW -> server -> pane.
     t.send("echo typed-in-conpty\r");
