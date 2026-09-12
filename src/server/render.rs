@@ -1,0 +1,632 @@
+//! Compositing panes, borders and the status line into a cell grid, and
+//! diffing grids into a minimal VT byte stream for the client console.
+
+use super::layout::Rect;
+use unicode_width::UnicodeWidthStr;
+use vt100::Color;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Style {
+    pub fg: Color,
+    pub bg: Color,
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+}
+
+impl Style {
+    pub const fn colors(fg: Color, bg: Color) -> Style {
+        Style { fg, bg, bold: false, dim: false, italic: false, underline: false, inverse: false }
+    }
+    fn sgr(&self) -> String {
+        let mut s = String::from("\x1b[0");
+        if self.bold {
+            s.push_str(";1");
+        }
+        if self.dim {
+            s.push_str(";2");
+        }
+        if self.italic {
+            s.push_str(";3");
+        }
+        if self.underline {
+            s.push_str(";4");
+        }
+        if self.inverse {
+            s.push_str(";7");
+        }
+        color_sgr(&mut s, self.fg, true);
+        color_sgr(&mut s, self.bg, false);
+        s.push('m');
+        s
+    }
+}
+
+fn color_sgr(s: &mut String, c: Color, fg: bool) {
+    use std::fmt::Write;
+    match c {
+        Color::Default => {}
+        Color::Idx(n @ 0..=7) => write!(s, ";{}", if fg { 30 + n as u16 } else { 40 + n as u16 }).unwrap(),
+        Color::Idx(n @ 8..=15) => write!(s, ";{}", if fg { 82 + n as u16 } else { 92 + n as u16 }).unwrap(),
+        Color::Idx(n) => write!(s, ";{};5;{n}", if fg { 38 } else { 48 }).unwrap(),
+        Color::Rgb(r, g, b) => write!(s, ";{};2;{r};{g};{b}", if fg { 38 } else { 48 }).unwrap(),
+    }
+}
+
+const TEXT_BYTES: usize = 24;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Cell {
+    text: [u8; TEXT_BYTES],
+    len: u8,
+    pub wide: bool,
+    /// Second half of a wide character.
+    pub cont: bool,
+    pub style: Style,
+}
+
+impl Cell {
+    pub fn blank(style: Style) -> Cell {
+        Cell { text: [0; TEXT_BYTES], len: 0, wide: false, cont: false, style }
+    }
+    pub fn new(s: &str, wide: bool, style: Style) -> Cell {
+        let mut c = Cell::blank(style);
+        let n = s.len().min(TEXT_BYTES);
+        // Never cut a UTF-8 sequence.
+        let n = (0..=n).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        c.text[..n].copy_from_slice(&s.as_bytes()[..n]);
+        c.len = n as u8;
+        c.wide = wide;
+        c
+    }
+    fn continuation(style: Style) -> Cell {
+        Cell { cont: true, ..Cell::blank(style) }
+    }
+    /// Cell text; a blank cell reads as a single space.
+    pub fn text(&self) -> &str {
+        if self.len == 0 {
+            return " ";
+        }
+        std::str::from_utf8(&self.text[..self.len as usize]).unwrap_or(" ")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Grid {
+    pub cols: u16,
+    pub rows: u16,
+    cells: Vec<Cell>,
+}
+
+impl Grid {
+    pub fn new(cols: u16, rows: u16) -> Grid {
+        Grid { cols, rows, cells: vec![Cell::blank(Style::default()); cols as usize * rows as usize] }
+    }
+
+    pub fn get(&self, x: u16, y: u16) -> &Cell {
+        &self.cells[y as usize * self.cols as usize + x as usize]
+    }
+
+    pub fn set(&mut self, x: u16, y: u16, cell: Cell) {
+        if x < self.cols && y < self.rows {
+            let i = y as usize * self.cols as usize + x as usize;
+            self.cells[i] = cell;
+        }
+    }
+
+    /// Write `s` at (x, y) clipped to `max_w` cells; returns cells used.
+    pub fn put_str(&mut self, x: u16, y: u16, s: &str, style: Style, max_w: u16) -> u16 {
+        let mut cx = x;
+        let end = x.saturating_add(max_w).min(self.cols);
+        for ch in s.chars() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            if w == 0 {
+                continue;
+            }
+            if cx + w > end {
+                break;
+            }
+            let mut buf = [0u8; 4];
+            self.set(cx, y, Cell::new(ch.encode_utf8(&mut buf), w == 2, style));
+            if w == 2 {
+                self.set(cx + 1, y, Cell::continuation(style));
+            }
+            cx += w;
+        }
+        cx - x
+    }
+
+    pub fn fill(&mut self, r: Rect, style: Style) {
+        for y in r.y..r.y.saturating_add(r.h).min(self.rows) {
+            for x in r.x..r.x.saturating_add(r.w).min(self.cols) {
+                self.set(x, y, Cell::blank(style));
+            }
+        }
+    }
+
+    /// Copy the visible part of a terminal screen into `rect`.
+    pub fn blit_screen(&mut self, rect: Rect, screen: &vt100::Screen) {
+        let (srows, scols) = screen.size();
+        for y in 0..rect.h.min(srows) {
+            let mut x = 0u16;
+            while x < rect.w.min(scols) {
+                let gx = rect.x + x;
+                let gy = rect.y + y;
+                if gx >= self.cols || gy >= self.rows {
+                    break;
+                }
+                let Some(c) = screen.cell(y, x) else {
+                    x += 1;
+                    continue;
+                };
+                let style = Style {
+                    fg: c.fgcolor(),
+                    bg: c.bgcolor(),
+                    bold: c.bold(),
+                    dim: c.dim(),
+                    italic: c.italic(),
+                    underline: c.underline(),
+                    inverse: c.inverse(),
+                };
+                if c.is_wide_continuation() {
+                    self.set(gx, gy, Cell::continuation(style));
+                    x += 1;
+                    continue;
+                }
+                if c.is_wide() {
+                    if x + 1 >= rect.w || gx + 1 >= self.cols {
+                        // Wide character does not fit: draw a blank.
+                        self.set(gx, gy, Cell::blank(style));
+                        x += 1;
+                        continue;
+                    }
+                    self.set(gx, gy, Cell::new(c.contents(), true, style));
+                    self.set(gx + 1, gy, Cell::continuation(style));
+                    x += 2;
+                    continue;
+                }
+                if c.has_contents() {
+                    self.set(gx, gy, Cell::new(c.contents(), false, style));
+                } else {
+                    self.set(gx, gy, Cell::blank(style));
+                }
+                x += 1;
+            }
+        }
+    }
+
+    /// Toggle inverse video on a cell (used for copy-mode selection/cursor).
+    pub fn invert(&mut self, x: u16, y: u16) {
+        if x < self.cols && y < self.rows {
+            let i = y as usize * self.cols as usize + x as usize;
+            self.cells[i].style.inverse = !self.cells[i].style.inverse;
+        }
+    }
+}
+
+/// Produce VT output turning `prev` (None = unknown/cleared) into `cur`, then
+/// placing the cursor at `cursor` (None = hidden).
+pub fn diff(prev: Option<&Grid>, cur: &Grid, cursor: Option<(u16, u16)>) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let full = prev.is_none_or(|p| p.cols != cur.cols || p.rows != cur.rows);
+    out.extend_from_slice(b"\x1b[?25l");
+    if full {
+        out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
+    }
+    let mut style: Option<Style> = None;
+    for y in 0..cur.rows {
+        let changed = |x: u16| full || prev.unwrap().get(x, y) != cur.get(x, y);
+        let mut x = 0u16;
+        while x < cur.cols {
+            if !changed(x) {
+                x += 1;
+                continue;
+            }
+            let mut start = x;
+            let mut end = x + 1;
+            let mut gap = 0u16;
+            let mut xx = x + 1;
+            while xx < cur.cols {
+                if changed(xx) {
+                    end = xx + 1;
+                    gap = 0;
+                } else {
+                    gap += 1;
+                    if gap > 4 {
+                        break;
+                    }
+                }
+                xx += 1;
+            }
+            if cur.get(start, y).cont && start > 0 {
+                start -= 1;
+            }
+            out.extend_from_slice(format!("\x1b[{};{}H", y + 1, start + 1).as_bytes());
+            let mut cx = start;
+            while cx < end {
+                let c = cur.get(cx, y);
+                if c.cont {
+                    // Orphan continuation (its head was outside the run): pad.
+                    if style != Some(c.style) {
+                        out.extend_from_slice(c.style.sgr().as_bytes());
+                        style = Some(c.style);
+                    }
+                    out.push(b' ');
+                    cx += 1;
+                    continue;
+                }
+                if style != Some(c.style) {
+                    out.extend_from_slice(c.style.sgr().as_bytes());
+                    style = Some(c.style);
+                }
+                out.extend_from_slice(c.text().as_bytes());
+                cx += if c.wide { 2 } else { 1 };
+            }
+            x = end;
+        }
+    }
+    out.extend_from_slice(b"\x1b[0m");
+    if let Some((x, y)) = cursor {
+        out.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1).as_bytes());
+    }
+    out
+}
+
+/// One pane to draw.
+pub struct PaneView<'a> {
+    pub rect: Rect,
+    pub screen: &'a vt100::Screen,
+    pub active: bool,
+    /// Copy-mode cursor and inclusive selection range in screen coordinates.
+    pub copy: Option<CopyView>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CopyView {
+    pub cx: u16,
+    pub cy: u16,
+    pub sel: Option<((u16, u16), (u16, u16))>,
+    pub offset: usize,
+}
+
+pub struct StatusLine {
+    pub session: String,
+    /// (label, is_current)
+    pub windows: Vec<(String, bool)>,
+    pub right: String,
+    pub message: Option<String>,
+    /// (prompt, input, cursor index in chars)
+    pub prompt: Option<(String, String, usize)>,
+    pub fg: Color,
+    pub bg: Color,
+}
+
+pub struct Frame<'a> {
+    pub cols: u16,
+    pub rows: u16,
+    pub panes: Vec<PaneView<'a>>,
+    pub status: Option<StatusLine>,
+    pub status_top: bool,
+    pub border_fg: Color,
+    pub active_border_fg: Color,
+}
+
+/// Compose a frame; returns the grid and the cursor position (None = hidden).
+pub fn compose(f: &Frame) -> (Grid, Option<(u16, u16)>) {
+    let mut g = Grid::new(f.cols, f.rows);
+    let mut cursor = None;
+    let (win_y, win_h, status_y) = if f.status.is_some() && f.rows > 1 {
+        if f.status_top { (1, f.rows - 1, Some(0)) } else { (0, f.rows - 1, Some(f.rows - 1)) }
+    } else {
+        (0, f.rows, None)
+    };
+    let win = Rect { x: 0, y: win_y, w: f.cols, h: win_h };
+
+    // Borders: any cell of the window area not covered by a pane.
+    let covered = |x: u16, y: u16| f.panes.iter().any(|p| p.rect.contains(x, y));
+    let is_border = |x: u16, y: u16| win.contains(x, y) && !covered(x, y);
+    let active = f.panes.iter().find(|p| p.active).map(|p| p.rect);
+    for y in win.y..win.y + win.h {
+        for x in win.x..win.x + win.w {
+            if !is_border(x, y) {
+                continue;
+            }
+            let l = x > 0 && is_border(x - 1, y);
+            let r = x + 1 < f.cols && is_border(x + 1, y);
+            let u = y > 0 && is_border(x, y - 1);
+            let d = y + 1 < f.rows && is_border(x, y + 1);
+            let ch = match (l, r, u, d) {
+                (true, true, true, true) => "┼",
+                (true, true, true, false) => "┴",
+                (true, true, false, true) => "┬",
+                (true, false, true, true) => "┤",
+                (false, true, true, true) => "├",
+                (true, false, false, true) => "┐",
+                (false, true, false, true) => "┌",
+                (true, false, true, false) => "┘",
+                (false, true, true, false) => "└",
+                (_, _, true, _) | (_, _, _, true) => "│",
+                _ => "─",
+            };
+            let near_active = active.is_some_and(|a| x + 1 >= a.x && x <= a.x + a.w && y + 1 >= a.y && y <= a.y + a.h);
+            let fg = if near_active { f.active_border_fg } else { f.border_fg };
+            g.set(x, y, Cell::new(ch, false, Style::colors(fg, Color::Default)));
+        }
+    }
+
+    for p in &f.panes {
+        g.blit_screen(p.rect, p.screen);
+        if let Some(c) = p.copy {
+            if let Some(((sy, sx), (ey, ex))) = c.sel {
+                for y in sy..=ey.min(p.rect.h.saturating_sub(1)) {
+                    let x0 = if y == sy { sx } else { 0 };
+                    let x1 = if y == ey { ex } else { p.rect.w.saturating_sub(1) };
+                    for x in x0..=x1.min(p.rect.w.saturating_sub(1)) {
+                        g.invert(p.rect.x + x, p.rect.y + y);
+                    }
+                }
+            }
+            // Position indicator, tmux style, top right of the pane.
+            let ind = format!("[{}/{}]", c.offset, c.offset + p.screen.scrollback());
+            let ind_w = ind.width() as u16;
+            if p.rect.w > ind_w + 1 {
+                g.put_str(
+                    p.rect.x + p.rect.w - ind_w - 1,
+                    p.rect.y,
+                    &ind,
+                    Style::colors(Color::Idx(0), Color::Idx(3)),
+                    ind_w,
+                );
+            }
+            if p.active {
+                g.invert(p.rect.x + c.cx, p.rect.y + c.cy);
+                cursor = None;
+            }
+        } else if p.active && !p.screen.hide_cursor() {
+            let (r, col) = p.screen.cursor_position();
+            if r < p.rect.h && col < p.rect.w {
+                cursor = Some((p.rect.x + col, p.rect.y + r));
+            }
+        }
+    }
+
+    if let (Some(s), Some(sy)) = (&f.status, status_y) {
+        let style = Style::colors(s.fg, s.bg);
+        g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, style);
+        if let Some((prompt, input, ci)) = &s.prompt {
+            let pstyle = Style::colors(Color::Idx(0), Color::Idx(3));
+            g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, pstyle);
+            let used = g.put_str(0, sy, prompt, pstyle, f.cols);
+            let before: String = input.chars().take(*ci).collect();
+            let bw = before.width() as u16;
+            g.put_str(used, sy, input, pstyle, f.cols.saturating_sub(used));
+            cursor = Some(((used + bw).min(f.cols.saturating_sub(1)), sy));
+        } else if let Some(m) = &s.message {
+            let mstyle = Style::colors(Color::Idx(0), Color::Idx(3));
+            g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, mstyle);
+            g.put_str(0, sy, m, mstyle, f.cols);
+        } else {
+            let mut x = g.put_str(0, sy, &format!("[{}] ", s.session), Style { bold: true, ..style }, f.cols);
+            let right_w = s.right.width() as u16;
+            let win_end = f.cols.saturating_sub(right_w + 1);
+            for (label, current) in &s.windows {
+                let st = if *current { Style { inverse: true, ..style } } else { style };
+                let label = format!("{label} ");
+                let w = label.width() as u16;
+                if x + w > win_end {
+                    break;
+                }
+                x += g.put_str(x, sy, &label, st, win_end - x);
+            }
+            if right_w < f.cols {
+                g.put_str(f.cols - right_w, sy, &s.right, style, right_w);
+            }
+        }
+    }
+    (g, cursor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen(cols: u16, rows: u16, input: &[u8]) -> vt100::Parser {
+        let mut p = vt100::Parser::new(rows, cols, 0);
+        p.process(input);
+        p
+    }
+
+    #[test]
+    fn diff_identical_is_cursor_only() {
+        let g = Grid::new(10, 3);
+        let out = diff(Some(&g), &g, Some((1, 1)));
+        assert_eq!(out, b"\x1b[?25l\x1b[0m\x1b[2;2H\x1b[?25h");
+        let out = diff(Some(&g), &g, None);
+        assert_eq!(out, b"\x1b[?25l\x1b[0m");
+    }
+
+    #[test]
+    fn diff_full_redraw_clears() {
+        let mut g = Grid::new(4, 1);
+        g.put_str(0, 0, "ab", Style::default(), 4);
+        let out = String::from_utf8(diff(None, &g, None)).unwrap();
+        assert!(out.contains("\x1b[2J"));
+        assert!(out.contains("\x1b[1;1H"));
+        assert!(out.contains("ab  "));
+    }
+
+    #[test]
+    fn diff_single_change_and_style() {
+        let a = Grid::new(10, 2);
+        let mut b = a.clone();
+        b.put_str(3, 1, "X", Style::colors(Color::Idx(1), Color::Idx(4)), 1);
+        let out = String::from_utf8(diff(Some(&a), &b, None)).unwrap();
+        assert_eq!(out, "\x1b[?25l\x1b[2;4H\x1b[0;31;44mX\x1b[0m");
+    }
+
+    #[test]
+    fn diff_merges_small_gaps_and_splits_big_ones() {
+        let a = Grid::new(30, 1);
+        let mut b = a.clone();
+        b.put_str(0, 0, "A", Style::default(), 1);
+        b.put_str(3, 0, "B", Style::default(), 1); // gap 2 -> merged
+        b.put_str(20, 0, "C", Style::default(), 1); // gap 16 -> new run
+        let out = String::from_utf8(diff(Some(&a), &b, None)).unwrap();
+        assert_eq!(out.matches("\x1b[1;").count(), 2, "{out:?}");
+        assert!(out.contains("A  B"));
+        assert!(out.contains("\x1b[1;21HC"));
+    }
+
+    #[test]
+    fn wide_chars_written_once() {
+        let s = screen(6, 1, "中b".as_bytes());
+        let mut g = Grid::new(6, 1);
+        g.blit_screen(Rect { x: 0, y: 0, w: 6, h: 1 }, s.screen());
+        assert!(g.get(0, 0).wide);
+        assert!(g.get(1, 0).cont);
+        assert_eq!(g.get(2, 0).text(), "b");
+        let out = String::from_utf8(diff(None, &g, None)).unwrap();
+        assert!(out.contains("中b   "), "{out:?}");
+        assert_eq!(out.matches('中').count(), 1);
+        // Changing the continuation half only still rewrites from the head.
+        let mut h = g.clone();
+        h.invert(1, 0);
+        let out = String::from_utf8(diff(Some(&g), &h, None)).unwrap();
+        assert!(out.starts_with("\x1b[?25l\x1b[1;1H"), "{out:?}");
+    }
+
+    #[test]
+    fn wide_char_at_pane_edge_is_blanked() {
+        let s = screen(4, 1, "ab中".as_bytes());
+        let mut g = Grid::new(3, 1);
+        g.blit_screen(Rect { x: 0, y: 0, w: 3, h: 1 }, s.screen());
+        assert_eq!(g.get(2, 0).text(), " ");
+        assert!(!g.get(2, 0).wide);
+    }
+
+    #[test]
+    fn compose_borders_and_status() {
+        let left = screen(4, 3, b"L");
+        let right = screen(15, 3, b"R");
+        let f = Frame {
+            cols: 20,
+            rows: 4,
+            panes: vec![
+                PaneView { rect: Rect { x: 0, y: 0, w: 4, h: 3 }, screen: left.screen(), active: true, copy: None },
+                PaneView { rect: Rect { x: 5, y: 0, w: 15, h: 3 }, screen: right.screen(), active: false, copy: None },
+            ],
+            status: Some(StatusLine {
+                session: "s".into(),
+                windows: vec![("0:a".into(), true), ("1:b".into(), false)],
+                right: "12:00".into(),
+                message: None,
+                prompt: None,
+                fg: Color::Idx(0),
+                bg: Color::Idx(2),
+            }),
+            status_top: false,
+            border_fg: Color::Idx(8),
+            active_border_fg: Color::Idx(2),
+        };
+        let (g, cursor) = compose(&f);
+        assert_eq!(g.get(0, 0).text(), "L");
+        assert_eq!(g.get(5, 0).text(), "R");
+        for y in 0..3 {
+            assert_eq!(g.get(4, y).text(), "│");
+            assert_eq!(g.get(4, y).style.fg, Color::Idx(2));
+        }
+        // Cursor after 'L' in the active pane.
+        assert_eq!(cursor, Some((1, 0)));
+        let row: String = (0..20).map(|x| g.get(x, 3).text()).collect();
+        assert_eq!(row, "[s] 0:a 1:b    12:00");
+        assert!(g.get(4, 3).style.inverse);
+        assert!(!g.get(8, 3).style.inverse);
+        assert_eq!(g.get(0, 3).style.bg, Color::Idx(2));
+    }
+
+    #[test]
+    fn compose_junctions() {
+        // Three panes: left column full height; right column split in two.
+        let a = screen(3, 5, b"");
+        let f = Frame {
+            cols: 7,
+            rows: 5,
+            panes: vec![
+                PaneView { rect: Rect { x: 0, y: 0, w: 3, h: 5 }, screen: a.screen(), active: false, copy: None },
+                PaneView { rect: Rect { x: 4, y: 0, w: 3, h: 2 }, screen: a.screen(), active: true, copy: None },
+                PaneView { rect: Rect { x: 4, y: 3, w: 3, h: 2 }, screen: a.screen(), active: false, copy: None },
+            ],
+            status: None,
+            status_top: false,
+            border_fg: Color::Default,
+            active_border_fg: Color::Default,
+        };
+        let (g, _) = compose(&f);
+        assert_eq!(g.get(3, 2).text(), "├");
+        assert_eq!(g.get(5, 2).text(), "─");
+        assert_eq!(g.get(3, 0).text(), "│");
+    }
+
+    #[test]
+    fn compose_prompt_and_message() {
+        let a = screen(5, 1, b"");
+        let mut f = Frame {
+            cols: 12,
+            rows: 2,
+            panes: vec![PaneView {
+                rect: Rect { x: 0, y: 0, w: 5, h: 1 },
+                screen: a.screen(),
+                active: true,
+                copy: None,
+            }],
+            status: Some(StatusLine {
+                session: "s".into(),
+                windows: vec![],
+                right: String::new(),
+                message: Some("hello".into()),
+                prompt: None,
+                fg: Color::Default,
+                bg: Color::Default,
+            }),
+            status_top: true,
+            border_fg: Color::Default,
+            active_border_fg: Color::Default,
+        };
+        let (g, _) = compose(&f);
+        let row: String = (0..12).map(|x| g.get(x, 0).text()).collect();
+        assert_eq!(row, "hello       ");
+        f.status.as_mut().unwrap().prompt = Some(("(rename) ".into(), "ab".into(), 1));
+        let (_, cursor) = compose(&f);
+        assert_eq!(cursor, Some((10, 0)));
+    }
+
+    #[test]
+    fn copy_selection_inverts() {
+        let a = screen(5, 2, b"abcde\r\nfghij");
+        let f = Frame {
+            cols: 5,
+            rows: 2,
+            panes: vec![PaneView {
+                rect: Rect { x: 0, y: 0, w: 5, h: 2 },
+                screen: a.screen(),
+                active: true,
+                copy: Some(CopyView { cx: 1, cy: 1, sel: Some(((0, 3), (1, 1))), offset: 0 }),
+            }],
+            status: None,
+            status_top: false,
+            border_fg: Color::Default,
+            active_border_fg: Color::Default,
+        };
+        let (g, cursor) = compose(&f);
+        assert!(cursor.is_none());
+        assert!(!g.get(2, 0).style.inverse);
+        assert!(g.get(3, 0).style.inverse);
+        assert!(g.get(4, 0).style.inverse);
+        assert!(g.get(0, 1).style.inverse);
+        // Cursor cell is inside the selection: double inversion cancels.
+        assert!(!g.get(1, 1).style.inverse);
+        assert!(!g.get(2, 1).style.inverse);
+    }
+}

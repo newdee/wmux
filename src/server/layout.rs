@@ -1,0 +1,496 @@
+//! Pane layout tree: n-ary splits with explicit sizes, tmux style.
+
+use crate::command::Dir;
+
+pub type PaneId = u32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
+impl Rect {
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Node {
+    Leaf(PaneId),
+    Split {
+        /// Children are laid out left-to-right (true) or top-to-bottom (false).
+        horizontal: bool,
+        children: Vec<Node>,
+        sizes: Vec<u16>,
+    },
+}
+
+impl Node {
+    pub fn panes(&self) -> Vec<PaneId> {
+        let mut out = Vec::new();
+        self.collect(&mut out);
+        out
+    }
+
+    fn collect(&self, out: &mut Vec<PaneId>) {
+        match self {
+            Node::Leaf(id) => out.push(*id),
+            Node::Split { children, .. } => children.iter().for_each(|c| c.collect(out)),
+        }
+    }
+
+    pub fn contains(&self, id: PaneId) -> bool {
+        match self {
+            Node::Leaf(i) => *i == id,
+            Node::Split { children, .. } => children.iter().any(|c| c.contains(id)),
+        }
+    }
+
+    /// Compute pane rectangles inside `rect`, rebalancing stored sizes to fit.
+    pub fn layout(&mut self, rect: Rect, out: &mut Vec<(PaneId, Rect)>) {
+        match self {
+            Node::Leaf(id) => out.push((*id, rect)),
+            Node::Split { horizontal, children, sizes } => {
+                let n = children.len() as u16;
+                let total = if *horizontal { rect.w } else { rect.h };
+                let avail = total.saturating_sub(n - 1);
+                fit_sizes(sizes, avail);
+                let mut pos = if *horizontal { rect.x } else { rect.y };
+                for (child, &sz) in children.iter_mut().zip(sizes.iter()) {
+                    let r = if *horizontal {
+                        Rect { x: pos, y: rect.y, w: sz, h: rect.h }
+                    } else {
+                        Rect { x: rect.x, y: pos, w: rect.w, h: sz }
+                    };
+                    child.layout(r, out);
+                    pos += sz + 1;
+                }
+            }
+        }
+    }
+
+    /// Split pane `target` (currently occupying `target_rect`), placing `new`
+    /// after it. Returns false if `target` is not in the tree.
+    pub fn split(&mut self, target: PaneId, horizontal: bool, new: PaneId, target_rect: Rect) -> bool {
+        let total = if horizontal { target_rect.w } else { target_rect.h };
+        let avail = total.saturating_sub(1);
+        let second = avail / 2;
+        let first = avail - second;
+        match self {
+            Node::Leaf(id) if *id == target => {
+                *self = Node::Split {
+                    horizontal,
+                    children: vec![Node::Leaf(target), Node::Leaf(new)],
+                    sizes: vec![first.max(1), second.max(1)],
+                };
+                true
+            }
+            Node::Leaf(_) => false,
+            Node::Split { horizontal: h, children, sizes } => {
+                let idx = match children.iter().position(|c| c.contains(target)) {
+                    Some(i) => i,
+                    None => return false,
+                };
+                if *h == horizontal && matches!(children[idx], Node::Leaf(_)) {
+                    children.insert(idx + 1, Node::Leaf(new));
+                    sizes[idx] = first.max(1);
+                    sizes.insert(idx + 1, second.max(1));
+                    true
+                } else {
+                    children[idx].split(target, horizontal, new, target_rect)
+                }
+            }
+        }
+    }
+
+    /// Remove a pane, collapsing single-child splits. Returns false if absent.
+    /// The freed space goes to the previous sibling (or the next one).
+    pub fn remove(&mut self, id: PaneId) -> bool {
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { children, sizes, .. } => {
+                if let Some(idx) = children.iter().position(|c| matches!(c, Node::Leaf(i) if *i == id)) {
+                    let freed = sizes[idx] + 1;
+                    children.remove(idx);
+                    sizes.remove(idx);
+                    if !sizes.is_empty() {
+                        let give = if idx > 0 { idx - 1 } else { 0 };
+                        sizes[give] += freed;
+                    }
+                    if children.len() == 1 {
+                        let only = children.remove(0);
+                        *self = only;
+                    }
+                    return true;
+                }
+                for (i, c) in children.iter_mut().enumerate() {
+                    if c.contains(id) {
+                        let ok = c.remove(id);
+                        // A child that collapsed to a split in the same direction
+                        // can be flattened into us.
+                        if let Node::Split { horizontal: ch, children: cc, sizes: cs } = &children[i].clone()
+                            && let Node::Split { horizontal, children: pc, sizes: ps, .. } = self
+                            && ch == horizontal
+                        {
+                            pc.remove(i);
+                            ps.remove(i);
+                            for (k, (c2, s2)) in cc.iter().zip(cs.iter()).enumerate() {
+                                pc.insert(i + k, c2.clone());
+                                ps.insert(i + k, *s2);
+                            }
+                        }
+                        return ok;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// Move the edge of `id` in direction `dir` by `amount` cells (tmux
+    /// `resize-pane` semantics). Returns false if nothing could change.
+    pub fn resize(&mut self, id: PaneId, dir: Dir, amount: u16) -> bool {
+        let want_h = matches!(dir, Dir::Left | Dir::Right);
+        let grow = matches!(dir, Dir::Right | Dir::Down);
+        self.resize_inner(id, want_h, grow, amount)
+    }
+
+    fn resize_inner(&mut self, id: PaneId, want_h: bool, grow: bool, amount: u16) -> bool {
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { horizontal, children, sizes } => {
+                let idx = match children.iter().position(|c| c.contains(id)) {
+                    Some(i) => i,
+                    None => return false,
+                };
+                // Prefer the innermost split of the right orientation.
+                if children[idx].resize_inner(id, want_h, grow, amount) {
+                    return true;
+                }
+                if *horizontal != want_h || children.len() < 2 {
+                    return false;
+                }
+                // Like tmux: resize the cell's trailing edge; for the last
+                // cell, apply the same change to the previous cell instead.
+                let (a, b) = if idx + 1 < children.len() { (idx, idx + 1) } else { (idx - 1, idx) };
+                let (from, to) = if grow { (b, a) } else { (a, b) };
+                let delta = amount.min(sizes[from].saturating_sub(1));
+                if delta == 0 {
+                    return false;
+                }
+                sizes[from] -= delta;
+                sizes[to] += delta;
+                true
+            }
+        }
+    }
+
+    pub fn swap(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Node::Leaf(id) => {
+                if *id == a {
+                    *id = b;
+                } else if *id == b {
+                    *id = a;
+                }
+            }
+            Node::Split { children, .. } => children.iter_mut().for_each(|c| c.swap(a, b)),
+        }
+    }
+}
+
+/// Scale `sizes` so they sum to `avail`, keeping every entry >= 1 where possible.
+fn fit_sizes(sizes: &mut [u16], avail: u16) {
+    if sizes.is_empty() {
+        return;
+    }
+    let sum: u32 = sizes.iter().map(|&s| s as u32).sum();
+    if sum == avail as u32 {
+        return;
+    }
+    let n = sizes.len() as u16;
+    if avail < n {
+        // Not enough room for everyone; give what we can from the left.
+        let mut left = avail;
+        for s in sizes.iter_mut() {
+            *s = left.min(1);
+            left -= *s;
+        }
+        return;
+    }
+    let sum = sum.max(1);
+    let mut acc = 0u32;
+    for s in sizes.iter_mut() {
+        let v = ((*s as u32) * (avail as u32) / sum).max(1) as u16;
+        *s = v;
+        acc += v as u32;
+    }
+    // Fix rounding drift on the largest entry.
+    let biggest = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap();
+    if acc > avail as u32 {
+        let over = (acc - avail as u32) as u16;
+        // Take from entries larger than 1, biggest first.
+        let mut over = over;
+        let mut order: Vec<usize> = (0..sizes.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(sizes[i]));
+        for i in order {
+            let can = sizes[i].saturating_sub(1).min(over);
+            sizes[i] -= can;
+            over -= can;
+            if over == 0 {
+                break;
+            }
+        }
+    } else {
+        sizes[biggest] += (avail as u32 - acc) as u16;
+    }
+}
+
+/// Pick the neighbouring pane of `from` in direction `dir` among `rects`.
+pub fn neighbour(rects: &[(PaneId, Rect)], from: PaneId, dir: Dir) -> Option<PaneId> {
+    let (_, a) = rects.iter().find(|(id, _)| *id == from)?;
+    let overlap = |a0: u16, a1: u16, b0: u16, b1: u16| -> i32 { (a1.min(b1) as i32) - (a0.max(b0) as i32) };
+    let mut best: Option<(i32, i32, PaneId)> = None; // (distance, -overlap, id)
+    for (id, r) in rects {
+        if *id == from {
+            continue;
+        }
+        let (dist, ov) = match dir {
+            Dir::Left => {
+                if r.x + r.w > a.x {
+                    continue;
+                }
+                (a.x as i32 - (r.x + r.w) as i32, overlap(a.y, a.y + a.h, r.y, r.y + r.h))
+            }
+            Dir::Right => {
+                if r.x < a.x + a.w {
+                    continue;
+                }
+                (r.x as i32 - (a.x + a.w) as i32, overlap(a.y, a.y + a.h, r.y, r.y + r.h))
+            }
+            Dir::Up => {
+                if r.y + r.h > a.y {
+                    continue;
+                }
+                (a.y as i32 - (r.y + r.h) as i32, overlap(a.x, a.x + a.w, r.x, r.x + r.w))
+            }
+            Dir::Down => {
+                if r.y < a.y + a.h {
+                    continue;
+                }
+                (r.y as i32 - (a.y + a.h) as i32, overlap(a.x, a.x + a.w, r.x, r.x + r.w))
+            }
+        };
+        if ov <= 0 {
+            continue;
+        }
+        let key = (dist, -ov, *id);
+        if best.is_none_or(|b| key < b) {
+            best = Some(key);
+        }
+    }
+    best.map(|b| b.2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rects(n: &mut Node, w: u16, h: u16) -> Vec<(PaneId, Rect)> {
+        let mut out = Vec::new();
+        n.layout(Rect { x: 0, y: 0, w, h }, &mut out);
+        out
+    }
+
+    fn rect_of(r: &[(PaneId, Rect)], id: PaneId) -> Rect {
+        r.iter().find(|(i, _)| *i == id).unwrap().1
+    }
+
+    fn assert_tiling(r: &[(PaneId, Rect)], w: u16, h: u16) {
+        // No overlaps, everything inside, and every pane has size >= 1.
+        for (i, (_, a)) in r.iter().enumerate() {
+            assert!(a.w >= 1 && a.h >= 1, "{a:?}");
+            assert!(a.x + a.w <= w && a.y + a.h <= h, "{a:?} outside {w}x{h}");
+            for (_, b) in &r[i + 1..] {
+                let sep = a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y;
+                assert!(sep, "overlap/adjacent without border: {a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn single_leaf_fills() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(r, vec![(1, Rect { x: 0, y: 0, w: 80, h: 24 })]);
+    }
+
+    #[test]
+    fn split_horizontal_and_vertical() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        assert!(n.split(1, true, 2, rect_of(&r, 1)));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 1), Rect { x: 0, y: 0, w: 40, h: 24 });
+        assert_eq!(rect_of(&r, 2), Rect { x: 41, y: 0, w: 39, h: 24 });
+        assert_tiling(&r, 80, 24);
+        assert!(n.split(2, false, 3, rect_of(&r, 2)));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 2), Rect { x: 41, y: 0, w: 39, h: 12 });
+        assert_eq!(rect_of(&r, 3), Rect { x: 41, y: 13, w: 39, h: 11 });
+        assert_tiling(&r, 80, 24);
+        assert_eq!(n.panes(), vec![1, 2, 3]);
+        assert!(!n.split(99, true, 4, Rect::default()));
+    }
+
+    #[test]
+    fn same_direction_split_is_flat() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 3, rect_of(&r, 1));
+        match &n {
+            Node::Split { children, .. } => assert_eq!(children.len(), 3),
+            _ => panic!(),
+        }
+        assert_eq!(n.panes(), vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn remove_collapses() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(2, false, 3, rect_of(&r, 2));
+        assert!(n.remove(3));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 2), Rect { x: 41, y: 0, w: 39, h: 24 });
+        assert!(n.remove(1));
+        assert_eq!(n, Node::Leaf(2));
+        assert!(!n.remove(1));
+    }
+
+    #[test]
+    fn remove_flattens_nested_same_direction() {
+        // [1 | [2 / 3]] then split 3 horizontally -> [1 | [2 / [3 | 4]]]; remove 2
+        // -> [1 | [3 | 4]] which flattens to [1 | 3 | 4].
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(2, false, 3, rect_of(&r, 2));
+        let r = rects(&mut n, 80, 24);
+        n.split(3, true, 4, rect_of(&r, 3));
+        assert!(n.remove(2));
+        match &n {
+            Node::Split { children, horizontal, .. } => {
+                assert!(*horizontal);
+                assert_eq!(children.len(), 3, "{n:?}");
+            }
+            _ => panic!("{n:?}"),
+        }
+        assert_tiling(&rects(&mut n, 80, 24), 80, 24);
+    }
+
+    #[test]
+    fn resize_moves_edges() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let _ = rects(&mut n, 80, 24);
+        assert!(n.resize(1, Dir::Right, 5));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 1).w, 45);
+        assert_eq!(rect_of(&r, 2).w, 34);
+        // Rightmost pane resized -R moves its left edge right (shrinks).
+        assert!(n.resize(2, Dir::Right, 4));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 2).w, 30);
+        assert_eq!(rect_of(&r, 1).w, 49);
+        // Cannot shrink below 1.
+        assert!(n.resize(2, Dir::Right, 100));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 2).w, 1);
+        assert!(!n.resize(2, Dir::Right, 1));
+        // Vertical resize on a horizontal-only tree does nothing.
+        assert!(!n.resize(1, Dir::Down, 3));
+        assert_tiling(&r, 80, 24);
+    }
+
+    #[test]
+    fn window_resize_rescales() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let _ = rects(&mut n, 80, 24);
+        let r = rects(&mut n, 120, 40);
+        assert_tiling(&r, 120, 40);
+        assert_eq!(rect_of(&r, 1).w + rect_of(&r, 2).w + 1, 120);
+        let r = rects(&mut n, 3, 2);
+        assert_tiling(&r, 3, 2);
+        // Degenerate: narrower than the number of panes.
+        let mut out = Vec::new();
+        n.layout(Rect { x: 0, y: 0, w: 1, h: 1 }, &mut out);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn many_splits_random_walk_stays_tiled() {
+        let mut n = Node::Leaf(0);
+        let mut next = 1;
+        let mut seed = 12345u32;
+        for _ in 0..40 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let ids = n.panes();
+            let target = ids[(seed >> 8) as usize % ids.len()];
+            let r = rects(&mut n, 200, 60);
+            let horizontal = (seed >> 3) & 1 == 0;
+            let tr = rect_of(&r, target);
+            if (horizontal && tr.w < 3) || (!horizontal && tr.h < 3) {
+                continue;
+            }
+            n.split(target, horizontal, next, tr);
+            next += 1;
+            let r = rects(&mut n, 200, 60);
+            assert_tiling(&r, 200, 60);
+            assert_eq!(r.len(), n.panes().len());
+        }
+        while n.panes().len() > 1 {
+            let ids = n.panes();
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            n.remove(ids[(seed >> 8) as usize % ids.len()]);
+            assert_tiling(&rects(&mut n, 200, 60), 200, 60);
+        }
+    }
+
+    #[test]
+    fn neighbours() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(2, false, 3, rect_of(&r, 2));
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(neighbour(&r, 1, Dir::Right), Some(2));
+        assert_eq!(neighbour(&r, 3, Dir::Left), Some(1));
+        assert_eq!(neighbour(&r, 2, Dir::Down), Some(3));
+        assert_eq!(neighbour(&r, 3, Dir::Up), Some(2));
+        assert_eq!(neighbour(&r, 1, Dir::Left), None);
+        assert_eq!(neighbour(&r, 1, Dir::Up), None);
+    }
+
+    #[test]
+    fn swap_ids() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        n.swap(1, 2);
+        assert_eq!(n.panes(), vec![2, 1]);
+    }
+}
