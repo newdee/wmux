@@ -327,6 +327,24 @@ IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成�
 |---|------|------|
 | 1 | `set-cwd 相对路径` 相对 server 进程目录检查，而非调用方目录 | 相对路径拼到客户端 cwd 上；e2e 覆盖 |
 
-## 第 27 轮（计数 1/3）— 视角：可复现性 + 静态一致性
+## 第 27 轮（计数 1/3，无发现）— 视角：可复现性 + 静态一致性
 
-（待填）
+数据：`cargo test` 3 次指纹均为 `2C49C316E391BE33`（83 项：lib 71 / console 2 / e2e 10）；clippy 0；真实 sessions 目录 0 文件；`set-cwd`/`#{pane_current_path}`/OSC 在 README、`--help`、解析器、server、pane、format 六处共 19 次提及且一致。
+
+发现：无。
+
+## 第 28 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：在 `C:\Users\stebe` 下 `set-cwd -t w Documents` → `[C:\Users\stebe\Documents]`；无参 → `[C:\Users\stebe]`；不存在的目录 → `set-cwd: not a directory: ...`，退出码 1；自动保存文件随之更新；日志无 panic。
+
+发现：无。
+
+## 第 29 轮（计数 3/3，无发现）— 视角：边界输入（路径转换）
+
+核对 `windows_path_from_announced` 的 12 个用例（单元测试）：`file:///C:/x`、`file://host/C:/x%20y`、`C:/x`、`D:`、`/mnt/c/x`、`/mnt/d`、`file://host/mnt/c/x` 全部映射为 Windows 路径；`/home/x`、`/mnt/wsl/x`、空串、`file://` 返回 None 保留旧值；`%zz` 非法百分号编码原样保留。全量 83 项通过；工作树干净。
+
+发现：无。
+
+## 结论（第五次验收）
+
+第 27、28、29 轮连续零发现，验收通过。本次新增修复 1 项（相对路径解析），新增测试 2 项；最终 83 项自动化测试。
