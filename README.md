@@ -1,5 +1,7 @@
 # wmux
 
+[中文说明](README.zh-CN.md)
+
 A tmux-style terminal multiplexer for Windows. Sessions survive closing the
 terminal, panes and windows split the screen, and PowerShell, WSL and cmd all
 run inside panes with full key fidelity.
