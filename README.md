@@ -23,7 +23,7 @@ run inside panes with full key fidelity.
 cargo install --path .
 ```
 
-Requires Windows 10 1809 or newer (ConPTY). Rust 1.85+ to build.
+Requires Windows 10 1809 or newer (ConPTY). Rust 1.88+ to build.
 
 ## Use
 
@@ -128,4 +128,6 @@ covered without a human at the keyboard.
 Relative to tmux: multiple clients on the same session see the same size
 (last attach wins, no per-client viewport), no `status-left`/`status-right`
 formats, no hooks, no named paste buffers (the Windows clipboard is the only
-buffer), no `choose-tree` UI, no window layouts presets (`select-layout`).
+buffer), no `choose-tree` UI, no window layout presets (`select-layout`),
+no repeatable bindings (`bind -r` is accepted, the repeat is ignored), and
+`list-panes -a`/`-s` always list the target window only.

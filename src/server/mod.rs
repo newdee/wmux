@@ -74,6 +74,9 @@ struct Client {
     prefix: bool,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
+    /// Multi-line command output shown over the window until a key is pressed
+    /// (tmux "view mode"), e.g. `list-keys`.
+    overlay: Option<Vec<String>>,
     mouse_buttons: u32,
     drag: Option<Drag>,
     /// Virtual keys whose key-down we consumed; drop the matching key-up.
@@ -382,6 +385,7 @@ impl Server {
     }
 
     fn source_file(&mut self, path: &str) -> Result<usize, String> {
+        let path = &expand_home(path);
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
         let mut n = 0;
         let mut errors = Vec::new();
@@ -430,6 +434,7 @@ impl Server {
                         prefix: false,
                         prompt: None,
                         message: None,
+                        overlay: None,
                         mouse_buttons: 0,
                         drag: None,
                         swallow_up: HashSet::new(),
@@ -513,7 +518,11 @@ impl Server {
             }
             Outcome::Text(t) => {
                 if c.session.is_some() {
-                    self.message(cid, &t);
+                    if t.contains('\n') {
+                        c.overlay = Some(t.lines().map(str::to_string).collect());
+                    } else {
+                        self.message(cid, &t);
+                    }
                     return;
                 }
                 c.send(ServerMsg::Text(t));
@@ -857,13 +866,22 @@ impl Server {
     fn exec(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         match cmd {
             Cmd::Version => Outcome::Text(format!("wmux {}", env!("CARGO_PKG_VERSION"))),
-            Cmd::NewSession { name, window_name, cwd, detached, argv } => {
+            Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);
                 let (cols, rows) = client.map(|c| (c.cols, c.rows)).unwrap_or((80, 24));
                 let inside = client.is_some_and(|c| c.pane_env.is_some() && c.session.is_none());
                 if inside && !detached && interactive {
                     return Outcome::Error("sessions should be nested with care, unset WMUX to force".into());
+                }
+                if attach_existing
+                    && let Some(n) = &name
+                    && self.sessions.iter().any(|s| s.name == *n)
+                {
+                    if detached || !interactive {
+                        return Outcome::Ok;
+                    }
+                    return self.exec(Cmd::AttachSession { target: Some(Target::parse(n)), detach_others: false }, cid);
                 }
                 let cwd = cwd.or_else(|| self.client_cwd(cid));
                 match self.new_session(name, window_name, cwd.as_deref(), &argv, cols, rows) {
@@ -995,9 +1013,13 @@ impl Server {
                 Ok(_) => Outcome::Ok,
                 Err(e) => Outcome::Error(e),
             },
-            Cmd::KillSession { target } => match self.resolve_session(target.as_ref(), cid) {
+            Cmd::KillSession { target, all_but } => match self.resolve_session(target.as_ref(), cid) {
                 Ok(sid) => {
-                    self.kill_session(sid, "session killed");
+                    let victims: Vec<SessionId> =
+                        self.sessions.iter().map(|s| s.id).filter(|id| (*id == sid) != all_but).collect();
+                    for v in victims {
+                        self.kill_session(v, "session killed");
+                    }
                     Outcome::Ok
                 }
                 Err(e) => Outcome::Error(e),
@@ -1025,20 +1047,34 @@ impl Server {
                     Err(e) => Outcome::Error(e),
                 }
             }
-            Cmd::NewWindow { name, cwd, target, argv } => {
+            Cmd::NewWindow { name, cwd, target, argv, detached } => {
                 let sid = match self.resolve_session(target.as_ref(), cid) {
                     Ok(s) => s,
                     Err(e) => return Outcome::Error(e),
                 };
                 let cwd = self.pane_cwd(cwd.as_deref(), sid, cid);
-                self.new_window(sid, name, cwd.as_deref(), &argv).map(|_| ()).into()
+                let before = self.session(sid).map(|s| (s.cur, s.last));
+                let r = self.new_window(sid, name, cwd.as_deref(), &argv);
+                if detached && let (Ok(_), Some((cur, last))) = (&r, before) {
+                    let s = self.session_mut(sid).unwrap();
+                    s.cur = cur;
+                    s.last = last;
+                }
+                r.map(|_| ()).into()
             }
-            Cmd::KillWindow { target } => {
+            Cmd::KillWindow { target, all_but } => {
                 let (sid, widx, _) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
-                let ids: Vec<PaneId> = self.session(sid).unwrap().windows[widx].panes.iter().map(|p| p.id).collect();
+                let s = self.session(sid).unwrap();
+                let ids: Vec<PaneId> = s
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| (*i == widx) != all_but)
+                    .flat_map(|(_, w)| w.panes.iter().map(|p| p.id))
+                    .collect();
                 for id in ids {
                     if let Some(p) = self.find_pane_mut(id) {
                         p.kill();
@@ -1076,15 +1112,27 @@ impl Server {
                 };
                 self.exec(Cmd::SelectWindow { target: Target::parse(&format!(":{w}")) }, cid)
             }
-            Cmd::SplitWindow { horizontal, cwd, target, argv } => {
+            Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
                 let cwd = self.pane_cwd(cwd.as_deref(), sid, cid);
-                let rect = match self.session(sid).unwrap().windows[widx].rect_of(pid) {
-                    Some(r) => r,
-                    None => return Outcome::Error("pane has no layout".into()),
+                let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
+                let area = self.window_area(scols, srows);
+                // Unzoom first so the layout rectangles are real.
+                let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                if w.zoomed {
+                    w.zoomed = false;
+                    w.relayout(area);
+                }
+                let rect = if full {
+                    area
+                } else {
+                    match w.rect_of(pid) {
+                        Some(r) => r,
+                        None => return Outcome::Error("pane has no layout".into()),
+                    }
                 };
                 if (horizontal && rect.w < 3) || (!horizontal && rect.h < 3) {
                     return Outcome::Error("pane too small to split".into());
@@ -1095,31 +1143,37 @@ impl Server {
                     Err(e) => return Outcome::Error(e),
                 };
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
-                if w.zoomed {
-                    w.zoomed = false;
-                    let area = self.window_area(self.session(sid).unwrap().cols, self.session(sid).unwrap().rows);
-                    let w = &mut self.session_mut(sid).unwrap().windows[widx];
-                    w.relayout(area);
-                }
-                let w = &mut self.session_mut(sid).unwrap().windows[widx];
-                let rect = w.rect_of(pid).unwrap_or(rect);
                 let nid = pane.id;
-                w.layout.split(pid, horizontal, nid, rect);
+                if full {
+                    w.layout.split_root(horizontal, nid, rect, before);
+                } else {
+                    w.layout.split_at(pid, horizontal, nid, rect, before);
+                }
                 w.panes.push(pane);
-                w.last_pane = Some(w.active);
-                w.active = nid;
+                if !detached {
+                    w.last_pane = Some(w.active);
+                    w.active = nid;
+                }
                 self.relayout_session(sid);
                 Outcome::Ok
             }
-            Cmd::KillPane { target } => {
-                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+            Cmd::KillPane { target, all_but } => {
+                let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
-                if let Some(p) = self.find_pane_mut(pid) {
-                    p.kill();
+                let ids: Vec<PaneId> = self.session(sid).unwrap().windows[widx]
+                    .panes
+                    .iter()
+                    .map(|p| p.id)
+                    .filter(|id| (*id == pid) != all_but)
+                    .collect();
+                for id in ids {
+                    if let Some(p) = self.find_pane_mut(id) {
+                        p.kill();
+                    }
+                    self.remove_pane(id, Some(0));
                 }
-                self.remove_pane(pid, Some(0));
                 Outcome::Ok
             }
             Cmd::SelectPane { sel } => {
@@ -1219,7 +1273,7 @@ impl Server {
                 self.relayout_session(sid);
                 Outcome::Ok
             }
-            Cmd::SendKeys { target, keys } => {
+            Cmd::SendKeys { target, keys, literal } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
@@ -1228,7 +1282,11 @@ impl Server {
                 let app = p.screen().application_cursor();
                 let mut bytes = Vec::new();
                 for k in &keys {
-                    bytes.extend(input::encode_send_key(k, app));
+                    if literal {
+                        bytes.extend_from_slice(k.as_bytes());
+                    } else {
+                        bytes.extend(input::encode_send_key(k, app));
+                    }
                 }
                 p.write_input(&bytes);
                 Outcome::Ok
@@ -1400,6 +1458,13 @@ impl Server {
         }
         let key = key_from_record(&rec);
 
+        if c.overlay.is_some() {
+            if key.is_some() {
+                c.overlay = None;
+                c.swallow_up.insert(rec.vk);
+            }
+            return;
+        }
         if c.prompt.is_some() {
             if let Some(k) = key {
                 c.swallow_up.insert(rec.vk);
@@ -1621,7 +1686,7 @@ impl Server {
     fn handle_mouse(&mut self, cid: ClientId, m: MouseRecord) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(sid) = c.session else { return };
-        if c.prompt.is_some() {
+        if c.prompt.is_some() || c.overlay.is_some() {
             return;
         }
         let x = m.x.max(0) as u16;
@@ -1937,13 +2002,18 @@ impl Server {
         }
         let frame =
             Frame { cols, rows, panes: views, status: status_line, status_top, border_fg, active_border_fg: active_fg };
-        let (grid, cursor) = render::compose(&frame);
+        let (mut grid, mut cursor) = render::compose(&frame);
         for p in &mut w.panes {
             if p.copy.is_some() {
                 p.parser.screen_mut().set_scrollback(0);
             }
         }
+        let area = self.window_area(cols, rows);
         let c = self.clients.get_mut(&cid).unwrap();
+        if let Some(lines) = &c.overlay {
+            render::draw_overlay(&mut grid, area, lines);
+            cursor = None;
+        }
         let changed = c.last_grid.as_ref() != Some(&grid) || c.last_cursor != cursor;
         if !changed && !bell {
             return;
@@ -1956,6 +2026,16 @@ impl Server {
         c.last_cursor = cursor;
         c.send(ServerMsg::Output(bytes));
     }
+}
+
+/// Expand a leading `~` or `~/` to the user's home directory.
+fn expand_home(path: &str) -> String {
+    if (path == "~" || path.starts_with("~/") || path.starts_with("~\\"))
+        && let Some(home) = dirs::home_dir()
+    {
+        return format!("{}{}", home.display(), &path[1..]);
+    }
+    path.to_string()
 }
 
 fn truncate(s: &str, n: usize) -> String {

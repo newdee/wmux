@@ -54,6 +54,8 @@ pub enum Cmd {
         cwd: Option<String>,
         detached: bool,
         argv: Vec<String>,
+        /// `-A`: attach to the session instead if it already exists.
+        attach_existing: bool,
     },
     AttachSession {
         target: Option<Target>,
@@ -69,6 +71,8 @@ pub enum Cmd {
     },
     KillSession {
         target: Option<Target>,
+        /// `-a`: kill every session except the target.
+        all_but: bool,
     },
     KillServer,
     HasSession {
@@ -83,9 +87,12 @@ pub enum Cmd {
         cwd: Option<String>,
         target: Option<Target>,
         argv: Vec<String>,
+        /// `-d`: do not make the new window current.
+        detached: bool,
     },
     KillWindow {
         target: Option<Target>,
+        all_but: bool,
     },
     RenameWindow {
         target: Option<Target>,
@@ -102,9 +109,16 @@ pub enum Cmd {
         cwd: Option<String>,
         target: Option<Target>,
         argv: Vec<String>,
+        /// `-d`: keep the current pane active.
+        detached: bool,
+        /// `-b`: put the new pane before (left of / above) the target.
+        before: bool,
+        /// `-f`: span the full window width/height instead of the target pane.
+        full: bool,
     },
     KillPane {
         target: Option<Target>,
+        all_but: bool,
     },
     SelectPane {
         sel: PaneSel,
@@ -121,6 +135,8 @@ pub enum Cmd {
     SendKeys {
         target: Option<Target>,
         keys: Vec<String>,
+        /// `-l`: every argument is literal text, never a key name.
+        literal: bool,
     },
     CopyMode {
         page_up: bool,
@@ -169,7 +185,7 @@ pub enum Cmd {
 impl fmt::Display for Cmd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Cmd::NewSession { name, window_name, cwd, detached, argv } => {
+            Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing } => {
                 f.write_str("new-session")?;
                 if let Some(n) = name {
                     write!(f, " -s {}", quote(n))?;
@@ -182,6 +198,9 @@ impl fmt::Display for Cmd {
                 }
                 if *detached {
                     f.write_str(" -d")?;
+                }
+                if *attach_existing {
+                    f.write_str(" -A")?;
                 }
                 for a in argv {
                     write!(f, " {}", quote(a))?;
@@ -205,8 +224,11 @@ impl fmt::Display for Cmd {
                 f.write_str("list-panes")?;
                 fmt_target(f, target)
             }
-            Cmd::KillSession { target } => {
+            Cmd::KillSession { target, all_but } => {
                 f.write_str("kill-session")?;
+                if *all_but {
+                    f.write_str(" -a")?;
+                }
                 fmt_target(f, target)
             }
             Cmd::KillServer => f.write_str("kill-server"),
@@ -219,8 +241,11 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)?;
                 write!(f, " {}", quote(name))
             }
-            Cmd::NewWindow { name, cwd, target, argv } => {
+            Cmd::NewWindow { name, cwd, target, argv, detached } => {
                 f.write_str("new-window")?;
+                if *detached {
+                    f.write_str(" -d")?;
+                }
                 if let Some(n) = name {
                     write!(f, " -n {}", quote(n))?;
                 }
@@ -233,8 +258,11 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::KillWindow { target } => {
+            Cmd::KillWindow { target, all_but } => {
                 f.write_str("kill-window")?;
+                if *all_but {
+                    f.write_str(" -a")?;
+                }
                 fmt_target(f, target)
             }
             Cmd::RenameWindow { target, name } => {
@@ -249,9 +277,18 @@ impl fmt::Display for Cmd {
             Cmd::NextWindow => f.write_str("next-window"),
             Cmd::PreviousWindow => f.write_str("previous-window"),
             Cmd::LastWindow => f.write_str("last-window"),
-            Cmd::SplitWindow { horizontal, cwd, target, argv } => {
+            Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full } => {
                 f.write_str("split-window")?;
                 f.write_str(if *horizontal { " -h" } else { " -v" })?;
+                if *detached {
+                    f.write_str(" -d")?;
+                }
+                if *before {
+                    f.write_str(" -b")?;
+                }
+                if *full {
+                    f.write_str(" -f")?;
+                }
                 if let Some(c) = cwd {
                     write!(f, " -c {}", quote(c))?;
                 }
@@ -261,8 +298,11 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::KillPane { target } => {
+            Cmd::KillPane { target, all_but } => {
                 f.write_str("kill-pane")?;
+                if *all_but {
+                    f.write_str(" -a")?;
+                }
                 fmt_target(f, target)
             }
             Cmd::SelectPane { sel } => {
@@ -294,8 +334,11 @@ impl fmt::Display for Cmd {
             }
             Cmd::SwapPane { up } => write!(f, "swap-pane {}", if *up { "-U" } else { "-D" }),
             Cmd::BreakPane => f.write_str("break-pane"),
-            Cmd::SendKeys { target, keys } => {
+            Cmd::SendKeys { target, keys, literal } => {
                 f.write_str("send-keys")?;
+                if *literal {
+                    f.write_str(" -l")?;
+                }
                 fmt_target(f, target)?;
                 for k in keys {
                     write!(f, " {}", quote(k))?;
@@ -553,21 +596,26 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
     let n = canonical;
     let cmd = match n {
         "new-session" => {
-            let (mut name, mut window_name, mut cwd, mut detached) = (None, None, None, false);
+            let (mut name, mut window_name, mut cwd, mut detached, mut attach_existing) =
+                (None, None, None, false, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-s" => name = Some(a.value("-s")?.to_string()),
                     "-n" => window_name = Some(a.value("-n")?.to_string()),
                     "-c" => cwd = Some(a.value("-c")?.to_string()),
                     "-d" => detached = true,
-                    "-A" => {}
+                    "-A" => attach_existing = true,
+                    "-Ad" | "-dA" => {
+                        attach_existing = true;
+                        detached = true;
+                    }
                     f => return Err(bad_flag(n, f)),
                 }
             }
             if a.peek() == Some("--") {
                 a.next();
             }
-            Cmd::NewSession { name, window_name, cwd, detached, argv: a.rest() }
+            Cmd::NewSession { name, window_name, cwd, detached, argv: a.rest(), attach_existing }
         }
         "attach-session" => {
             let (mut target, mut detach_others) = (None, false);
@@ -592,11 +640,12 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ListSessions
         }
         "list-windows" | "list-panes" | "kill-session" | "kill-window" | "kill-pane" => {
-            let mut target = None;
+            let (mut target, mut all_but) = (None, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-a" => {}
+                    "-a" if n.starts_with("kill-") => all_but = true,
+                    "-a" | "-s" => {} // list-panes -a/-s: we always list the target window only
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -604,9 +653,9 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             match n {
                 "list-windows" => Cmd::ListWindows { target },
                 "list-panes" => Cmd::ListPanes { target },
-                "kill-session" => Cmd::KillSession { target },
-                "kill-window" => Cmd::KillWindow { target },
-                _ => Cmd::KillPane { target },
+                "kill-session" => Cmd::KillSession { target, all_but },
+                "kill-window" => Cmd::KillWindow { target, all_but },
+                _ => Cmd::KillPane { target, all_but },
             }
         }
         "kill-server" => {
@@ -637,20 +686,21 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if n == "rename-session" { Cmd::RenameSession { target, name } } else { Cmd::RenameWindow { target, name } }
         }
         "new-window" => {
-            let (mut name, mut cwd, mut target) = (None, None, None);
+            let (mut name, mut cwd, mut target, mut detached) = (None, None, None, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-n" => name = Some(a.value("-n")?.to_string()),
                     "-c" => cwd = Some(a.value("-c")?.to_string()),
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-d" | "-a" => {}
+                    "-d" => detached = true,
+                    "-a" => {} // windows are always appended at the end
                     f => return Err(bad_flag(n, f)),
                 }
             }
             if a.peek() == Some("--") {
                 a.next();
             }
-            Cmd::NewWindow { name, cwd, target, argv: a.rest() }
+            Cmd::NewWindow { name, cwd, target, argv: a.rest(), detached }
         }
         "select-window" => {
             let mut target = None;
@@ -673,20 +723,37 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "last-window" => Cmd::LastWindow,
         "split-window" => {
             let (mut horizontal, mut cwd, mut target) = (false, None, None);
+            let (mut detached, mut before, mut full) = (false, false, false);
             while a.is_flag() {
-                match a.next().unwrap() {
+                let flag = a.next().unwrap();
+                // Allow tmux-style combined single-letter flags: -hd, -bf, ...
+                if flag.len() > 2 && flag[1..].chars().all(|c| "hvdbf".contains(c)) {
+                    for c in flag[1..].chars() {
+                        match c {
+                            'h' => horizontal = true,
+                            'v' => horizontal = false,
+                            'd' => detached = true,
+                            'b' => before = true,
+                            _ => full = true,
+                        }
+                    }
+                    continue;
+                }
+                match flag {
                     "-h" => horizontal = true,
                     "-v" => horizontal = false,
                     "-c" => cwd = Some(a.value("-c")?.to_string()),
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-d" | "-b" | "-f" => {}
+                    "-d" => detached = true,
+                    "-b" => before = true,
+                    "-f" => full = true,
                     f => return Err(bad_flag(n, f)),
                 }
             }
             if a.peek() == Some("--") {
                 a.next();
             }
-            Cmd::SplitWindow { horizontal, cwd, target, argv: a.rest() }
+            Cmd::SplitWindow { horizontal, cwd, target, argv: a.rest(), detached, before, full }
         }
         "select-pane" => {
             let mut sel = None;
@@ -765,15 +832,15 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         }
         "break-pane" => Cmd::BreakPane,
         "send-keys" => {
-            let mut target = None;
+            let (mut target, mut literal) = (None, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-l" => {}
+                    "-l" => literal = true,
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            Cmd::SendKeys { target, keys: a.rest() }
+            Cmd::SendKeys { target, keys: a.rest(), literal }
         }
         "copy-mode" => {
             let mut page_up = false;
@@ -947,12 +1014,36 @@ mod tests {
                 cwd: None,
                 detached: true,
                 argv: vec!["wsl.exe".into(), "-d".into(), "Ubuntu".into()],
+                attach_existing: false,
             }
         );
         assert_eq!(
             p("new-session"),
-            Cmd::NewSession { name: None, window_name: None, cwd: None, detached: false, argv: vec![] }
+            Cmd::NewSession {
+                name: None,
+                window_name: None,
+                cwd: None,
+                detached: false,
+                argv: vec![],
+                attach_existing: false
+            }
         );
+        assert!(matches!(p("new -A -s x"), Cmd::NewSession { attach_existing: true, detached: false, .. }));
+        assert!(matches!(p("new -Ad -s x"), Cmd::NewSession { attach_existing: true, detached: true, .. }));
+    }
+
+    #[test]
+    fn parse_flags_that_change_behaviour() {
+        assert!(matches!(p("neww -d"), Cmd::NewWindow { detached: true, .. }));
+        assert!(matches!(
+            p("splitw -hdb"),
+            Cmd::SplitWindow { horizontal: true, detached: true, before: true, full: false, .. }
+        ));
+        assert!(matches!(p("splitw -f -v"), Cmd::SplitWindow { horizontal: false, full: true, .. }));
+        assert!(matches!(p("killw -a"), Cmd::KillWindow { all_but: true, .. }));
+        assert!(matches!(p("killp -a -t :.1"), Cmd::KillPane { all_but: true, .. }));
+        assert!(matches!(p("kill-session -a"), Cmd::KillSession { all_but: true, .. }));
+        assert!(matches!(p("send -l Enter"), Cmd::SendKeys { literal: true, .. }));
     }
 
     #[test]
@@ -963,7 +1054,15 @@ mod tests {
         assert_eq!(p("resizep -Z"), Cmd::ResizePane { dir: None, amount: 1, zoom: true });
         assert_eq!(
             p("splitw -h -c C:\\src"),
-            Cmd::SplitWindow { horizontal: true, cwd: Some("C:\\src".into()), target: None, argv: vec![] }
+            Cmd::SplitWindow {
+                horizontal: true,
+                cwd: Some("C:\\src".into()),
+                target: None,
+                argv: vec![],
+                detached: false,
+                before: false,
+                full: false
+            }
         );
         assert!(parse_line("resize-pane").is_err());
         assert!(parse_line("select-pane -X").is_err());
@@ -975,7 +1074,7 @@ mod tests {
             p("confirm-before -p \"kill-window? (y/n)\" kill-window"),
             Cmd::ConfirmBefore {
                 prompt: Some("kill-window? (y/n)".into()),
-                cmd: Box::new(Cmd::KillWindow { target: None })
+                cmd: Box::new(Cmd::KillWindow { target: None, all_but: false })
             }
         );
         assert_eq!(
@@ -1007,6 +1106,13 @@ mod tests {
             "resize-pane -Z",
             "resize-pane -U 3",
             "send-keys -t main:1 ls Enter",
+            "send-keys -l Enter",
+            "new-session -s x -d -A",
+            "new-window -d -n w",
+            "split-window -v -d -b -f",
+            "kill-window -a -t :2",
+            "kill-pane -a",
+            "kill-session -a -t x",
             "confirm-before -p \"kill? (y/n)\" \"kill-window\"",
             "bind-key -n M-h select-pane -L",
             "set-option prefix C-a",

@@ -428,9 +428,49 @@ pub fn compose(f: &Frame) -> (Grid, Option<(u16, u16)>) {
     (g, cursor)
 }
 
+/// Draw a block of text over `area` (tmux view mode). The last row of the
+/// area shows a hint; lines that do not fit are dropped.
+pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
+    if area.h == 0 || area.w == 0 {
+        return;
+    }
+    let style = Style::colors(Color::Default, Color::Default);
+    g.fill(area, style);
+    let body_h = area.h.saturating_sub(1) as usize;
+    for (i, line) in lines.iter().take(body_h).enumerate() {
+        g.put_str(area.x, area.y + i as u16, line, style, area.w);
+    }
+    let hint = if lines.len() > body_h {
+        format!("[{} of {} lines] press any key", body_h, lines.len())
+    } else {
+        "press any key".to_string()
+    };
+    let hint_style = Style::colors(Color::Idx(0), Color::Idx(3));
+    g.fill(Rect { x: area.x, y: area.y + area.h - 1, w: area.w, h: 1 }, hint_style);
+    g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_draws_lines_and_hint() {
+        let mut g = Grid::new(40, 4);
+        g.put_str(0, 0, "underneath", Style::default(), 40);
+        let lines: Vec<String> = (0..5).map(|i| format!("line{i}")).collect();
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines);
+        let row = |g: &Grid, y: u16| (0..40).map(|x| g.get(x, y).text()).collect::<String>();
+        assert_eq!(row(&g, 0).trim_end(), "line0");
+        assert_eq!(row(&g, 1).trim_end(), "line1");
+        assert_eq!(row(&g, 2).trim_end(), "[2 of 5 lines] press any key");
+        assert_eq!(g.get(0, 2).style.bg, Color::Idx(3));
+        // Row 3 is outside the area and untouched.
+        assert_eq!(row(&g, 3).trim_end(), "");
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1]);
+        assert_eq!(row(&g, 2).trim_end(), "press any key");
+        assert_eq!(row(&g, 1).trim_end(), "");
+    }
 
     fn screen(cols: u16, rows: u16, input: &[u8]) -> vt100::Parser {
         let mut p = vt100::Parser::new(rows, cols, 0);

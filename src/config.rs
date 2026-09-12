@@ -193,21 +193,6 @@ impl Options {
         }
         Ok(())
     }
-
-    pub fn get(&self, name: &str) -> Option<String> {
-        Some(match name {
-            "prefix" => self.prefix.to_string(),
-            "default-shell" => self.default_shell.clone(),
-            "default-command" => self.default_command.join(" "),
-            "mouse" => if self.mouse { "on" } else { "off" }.into(),
-            "history-limit" => self.history_limit.to_string(),
-            "status" => if self.status { "on" } else { "off" }.into(),
-            "status-position" => if self.status_top { "top" } else { "bottom" }.into(),
-            "base-index" => self.base_index.to_string(),
-            "display-time" => self.display_time_ms.to_string(),
-            _ => return None,
-        })
-    }
 }
 
 /// Candidate config file locations, first existing wins.
@@ -304,7 +289,7 @@ mod tests {
         assert!(o.set("nonsense", "1").is_err());
         assert!(o.set("mouse", "maybe").is_err());
         assert!(o.set("history-limit", "x").is_err());
-        assert_eq!(o.get("prefix").as_deref(), Some("C-a"));
+        assert_eq!(o.prefix.to_string(), "C-a");
     }
 
     #[test]

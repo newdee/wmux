@@ -257,6 +257,24 @@ async fn attach_type_split_detach() {
     c.prefix('z').await;
     c.wait_for("unzoomed", |s| s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│")).await;
 
+    // Prefix ? shows the key table as an overlay; any key dismisses it.
+    c.prefix('?').await;
+    c.wait_for("overlay", |s| s.contents().contains("bind-key -T prefix") && s.contents().contains("press any key"))
+        .await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("overlay gone", |s| !s.contents().contains("press any key")).await;
+
+    // split-window -d keeps the current pane; -b puts the new pane first.
+    c.prefix(':').await;
+    c.type_str("split-window -v -d -b").await;
+    c.enter().await;
+    c.wait_for("three panes", |s| s.contents().matches("wmux>").count() >= 3).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "w"]).await;
+    // The new pane is index 0 (before) and the previously active pane stays active.
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3, "{out}");
+    assert!(!lines[0].contains("(active)"), "{out}");
+
     // Command prompt: rename the window.
     c.prefix(':').await;
     c.type_str("rename-window shell").await;
@@ -271,13 +289,36 @@ async fn attach_type_split_detach() {
     let (_, out, _) = h.cli(&["ls"]).await;
     assert!(out.starts_with("w: 2 windows"), "{out}");
     let (_, out, _) = h.cli(&["list-windows", "-t", "w"]).await;
-    assert!(out.contains("0: shell* (2 panes)"), "{out}");
+    assert!(out.contains("0: shell* (3 panes)"), "{out}");
 
-    // Re-attach: full redraw restores the split view.
+    // -A attaches to an existing session instead of failing on the duplicate.
+    let (code, _, err) = h.cli(&["new", "-A", "-d", "-s", "w"]).await;
+    assert_eq!(code, 0, "{err}");
+    // new-window -d does not change the current window; kill-window -a keeps only the target.
+    let (code, _, _) = h.cli(&["new-window", "-d", "-t", "w", "-n", "bg"]).await;
+    assert_eq!(code, 0);
+    let (_, out, _) = h.cli(&["list-windows", "-t", "w"]).await;
+    assert!(out.contains("0: shell*") && out.contains("2: bg ("), "{out}");
+    let (code, _, _) = h.cli(&["kill-window", "-a", "-t", "w:0"]).await;
+    assert_eq!(code, 0);
+    let (_, out, _) = h.cli(&["list-windows", "-t", "w"]).await;
+    assert_eq!(out.lines().count(), 1, "{out}");
+    // kill-pane -a leaves one pane.
+    let (code, _, _) = h.cli(&["kill-pane", "-a", "-t", "w:0.1"]).await;
+    assert_eq!(code, 0);
+    let (_, out, _) = h.cli(&["list-panes", "-t", "w"]).await;
+    assert_eq!(out.lines().count(), 1, "{out}");
+    // send-keys -l sends the words literally: "Enter" is text, not a key.
+    let (code, _, _) = h.cli(&["send-keys", "-t", "w", "-l", "rem literal-Enter-word"]).await;
+    assert_eq!(code, 0);
+    let (code, _, _) = h.cli(&["send-keys", "-t", "w", "Enter"]).await;
+    assert_eq!(code, 0);
+
+    // Re-attach: full redraw restores the view; the literal send-keys text is there.
     let mut c2 = h.connect().await;
     c2.attach(&["attach", "-t", "w"]).await;
-    c2.wait_for("restored border", |s| s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│")).await;
     c2.wait_for("restored prompt", |s| s.contents().contains("wmux>")).await;
+    c2.wait_for("literal text", |s| s.contents().contains("literal-Enter-word")).await;
     // Same-session CLI command from outside while attached shows up as a message.
     let (code, _, _) = h.cli(&["send-keys", "-t", "w", "echo via-send-keys", "Enter"]).await;
     assert_eq!(code, 0);

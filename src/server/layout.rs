@@ -76,17 +76,21 @@ impl Node {
     /// Split pane `target` (currently occupying `target_rect`), placing `new`
     /// after it. Returns false if `target` is not in the tree.
     pub fn split(&mut self, target: PaneId, horizontal: bool, new: PaneId, target_rect: Rect) -> bool {
+        self.split_at(target, horizontal, new, target_rect, false)
+    }
+
+    /// Like `split`, with `before` placing `new` left of / above `target`.
+    pub fn split_at(&mut self, target: PaneId, horizontal: bool, new: PaneId, target_rect: Rect, before: bool) -> bool {
         let total = if horizontal { target_rect.w } else { target_rect.h };
         let avail = total.saturating_sub(1);
         let second = avail / 2;
         let first = avail - second;
+        // The target keeps the larger half, wherever it ends up.
+        let (a, b) = if before { (second.max(1), first.max(1)) } else { (first.max(1), second.max(1)) };
         match self {
             Node::Leaf(id) if *id == target => {
-                *self = Node::Split {
-                    horizontal,
-                    children: vec![Node::Leaf(target), Node::Leaf(new)],
-                    sizes: vec![first.max(1), second.max(1)],
-                };
+                let (x, y) = if before { (new, target) } else { (target, new) };
+                *self = Node::Split { horizontal, children: vec![Node::Leaf(x), Node::Leaf(y)], sizes: vec![a, b] };
                 true
             }
             Node::Leaf(_) => false,
@@ -96,15 +100,32 @@ impl Node {
                     None => return false,
                 };
                 if *h == horizontal && matches!(children[idx], Node::Leaf(_)) {
-                    children.insert(idx + 1, Node::Leaf(new));
-                    sizes[idx] = first.max(1);
-                    sizes.insert(idx + 1, second.max(1));
+                    let at = if before { idx } else { idx + 1 };
+                    children.insert(at, Node::Leaf(new));
+                    sizes[idx] = if before { b } else { a };
+                    sizes.insert(at, if before { a } else { b });
                     true
                 } else {
-                    children[idx].split(target, horizontal, new, target_rect)
+                    children[idx].split_at(target, horizontal, new, target_rect, before)
                 }
             }
         }
+    }
+
+    /// Wrap the whole tree in a new split so that `new` spans the full
+    /// width (horizontal) or height of `area`.
+    pub fn split_root(&mut self, horizontal: bool, new: PaneId, area: Rect, before: bool) {
+        let total = if horizontal { area.w } else { area.h };
+        let avail = total.saturating_sub(1);
+        let second = (avail / 2).max(1);
+        let first = avail.saturating_sub(second).max(1);
+        let old = std::mem::replace(self, Node::Leaf(new));
+        let (children, sizes) = if before {
+            (vec![Node::Leaf(new), old], vec![second, first])
+        } else {
+            (vec![old, Node::Leaf(new)], vec![first, second])
+        };
+        *self = Node::Split { horizontal, children, sizes };
     }
 
     /// Remove a pane, collapsing single-child splits. Returns false if absent.
@@ -345,6 +366,30 @@ mod tests {
         assert_tiling(&r, 80, 24);
         assert_eq!(n.panes(), vec![1, 2, 3]);
         assert!(!n.split(99, true, 4, Rect::default()));
+    }
+
+    #[test]
+    fn split_before_and_root() {
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        assert!(n.split_at(1, true, 2, rect_of(&r, 1), true));
+        assert_eq!(n.panes(), vec![2, 1]);
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 2), Rect { x: 0, y: 0, w: 39, h: 24 });
+        assert_eq!(rect_of(&r, 1), Rect { x: 40, y: 0, w: 40, h: 24 });
+        // Flat insert before inside an existing same-direction split.
+        assert!(n.split_at(1, true, 3, rect_of(&r, 1), true));
+        assert_eq!(n.panes(), vec![2, 3, 1]);
+        assert_tiling(&rects(&mut n, 80, 24), 80, 24);
+        // Full-width split below everything.
+        n.split_root(false, 4, Rect { x: 0, y: 0, w: 80, h: 24 }, false);
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 4), Rect { x: 0, y: 13, w: 80, h: 11 });
+        assert_tiling(&r, 80, 24);
+        n.split_root(true, 5, Rect { x: 0, y: 0, w: 80, h: 24 }, true);
+        let r = rects(&mut n, 80, 24);
+        assert_eq!(rect_of(&r, 5), Rect { x: 0, y: 0, w: 39, h: 24 });
+        assert_tiling(&r, 80, 24);
     }
 
     #[test]
