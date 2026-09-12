@@ -79,6 +79,26 @@
 
 测试结果（修复后）：lib 55 passed / console 2 passed / e2e 7 passed / clippy 0 warnings。
 
-## 第 5 轮（计数 1/3）— 视角：可复现性 + 按键编码逻辑
+## 第 5 轮（计数 1/3，无发现）— 视角：可复现性 + 按键编码逻辑
+
+做了什么：`cargo test` 连跑 3 次，对"排序后的测试名+状态"做 SHA-256；逐条核对 `key_from_record` / `encode_key` / `handle_key` 的 prefix、swallow_up、copy-mode、overlay、IME/代理项、AltGr、Ctrl+数字/标点、修饰键单按等路径。
+
+数据：3 次运行指纹均为 `E9109651AFB600D1`，每次 lib 55 / console 2 / e2e 7 全绿。
+
+发现：无。
+
+## 第 6 轮（不计数）— 视角：静态一致性复查（依赖、示例配置、文档表格）
+
+做了什么：grep 每个 Cargo 依赖在 `src/` 的使用；用真实二进制加载 `wmux.conf.example`（`WMUX_CONFIG`）并核对 `list-keys` 与 server 日志；README 按键表逐行对照 `default_bindings()`。
+
+发现（1 项，已修）：
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `clap`、`toml` 两个依赖以及 tokio 的 `signal` feature 声明了但代码从未使用 | 删除 |
+
+数据：示例配置加载日志 `loaded ... (20 commands)`，无错误行；`list-keys` 含 `W`/`h`/`r`/`|` 四条自定义绑定；README 表 16 行全部与默认绑定一致。
+
+## 第 7 轮（计数 1/3）— 视角：新增代码的错误路径 + 可复现性
 
 （待填）
