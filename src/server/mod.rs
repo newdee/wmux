@@ -1802,12 +1802,18 @@ impl Server {
         }
 
         let mouse_opt = self.opts.mouse;
+        let area = match self.session(sid) {
+            Some(s) => self.window_area(s.cols, s.rows),
+            None => return,
+        };
         let Some(s) = self.session_mut(sid) else { return };
         let Some(w) = s.window_mut() else { return };
         let Some(pid) = w.pane_at(x, y) else {
             // On a border: start a drag from the pane whose edge this is.
+            // The outer edge of the window is not a border.
             if pressed & BTN_LEFT != 0
                 && mouse_opt
+                && area.contains(x, y)
                 && let Some((pane, horizontal)) = border_owner(&w.rects, x, y)
             {
                 self.clients.get_mut(&cid).unwrap().drag =

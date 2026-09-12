@@ -22,7 +22,8 @@ Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select
 Default prefix: C-b.  Prefix ? lists key bindings.";
 
 fn main() {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // args() panics on non-UTF-8 (unpaired surrogates in a path); be lossy instead.
+    let mut args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     let mut socket = "default".to_string();
     // Global flags.
     loop {

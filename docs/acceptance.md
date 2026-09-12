@@ -62,6 +62,23 @@
 
 测试结果（修复后）：lib 53 passed / console 2 passed / e2e 6 passed / clippy 0 warnings。
 
-## 第 4 轮（计数 1/3）— 视角：边界与退化输入 + 可复现性
+## 第 4 轮（不计数）— 视角：边界与退化输入
+
+做了什么：针对每个接收外部尺寸/坐标/字符串的入口构造退化输入（0x0 / 1x1 区域、越界鼠标坐标、非 UTF-8 argv、不存在的程序、非 ASCII 名字），先写测试再看结果。
+
+发现（4 项，全部已修）：
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `std::env::args()` 遇到非 UTF-8 参数（路径里未配对代理项）直接 panic | `args_os()` + lossy |
+| 2 | 点击窗口区域外缘（x == cols）会被当成最右 pane 的边框，开始一次错误的拖拽 | `border_owner` 只在 `window_area` 内生效 |
+| 3 | 0 宽/高区域布局时第二个子节点被放到区域外（`pos += sz + 1` 不封顶） | `layout()` 对 `sz` 与 `pos` 以区域末端封顶；测试 `degenerate_areas_never_panic` |
+| 4 | pane 矩形大于 client 网格时（两 client 尺寸不同），光标可能被放到网格外 | `compose` 额外检查光标在 `f.cols × f.rows` 内；测试 `compose_degenerate_sizes` |
+
+新增测试：`list_keys_is_reproducible_across_servers`（两个独立 server 的 `list-keys` 逐字节一致）、不存在程序返回错误而非死 session、非 ASCII session/window 名往返。
+
+测试结果（修复后）：lib 55 passed / console 2 passed / e2e 7 passed / clippy 0 warnings。
+
+## 第 5 轮（计数 1/3）— 视角：可复现性 + 按键编码逻辑
 
 （待填）

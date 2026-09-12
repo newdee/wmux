@@ -226,6 +226,21 @@ async fn cli_lifecycle() {
     let (code, _, _) = h.cli(&["has-session", "-t", "nope"]).await;
     assert_eq!(code, 1);
 
+    // A program that cannot be started is an error, not a dead session.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "bad", "definitely-not-a-program-xyz.exe"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("definitely-not-a-program-xyz.exe"), "{err}");
+    let (code, _, _) = h.cli(&["has-session", "-t", "bad"]).await;
+    assert_eq!(code, 1);
+
+    // Non-ASCII session and window names survive the round trip.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "会话", "-n", "窗口"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["list-windows", "-t", "会话"]).await;
+    assert!(out.starts_with("0: 窗口*"), "{out}");
+    let (code, _, _) = h.cli(&["kill-session", "-t", "会话"]).await;
+    assert_eq!(code, 0);
+
     let (code, _, err) = h.cli(&["new-window", "-t", "main", "-n", "second", "cmd.exe", "/c", "exit"]).await;
     assert_eq!(code, 0, "{err}");
     let (code, _, _) = h.cli(&["rename-session", "-t", "main", "renamed"]).await;
@@ -469,6 +484,20 @@ async fn resize_and_two_clients() {
     let (_, out, _) = h.cli(&["ls"]).await;
     assert!(out.contains("[80x24]") && out.contains("(attached)"), "{out}");
     h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_keys_is_reproducible_across_servers() {
+    // Two independent servers (different HashMap seeds) must print the key
+    // table byte-for-byte identically.
+    let a = Harness::start("repro-a").await;
+    let b = Harness::start("repro-b").await;
+    let (_, ka, _) = a.cli(&["list-keys"]).await;
+    let (_, kb, _) = b.cli(&["list-keys"]).await;
+    assert_eq!(ka, kb);
+    assert!(ka.lines().count() >= 40, "{}", ka.lines().count());
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

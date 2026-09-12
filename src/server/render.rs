@@ -386,8 +386,11 @@ pub fn compose(f: &Frame) -> (Grid, Option<(u16, u16)>) {
             }
         } else if p.active && !p.screen.hide_cursor() {
             let (r, col) = p.screen.cursor_position();
-            if r < p.rect.h && col < p.rect.w {
-                cursor = Some((p.rect.x + col, p.rect.y + r));
+            let (cx, cy) = (p.rect.x + col, p.rect.y + r);
+            // Inside the pane and inside this client's grid (a smaller client
+            // attached to the same session sees a clipped pane).
+            if r < p.rect.h && col < p.rect.w && cx < f.cols && cy < f.rows {
+                cursor = Some((cx, cy));
             }
         }
     }
@@ -584,6 +587,48 @@ mod tests {
         assert!(g.get(4, 3).style.inverse);
         assert!(!g.get(8, 3).style.inverse);
         assert_eq!(g.get(0, 3).style.bg, Color::Idx(2));
+    }
+
+    #[test]
+    fn compose_degenerate_sizes() {
+        let a = screen(5, 2, b"ab");
+        for (cols, rows) in [(1u16, 1u16), (1, 2), (2, 1), (3, 2)] {
+            let f = Frame {
+                cols,
+                rows,
+                panes: vec![
+                    // Rects that are larger than, empty, or outside the client grid.
+                    PaneView { rect: Rect { x: 0, y: 0, w: 5, h: 2 }, screen: a.screen(), active: true, copy: None },
+                    PaneView { rect: Rect { x: 1, y: 0, w: 0, h: 2 }, screen: a.screen(), active: false, copy: None },
+                    PaneView { rect: Rect { x: 40, y: 40, w: 5, h: 2 }, screen: a.screen(), active: false, copy: None },
+                ],
+                status: Some(StatusLine {
+                    session: "a-very-long-session-name".into(),
+                    windows: vec![("0:x".into(), true)],
+                    right: "right".into(),
+                    message: None,
+                    prompt: Some(("(p) ".into(), "typed".into(), 3)),
+                    fg: Color::Default,
+                    bg: Color::Default,
+                }),
+                status_top: false,
+                border_fg: Color::Default,
+                active_border_fg: Color::Default,
+            };
+            let (g, cursor) = compose(&f);
+            assert_eq!((g.cols, g.rows), (cols, rows));
+            if let Some((x, y)) = cursor {
+                assert!(x < cols && y < rows, "{cols}x{rows}: cursor {cursor:?}");
+            }
+            // Diffing against a differently sized previous grid is a full redraw.
+            let prev = Grid::new(cols + 1, rows);
+            let out = diff(Some(&prev), &g, cursor);
+            assert!(out.windows(4).any(|w| w == b"\x1b[2J"));
+        }
+        // An overlay on a 1-row area draws only the hint.
+        let mut g = Grid::new(5, 1);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 5, h: 1 }, &["x".into()]);
+        assert_eq!((0..5).map(|x| g.get(x, 0).text()).collect::<String>(), "[0 of");
     }
 
     #[test]

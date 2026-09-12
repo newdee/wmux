@@ -59,15 +59,18 @@ impl Node {
                 let total = if *horizontal { rect.w } else { rect.h };
                 let avail = total.saturating_sub(n - 1);
                 fit_sizes(sizes, avail);
-                let mut pos = if *horizontal { rect.x } else { rect.y };
+                let (mut pos, end) = if *horizontal { (rect.x, rect.x + rect.w) } else { (rect.y, rect.y + rect.h) };
                 for (child, &sz) in children.iter_mut().zip(sizes.iter()) {
+                    // In a degenerate area the border column may not exist;
+                    // never place a child past the end of the rectangle.
+                    let sz = sz.min(end.saturating_sub(pos));
                     let r = if *horizontal {
                         Rect { x: pos, y: rect.y, w: sz, h: rect.h }
                     } else {
                         Rect { x: rect.x, y: pos, w: rect.w, h: sz }
                     };
                     child.layout(r, out);
-                    pos += sz + 1;
+                    pos = (pos + sz + 1).min(end);
                 }
             }
         }
@@ -483,6 +486,34 @@ mod tests {
         let mut out = Vec::new();
         n.layout(Rect { x: 0, y: 0, w: 1, h: 1 }, &mut out);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn degenerate_areas_never_panic() {
+        // Three panes in a 1x1 (and 0x0) area: everyone gets a rectangle,
+        // some of them empty, and nothing overflows.
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(2, false, 3, rect_of(&r, 2));
+        for (w, h) in [(1, 1), (0, 0), (2, 1), (1, 3), (3, 3)] {
+            let mut out = Vec::new();
+            n.layout(Rect { x: 0, y: 0, w, h }, &mut out);
+            assert_eq!(out.len(), 3, "{w}x{h}");
+            for (_, r) in &out {
+                assert!(r.x + r.w <= w && r.y + r.h <= h, "{w}x{h}: {r:?}");
+            }
+            // Neighbour lookup and resize must not panic either.
+            for id in [1, 2, 3] {
+                for d in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+                    let _ = neighbour(&out, id, d);
+                    let _ = n.resize(id, d, 1);
+                }
+            }
+        }
+        // Growing back restores a proper tiling.
+        assert_tiling(&rects(&mut n, 80, 24), 80, 24);
     }
 
     #[test]
