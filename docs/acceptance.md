@@ -170,7 +170,7 @@ client2 exited after kill-server: True code=0
 
 新增：`capture-pane -p [-S -N] [-t]`（tmux 同名命令，CLI 读 pane 文本；e2e 覆盖）；client attach 时设置控制台标题 `wmux: <session>`。
 
-真机数据（补丁后重跑，`shots3/`）：探测行原样到达（`echo probe-abc xyz`）；`Write-Host` 输出正确；`prefix %`/`"` 得到 3 个 pane（50x29 / 49x14 / 49x14），WSL 在 pane 里跑出 `Linux DFINE 6.18.33.2-microsoft-standard-WSL2`；`prefix z` 状态栏出现 `*Z`；`prefix c` + `prefix ,` 得到 `1:renamed*`；`prefix ?` overlay `[28 of 49 lines] press any key`；`prefix d` 后 `ls` 显示 `demo: 2 windows`（未 attached）；日志无 panic。
+真机数据（补丁后重跑，`shots3/`）：探测行原样到达（`echo probe-abc xyz`）；`Write-Host` 输出正确；`prefix %`/`"` 得到 3 个 pane（50x29 / 49x14 / 49x14），WSL 在 pane 里跑出 `Linux HOST 6.18.33.2-microsoft-standard-WSL2`；`prefix z` 状态栏出现 `*Z`；`prefix c` + `prefix ,` 得到 `1:renamed*`；`prefix ?` overlay `[28 of 49 lines] press any key`；`prefix d` 后 `ls` 显示 `demo: 2 windows`（未 attached）；日志无 panic。
 
 IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成、空格提交候选，这与任何终端一致，不是 wmux 的行为；演示脚本用 `WM_IME_CONTROL` 把该窗口切到英文。
 
@@ -278,7 +278,7 @@ IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成�
 | 4 | （测试自身）kill 掉唯一 session 后 server 按设计退出，测试 `connect()` 无超时死等 | 测试先建保活 session，`connect()` 加 10s 超时 |
 | 5 | **主循环 tick 永不触发**：`select!` 里每次迭代新建 `sleep(1s)`，只要事件持续到来（客户端轮询、pane 持续输出）就一直重置；自动保存、空闲退出全挂在 tick 上，繁忙时静默失效。由 rename 测试的 200ms 轮询暴露 | 改为循环外的持久 `interval`（`MissedTickBehavior::Delay`） |
 
-真机数据（release，`WMUX_SESSIONS_DIR` 临时目录）：建 `work`（2 窗口，首窗口 pwsh|wsl/cmd 三格）+ `scratch` → 2s 内出现两个保存文件 → `Stop-Process` 强杀 server（模拟重启）→ `ls` 报无 server → `wmux resume work` 自动起新 server，`list-panes` 尺寸/命令与杀前逐项一致（40x23 %pwsh、39x11 %wsl、39x11 %cmd），WSL pane 提示符目录 `/mnt/c/Users/stebe/Documents/dfine` → `wmux resume` 补回 `scratch`；日志无 panic。
+真机数据（release，`WMUX_SESSIONS_DIR` 临时目录）：建 `work`（2 窗口，首窗口 pwsh|wsl/cmd 三格）+ `scratch` → 2s 内出现两个保存文件 → `Stop-Process` 强杀 server（模拟重启）→ `ls` 报无 server → `wmux resume work` 自动起新 server，`list-panes` 尺寸/命令与杀前逐项一致（40x23 %pwsh、39x11 %wsl、39x11 %cmd），WSL pane 提示符目录 `/mnt/c/Users/me/proj` → `wmux resume` 补回 `scratch`；日志无 panic。
 
 ## 第 22 轮（计数 1/3，无发现）— 视角：可复现性 + 静态一致性
 
@@ -321,7 +321,7 @@ IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成�
 
 ## 第 26 轮（不计数）— 视角：真机 + 边界输入
 
-真机数据（release，pwsh prompt 发 OSC 9;9）：pane 起始目录 `C:\Users\stebe` → `cd Documents` 后 `list-panes` 显示 `[C:\Users\stebe\Documents]` → 强杀 server → `resume w` → pane 提示符 `PS C:\Users\stebe\Documents>`；`set-cwd -t keep`（无参）记录为 CLI 的当前目录；日志无 panic。
+真机数据（release，pwsh prompt 发 OSC 9;9）：pane 起始目录 `C:\Users\me` → `cd Documents` 后 `list-panes` 显示 `[C:\Users\me\Documents]` → 强杀 server → `resume w` → pane 提示符 `PS C:\Users\me\Documents>`；`set-cwd -t keep`（无参）记录为 CLI 的当前目录；日志无 panic。
 
 | # | 问题 | 修复 |
 |---|------|------|
@@ -335,7 +335,7 @@ IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成�
 
 ## 第 28 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制）
 
-数据：在 `C:\Users\stebe` 下 `set-cwd -t w Documents` → `[C:\Users\stebe\Documents]`；无参 → `[C:\Users\stebe]`；不存在的目录 → `set-cwd: not a directory: ...`，退出码 1；自动保存文件随之更新；日志无 panic。
+数据：在 `C:\Users\me` 下 `set-cwd -t w Documents` → `[C:\Users\me\Documents]`；无参 → `[C:\Users\me]`；不存在的目录 → `set-cwd: not a directory: ...`，退出码 1；自动保存文件随之更新；日志无 panic。
 
 发现：无。
 

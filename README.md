@@ -21,6 +21,10 @@ run inside panes with full key fidelity.
 
 ## Install
 
+Grab `wmux-<version>-windows-x86_64.zip` from the
+[releases page](https://github.com/newdee/wmux/releases), unzip, and put
+`wmux.exe` somewhere on your `PATH`. Or build it yourself:
+
 ```powershell
 cargo install --path .
 ```

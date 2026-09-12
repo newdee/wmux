@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(w("D:").as_deref(), Some("D:\\"));
         assert_eq!(w("/mnt/c/Users/x").as_deref(), Some("C:\\Users\\x"));
         assert_eq!(w("/mnt/d").as_deref(), Some("D:\\"));
-        assert_eq!(w("file://DFINE/mnt/c/x").as_deref(), Some("C:\\x"));
+        assert_eq!(w("file://HOST/mnt/c/x").as_deref(), Some("C:\\x"));
         assert_eq!(w("/home/user"), None);
         assert_eq!(w("/mnt/wsl/x"), None);
         assert_eq!(w(""), None);
@@ -494,10 +494,10 @@ mod tests {
         assert_eq!(p.cwd.as_deref(), Some("C:\\"));
         p.process_output(b"\x1b]9;9;C:\\Users\x07");
         assert_eq!(p.cwd.as_deref(), Some("C:\\Users"));
-        p.process_output(b"\x1b]7;file://DFINE/mnt/c/Windows\x1b\\");
+        p.process_output(b"\x1b]7;file://HOST/mnt/c/Windows\x1b\\");
         assert_eq!(p.cwd.as_deref(), Some("C:\\Windows"));
         // A Linux-only path cannot be a Windows working directory: keep the last one.
-        p.process_output(b"\x1b]7;file://DFINE/home/dfine\x07");
+        p.process_output(b"\x1b]7;file://HOST/home/user\x07");
         assert_eq!(p.cwd.as_deref(), Some("C:\\Windows"));
     }
 

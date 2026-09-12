@@ -13,6 +13,8 @@ Windows 上的 tmux。
 
 ## 安装
 
+到 [Releases](https://github.com/newdee/wmux/releases) 下载 `wmux-<版本>-windows-x86_64.zip`，解压，把 `wmux.exe` 放到 `PATH` 里的某个目录就行。想自己编译的话：
+
 ```powershell
 cargo install --path .
 ```

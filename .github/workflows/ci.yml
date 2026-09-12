@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: fmt, clippy, test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        # The suite spawns cmd.exe/pwsh panes through ConPTY and runs the real
+        # client inside a pseudo console; keep autosave out of the runner profile.
+        env:
+          WMUX_SESSIONS_DIR: ${{ runner.temp }}\wmux-sessions
+        run: cargo test --all-targets

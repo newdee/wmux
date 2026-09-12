@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build and publish (windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: test
+        env:
+          WMUX_SESSIONS_DIR: ${{ runner.temp }}\wmux-sessions
+        run: cargo test --all-targets
+      - name: build
+        run: cargo build --release --locked
+      - name: package
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $name = "wmux-$tag-windows-x86_64"
+          New-Item -ItemType Directory -Force dist\$name | Out-Null
+          Copy-Item target\release\wmux.exe, README.md, README.zh-CN.md, wmux.conf.example, LICENSE dist\$name\
+          Compress-Archive -Path dist\$name -DestinationPath dist\$name.zip
+          $hash = (Get-FileHash dist\$name.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content -NoNewline dist\$name.zip.sha256
+          Get-Content dist\$name.zip.sha256
+      - name: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release create $tag dist\*.zip dist\*.sha256 --title "wmux $tag" --generate-notes
