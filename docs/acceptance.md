@@ -99,6 +99,20 @@
 
 数据：示例配置加载日志 `loaded ... (20 commands)`，无错误行；`list-keys` 含 `W`/`h`/`r`/`|` 四条自定义绑定；README 表 16 行全部与默认绑定一致。
 
-## 第 7 轮（计数 1/3）— 视角：新增代码的错误路径 + 可复现性
+## 第 7 轮（不计数）— 视角：新增代码（winsec / job / 背压）的错误路径
+
+做了什么：对第 3 轮新增的 `winsec.rs`、pane job、有界队列逐个失败分支追问"失败后系统处于什么状态、谁还能恢复"。
+
+发现（1 项，已修）：
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 有界队列满时 `Client::send` 直接丢弃控制消息。真实触发场景：`mouse off` 下用户在宿主终端 QuickEdit 拖选会冻结 `WriteConsoleW`，队列填满，此时的 `Detached`/`SetMouse` 丢失，客户端永远收不到 detach | 控制消息进 `pending` 队列，每次 `render_all` 前补发；pending 非空时帧不插队（丢帧并强制全量重绘）；单元测试 `control_messages_survive_a_full_queue_in_order` |
+
+核对无发现：`current_user_sid` 两段式缓冲区、LocalFree 配对；`OwnerOnly` 指针在 future 移动后每次现取；job assign 失败回落到 TerminateProcess；`Pane::drop` 先关 job 再关 ConPTY 的顺序。
+
+测试结果（修复后）：lib 56 passed / console 2 passed / e2e 7 passed / clippy 0 warnings。
+
+## 第 8 轮（计数 1/3）— 视角：可复现性 + 机制通路（真实二进制）
 
 （待填）

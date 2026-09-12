@@ -86,24 +86,42 @@ struct Client {
     drag: Option<Drag>,
     /// Virtual keys whose key-down we consumed; drop the matching key-up.
     swallow_up: HashSet<u16>,
+    /// Control messages that did not fit in the output queue yet.
+    pending: std::collections::VecDeque<ServerMsg>,
 }
 
 impl Client {
-    /// Queue a control message. These are rare; if the queue is full the
-    /// client is not reading at all and the message is logged and dropped.
-    fn send(&self, m: ServerMsg) {
+    /// Queue a control message. Control messages are never dropped: when the
+    /// queue is full (a console frozen by a QuickEdit selection blocks our
+    /// writer) they wait in `pending` and go out before any further frame.
+    fn send(&mut self, m: ServerMsg) {
+        if !self.pending.is_empty() {
+            self.pending.push_back(m);
+            return;
+        }
         if let Err(mpsc::error::TrySendError::Full(m)) = self.tx.try_send(m) {
-            log::warn!("client {}: output queue full, dropping {m:?}", self.id);
+            self.pending.push_back(m);
         }
     }
 
     /// Queue a screen update. When the client lags, the frame is dropped and
     /// the next render is forced to be a full redraw, which supersedes it.
     fn send_output(&mut self, bytes: Vec<u8>) {
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(ServerMsg::Output(bytes)) {
+        if !self.pending.is_empty() || self.tx.try_send(ServerMsg::Output(bytes)).is_err() {
             self.last_grid = None;
             self.last_cursor = None;
         }
+    }
+
+    /// Retry queued control messages; returns true when none are left.
+    fn flush_pending(&mut self) -> bool {
+        while let Some(m) = self.pending.pop_front() {
+            if let Err(mpsc::error::TrySendError::Full(m)) = self.tx.try_send(m) {
+                self.pending.push_front(m);
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -471,6 +489,7 @@ impl Server {
                         mouse_buttons: 0,
                         drag: None,
                         swallow_up: HashSet::new(),
+                        pending: std::collections::VecDeque::new(),
                     },
                 );
             }
@@ -499,7 +518,7 @@ impl Server {
         match msg {
             ClientMsg::Command { version, argv, cwd, cols, rows, interactive, pane_env } => {
                 if version != PROTOCOL_VERSION {
-                    if let Some(c) = self.clients.get(&cid) {
+                    if let Some(c) = self.clients.get_mut(&cid) {
                         c.send(ServerMsg::Error(format!(
                             "protocol mismatch: client {version}, server {PROTOCOL_VERSION}"
                         )));
@@ -1984,6 +2003,9 @@ impl Server {
                 }
             }
         }
+        for c in self.clients.values_mut() {
+            c.flush_pending();
+        }
         let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session.is_some()).map(|c| c.id).collect();
         for cid in ids {
             self.render_client(cid);
@@ -2253,6 +2275,7 @@ mod tests {
             mouse_buttons: 0,
             drag: None,
             swallow_up: HashSet::new(),
+            pending: std::collections::VecDeque::new(),
         };
         (c, rx)
     }
@@ -2266,6 +2289,27 @@ mod tests {
         assert!(c.last_grid.is_none() && c.last_cursor.is_none(), "dropped frame invalidates the diff base");
         // Only the first frame is in the queue; nothing else was allocated.
         assert!(matches!(rx.try_recv(), Ok(ServerMsg::Output(b)) if b == b"frame1"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn control_messages_survive_a_full_queue_in_order() {
+        let (mut c, mut rx) = client(1);
+        c.send_output(b"frame1".to_vec());
+        c.send(ServerMsg::SetMouse(false));
+        c.send(ServerMsg::Detached { reason: "x".into() });
+        assert_eq!(c.pending.len(), 2);
+        // A frame must not overtake pending control messages.
+        c.last_grid = Some(Grid::new(10, 2));
+        c.send_output(b"frame2".to_vec());
+        assert!(c.last_grid.is_none());
+        assert!(!c.flush_pending(), "queue still full");
+        // The client drains one slot at a time; each drain lets one message through.
+        assert!(matches!(rx.try_recv(), Ok(ServerMsg::Output(_))));
+        assert!(!c.flush_pending());
+        assert!(matches!(rx.try_recv(), Ok(ServerMsg::SetMouse(false))));
+        assert!(c.flush_pending());
+        assert!(matches!(rx.try_recv(), Ok(ServerMsg::Detached { .. })));
         assert!(rx.try_recv().is_err());
     }
 
