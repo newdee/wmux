@@ -558,3 +558,51 @@ README 的“未实现”里也这么写着。另外在录制演示时发现：p
 ## 结论（第九次验收）
 
 三轮连续零发现，验收通过。本次修复 2 项（其中一项是用户报过的帧错位真因），新增测试 2 项；最终 96 项自动化测试。
+
+---
+
+# 第十次验收：补齐缺的 tmux 功能
+
+用户要求「缺的功能都加了吧」，另外点名要命令简写（`tmux att` 那种）。本次新增：
+
+- **命令名前缀匹配**：任何不产生歧义的前缀都当完整命令名用（`att`、`lsp`、`splitw`、`choose-t`）。
+  有歧义就报错并列出候选（`kill` → kill-pane / kill-server / kill-session / kill-window），不猜。
+- **`select-layout`**：五种命名布局（even-horizontal、even-vertical、main-horizontal、main-vertical、tiled），
+  名字同样支持前缀（`til`），`-n` / `-p` 轮换，默认绑定 `prefix Space`。
+- **copy mode 搜索**：`/` 往回找、`?` 往前找、`n` / `N` 重复，大小写不敏感，命中后把该行放到视野中间；找不到时状态栏提示。
+- **`display-panes`（`prefix q`）**：每个 pane 中间显示大号编号，按数字直接跳过去，其他键关掉。
+- **`swap-window` / `move-window`**：同一 session 内重排窗口，当前窗口跟着走。
+- **格式串条件 `#{?cond,a,b}`**：条件可以是变量名，也可以是 `var==值` / `var!=值`；分支本身还能再套格式和样式。
+- **`set -a`**：往选项原值后面追加（`set -ag status-right " | x"`），组合写法 `-ag` 也认。
+- **主题**：`themes/` 下四套配色（Nord、Gruvbox dark、Dracula、Catppuccin Mocha）。
+  按之前的判断没有新造 `set theme`，它们就是普通的命令文件，`source-file` 加载即可。
+
+## 第 1 轮（不计数）— 视角：clippy + 全量
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | clippy 两处（`n % cols == 0` 可用 `is_multiple_of`；`display-panes` 的嵌套 `if` 可合并） | 修 |
+
+## 第 2 轮（不计数）— 视角：机制通路（release 二进制逐条跑新命令）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `display-message -p "#{?window_flags,busy,idle}"` 原样输出。根因：`display-message`、`command-prompt`、`confirm-before` 走的是一个只会替换 `#S/#W/#P/#T/#I` 的简化函数，没走状态栏那套完整格式引擎 | `expand_format` 改为构造 `format::Context` 后调用 `format::expand`，`#{...}`、`#{?...}`、`#(...)`、`%H` 在所有地方口径一致 |
+
+## 第 3 轮（计数 1/3，无发现）— 视角：clippy + 全量
+
+数据：clippy 零告警；103 项测试通过（lib 80 / console 4 / e2e 19）。
+
+## 第 4 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：`select-layout -t s main-v` 得到 39/40 两列；`swap-window -s s:0 -t s:1` 后窗口顺序与 `*` 标记都跟着换；
+`display-message -p "#{?window_flags,busy,idle}"` 输出 `busy`；`set -g X` + `set -ag Y` 读回 `XY`；`lsw` 退出码 0。
+
+## 第 5 轮（计数 3/3，无发现）— 视角：可复现性
+
+数据：连续 3 次 `cargo test --all-targets` 结果逐项相同（80/0/4/0/19）；测试名指纹 `677DD406E21AB251`（104 项，含 1 个按需的录制）。
+
+## 结论（第十次验收）
+
+第 3、4、5 轮连续零发现，验收通过。本次新增 8 项能力，修复 3 项（含一处格式引擎口径不一致），
+新增测试 5 项；最终 103 项自动化测试。

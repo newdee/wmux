@@ -138,6 +138,10 @@ pub struct CopyMode {
     pub anchor: Option<(usize, u16)>,
     /// A mouse drag selection is in progress.
     pub dragging: bool,
+    /// Last `/` or `?` pattern, repeated by `n` and `N`.
+    pub search: Option<String>,
+    /// Direction of that search: `/` is towards older lines.
+    pub search_back: bool,
 }
 
 pub struct Pane {

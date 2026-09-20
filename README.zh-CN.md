@@ -55,6 +55,8 @@ wmux capture-pane -p -t work   # 把 pane 上的文字打印出来（-S -200 连
 wmux kill-server
 ```
 
+命令名可以只写不产生歧义的前缀，和 tmux 一样：`wmux att`、`wmux lsp`、`wmux splitw -h`。`wmux kill` 会被拒绝，因为有四个命令以它开头。
+
 进了 session 之后，先按前缀键 `Ctrl+b`，再按：
 
 | 按键 | 作用 |
@@ -68,9 +70,11 @@ wmux kill-server
 | `z` | 当前 pane 放大到整个窗口，再按一次还原 |
 | `x` | 关掉当前 pane |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
+| `q` | 每块显示自己的编号，按数字直接跳过去 |
+| `Space` | 轮换布局（左右平分、上下平分、主窗在上、主窗在左、平铺） |
 | `!` | 把当前 pane 拆成一个独立窗口 |
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
-| `[` / `PgUp` | copy mode：翻回滚，`Space` 开始选，`Enter` 复制 |
+| `[` / `PgUp` | copy mode：翻回滚，`Space` 开始选，`Enter` 复制，`/` `?` 搜索，`n` `N` 找下一个 |
 | `]` | 粘贴剪贴板 |
 | `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类） |
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
@@ -139,7 +143,12 @@ bind -r C-h resize-pane -L 5      # -r：按一次前缀之后可以连着按
 bind -n M-Left previous-window     # -n：不用按前缀
 bind -n M-Right next-window
 bind r source-file ~/.wmux.conf
+
+set -ag status-right " | wmux"    # -a 是往原值后面追加，不是覆盖
+source-file ~/.wmux/themes/nord.conf
 ```
+
+仓库里的 `themes/` 放了几套现成配色（Nord、Gruvbox dark、Dracula、Catppuccin Mocha）。它们就是普通的 wmux 命令文件，`source-file` 一下就行，想改直接改。
 
 `.tmux.conf` 里常见但 wmux 用不上的选项（`escape-time`、`default-terminal` 这些）会被接受然后忽略，所以现成的 tmux 配置可以直接拿来改。
 
@@ -204,4 +213,4 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；没有 `select-layout` 布局预设；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口。
+和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；`swap-window` 和 `move-window` 只在同一个 session 内生效；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；`select-layout` 只有那五种命名布局，不支持 tmux 的布局字符串；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口。

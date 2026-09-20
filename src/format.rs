@@ -98,7 +98,13 @@ pub fn expand(
                 }
                 Some('{') => {
                     let name = take_balanced(&mut chars, '{', '}');
-                    if let Some(v) = ctx.var(name.trim()) {
+                    let name = name.trim();
+                    if let Some(rest) = name.strip_prefix('?') {
+                        // The chosen branch is a format in its own right.
+                        let branch = conditional(rest, ctx);
+                        flush(&mut out, &mut text, style);
+                        out.append(&mut expand(&branch, ctx, cache, style, now));
+                    } else if let Some(v) = ctx.var(name) {
                         text.push_str(&v);
                     }
                 }
@@ -131,6 +137,49 @@ pub fn expand(
         }
     }
     flush(&mut out, &mut text, style);
+    out
+}
+
+/// `#{?cond,yes,no}`: `cond` is a variable name, or `var==value` /
+/// `var!=value`. A bare name is true when it is neither empty nor "0".
+/// Either branch may itself contain `#{...}` and `#[...]` pieces, which the
+/// caller expands, so only the text is chosen here.
+fn conditional(spec: &str, ctx: &Context) -> String {
+    let parts = split_top_level(spec);
+    let cond = parts.first().map(String::as_str).unwrap_or("");
+    let yes = parts.get(1).cloned().unwrap_or_default();
+    let no = parts.get(2).cloned().unwrap_or_default();
+    let truth = if let Some((name, want)) = cond.split_once("==") {
+        ctx.var(name.trim()).unwrap_or_default() == want.trim()
+    } else if let Some((name, want)) = cond.split_once("!=") {
+        ctx.var(name.trim()).unwrap_or_default() != want.trim()
+    } else {
+        let v = ctx.var(cond.trim()).unwrap_or_default();
+        !v.is_empty() && v != "0"
+    };
+    if truth { yes } else { no }
+}
+
+/// Split on commas that are not inside `#{...}`, `#(...)` or `#[...]`.
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut depth = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '#' if matches!(chars.peek(), Some('{') | Some('(') | Some('[')) => {
+                depth += 1;
+                out.last_mut().unwrap().push(c);
+                out.last_mut().unwrap().push(chars.next().unwrap());
+            }
+            '}' | ')' | ']' if depth > 0 => {
+                depth -= 1;
+                out.last_mut().unwrap().push(c);
+            }
+            ',' if depth == 0 && out.len() < 3 => out.push(String::new()),
+            c => out.last_mut().unwrap().push(c),
+        }
+    }
     out
 }
 
@@ -219,6 +268,36 @@ mod tests {
         chrono::Local.with_ymd_and_hms(2026, 9, 12, 18, 30, 0).unwrap()
     }
     use chrono::TimeZone;
+
+    #[test]
+    fn conditionals_pick_a_branch() {
+        fn text(f: &str, c: &Context) -> String {
+            let mut cache = ShellCache::default();
+            expand(f, c, &mut cache, Style::default(), now()).into_iter().map(|s| s.text).collect()
+        }
+        let mut cache = ShellCache::default();
+        let c = ctx();
+        // A bare name is true when it is neither empty nor "0".
+        assert_eq!(text("#{?window_flags,busy,idle}", &c), "busy");
+        assert_eq!(text("#{?pane_current_path,has cwd,no cwd}", &c), "has cwd");
+        // Comparisons.
+        assert_eq!(text("#{?session_name==main,yes,no}", &c), "yes");
+        assert_eq!(text("#{?session_name==other,yes,no}", &c), "no");
+        assert_eq!(text("#{?session_name!=other,yes,no}", &c), "yes");
+        // The chosen branch is expanded too, styles included.
+        assert_eq!(text("#{?window_flags,#{session_name}:#{window_index},-}", &c), "main:2");
+        let styled = expand("#{?window_flags,#[bold]on,off}", &c, &mut cache, Style::default(), now());
+        assert!(styled.iter().any(|s| s.text == "on" && s.style.bold), "{styled:?}");
+
+        let mut empty = ctx();
+        empty.flags = String::new();
+        assert_eq!(text("#{?window_flags,busy,idle}", &empty), "idle");
+        // A missing branch is empty, an unknown variable is false.
+        assert_eq!(text("#{?window_flags,only}", &empty), "");
+        assert_eq!(text("#{?nosuchvar,yes,no}", &c), "no");
+        // Commas inside a nested piece do not split the branches.
+        assert_eq!(text("#{?window_flags,#[fg=red,bold]hot,cold}", &c), "hot");
+    }
 
     #[test]
     fn variables_and_time() {

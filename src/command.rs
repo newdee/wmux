@@ -101,6 +101,15 @@ pub enum Cmd {
     SelectWindow {
         target: Target,
     },
+    /// `swap-window [-s src] [-t dst]` / `move-window [-s src] [-t dst]`:
+    /// reorder the windows of a session.
+    SwapWindow {
+        src: Option<Target>,
+        dst: Option<Target>,
+        /// `move-window`: take the source out and put it at the destination,
+        /// shifting the rest, instead of exchanging the two.
+        move_it: bool,
+    },
     NextWindow {
         target: Option<Target>,
     },
@@ -139,6 +148,15 @@ pub enum Cmd {
         up: bool,
         target: Option<Target>,
     },
+    /// `select-layout [-n|-p] [-t target] [name]`: rearrange a window's panes
+    /// into one of the named layouts (tmux `select-layout`).
+    SelectLayout {
+        /// A layout name, or None with `next`/`prev` to cycle.
+        name: Option<String>,
+        next: bool,
+        prev: bool,
+        target: Option<Target>,
+    },
     BreakPane {
         target: Option<Target>,
     },
@@ -151,6 +169,9 @@ pub enum Cmd {
     CopyMode {
         page_up: bool,
     },
+    /// `display-panes`: show each pane's number for `display-time`; a digit
+    /// pressed while they are up selects that pane.
+    DisplayPanes,
     PasteBuffer,
     /// `%%` in `template` is replaced by the prompt input; `#S`/`#W` in
     /// `initial` expand to the session/window name.
@@ -180,6 +201,8 @@ pub enum Cmd {
     SetOption {
         name: String,
         value: String,
+        /// `-a`: add to the option's current value instead of replacing it.
+        append: bool,
     },
     /// `show-options [-g] [-v] [-q] [name]`: one option, or all of them.
     ShowOptions {
@@ -348,6 +371,18 @@ impl fmt::Display for Cmd {
                 f.write_str("select-window")?;
                 fmt_target(f, &Some(target.clone()))
             }
+            Cmd::SwapWindow { src, dst, move_it } => {
+                f.write_str(if *move_it { "move-window" } else { "swap-window" })?;
+                if let Some(s) = src {
+                    f.write_str(" -s")?;
+                    fmt_target(f, &Some(s.clone()))?;
+                }
+                if let Some(d) = dst {
+                    f.write_str(" -t")?;
+                    fmt_target(f, &Some(d.clone()))?;
+                }
+                Ok(())
+            }
             Cmd::NextWindow { target } => {
                 f.write_str("next-window")?;
                 fmt_target(f, target)
@@ -419,6 +454,20 @@ impl fmt::Display for Cmd {
                 write!(f, "swap-pane {}", if *up { "-U" } else { "-D" })?;
                 fmt_target(f, target)
             }
+            Cmd::SelectLayout { name, next, prev, target } => {
+                f.write_str("select-layout")?;
+                if *next {
+                    f.write_str(" -n")?;
+                }
+                if *prev {
+                    f.write_str(" -p")?;
+                }
+                fmt_target(f, target)?;
+                if let Some(n) = name {
+                    write!(f, " {}", quote(n))?;
+                }
+                Ok(())
+            }
             Cmd::BreakPane { target } => {
                 f.write_str("break-pane")?;
                 fmt_target(f, target)
@@ -435,6 +484,7 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::CopyMode { page_up } => f.write_str(if *page_up { "copy-mode -u" } else { "copy-mode" }),
+            Cmd::DisplayPanes => f.write_str("display-panes"),
             Cmd::PasteBuffer => f.write_str("paste-buffer"),
             Cmd::CommandPrompt { prompt, initial, template } => {
                 f.write_str("command-prompt")?;
@@ -474,7 +524,9 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " {}", quote(key))
             }
-            Cmd::SetOption { name, value } => write!(f, "set-option {} {}", quote(name), quote(value)),
+            Cmd::SetOption { name, value, append } => {
+                write!(f, "set-option{} {} {}", if *append { " -a" } else { "" }, quote(name), quote(value))
+            }
             Cmd::SwitchClient { next, prev, target } => {
                 f.write_str("switch-client")?;
                 if *next {
@@ -725,6 +777,81 @@ fn bad_flag(name: &str, flag: &str) -> String {
     format!("{name}: unknown flag '{flag}'")
 }
 
+/// Every command name, for the unambiguous-prefix lookup below.
+const COMMANDS: &[&str] = &[
+    "attach-session",
+    "break-pane",
+    "bind-key",
+    "capture-pane",
+    "choose-session",
+    "choose-tree",
+    "choose-window",
+    "clear-history",
+    "command-prompt",
+    "confirm-before",
+    "delete-saved",
+    "detach-client",
+    "display-message",
+    "display-panes",
+    "has-session",
+    "kill-pane",
+    "kill-server",
+    "kill-session",
+    "kill-window",
+    "last-window",
+    "list-keys",
+    "list-panes",
+    "list-plugins",
+    "list-saved",
+    "list-sessions",
+    "list-windows",
+    "load-plugin",
+    "move-window",
+    "new-session",
+    "new-window",
+    "next-window",
+    "paste-buffer",
+    "previous-window",
+    "rename-session",
+    "rename-window",
+    "resize-pane",
+    "restore-session",
+    "resume",
+    "run-shell",
+    "save-session",
+    "select-layout",
+    "select-pane",
+    "select-window",
+    "send-keys",
+    "set-cwd",
+    "set-hook",
+    "set-option",
+    "show-hooks",
+    "show-options",
+    "source-file",
+    "split-window",
+    "swap-pane",
+    "swap-window",
+    "switch-client",
+    "version",
+];
+
+/// tmux lets any unambiguous prefix stand for a command name, so `att` is
+/// `attach-session` and `splitw` is `split-window`. Several matches is an
+/// error rather than a guess.
+fn resolve_prefix(name: &str) -> Result<&'static str, String> {
+    let hits: Vec<&&str> = COMMANDS.iter().filter(|c| c.starts_with(name)).collect();
+    match hits.len() {
+        1 => Ok(hits[0]),
+        0 => Err(format!("unknown command: {name}")),
+        _ => {
+            let mut names: Vec<&str> = hits.into_iter().copied().collect();
+            names.sort_unstable();
+            Err(format!("ambiguous command: {name} (could be {})", names.join(", ")))
+        }
+    }
+}
+
 /// Parse an argv (first word is the command name) into a `Cmd`.
 pub fn parse(words: &[String]) -> Result<Cmd, String> {
     let name = words.first().ok_or_else(|| "empty command".to_string())?.as_str();
@@ -744,6 +871,8 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "kill-window" | "killw" => "kill-window",
         "rename-window" | "renamew" => "rename-window",
         "select-window" | "selectw" => "select-window",
+        "swap-window" | "swapw" => "swap-window",
+        "move-window" | "movew" => "move-window",
         "next-window" | "next" => "next-window",
         "previous-window" | "prev" => "previous-window",
         "last-window" | "last" => "last-window",
@@ -753,11 +882,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "resize-pane" | "resizep" => "resize-pane",
         "swap-pane" | "swapp" => "swap-pane",
         "break-pane" | "breakp" => "break-pane",
+        "select-layout" | "selectl" => "select-layout",
         "send-keys" | "send" => "send-keys",
         "copy-mode" => "copy-mode",
         "paste-buffer" | "pasteb" => "paste-buffer",
         "command-prompt" => "command-prompt",
         "display-message" | "display" => "display-message",
+        "display-panes" | "displayp" => "display-panes",
         "confirm-before" | "confirm" => "confirm-before",
         "bind-key" | "bind" => "bind-key",
         "unbind-key" | "unbind" => "unbind-key",
@@ -783,7 +914,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "set-cwd" | "cwd" => "set-cwd",
         "source-file" | "source" => "source-file",
         "version" | "-V" | "--version" => "version",
-        other => return Err(format!("unknown command: {other}")),
+        other => resolve_prefix(other)?,
     };
     let n = canonical;
     let cmd = match n {
@@ -903,6 +1034,19 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::SelectWindow { target: target.ok_or("select-window: -t required")? }
+        }
+        "swap-window" | "move-window" => {
+            let (mut src, mut dst) = (None, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-s" => src = Some(Target::parse(a.value("-s")?)),
+                    "-t" => dst = Some(Target::parse(a.value("-t")?)),
+                    "-d" | "-k" | "-a" | "-b" | "-r" => {} // tmux flags without a wmux meaning
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::SwapWindow { src, dst, move_it: n == "move-window" }
         }
         "next-window" | "previous-window" | "last-window" => {
             let mut target = None;
@@ -1028,6 +1172,24 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::SwapPane { up, target }
         }
+        "select-layout" => {
+            let (mut next, mut prev, mut target) = (false, false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-n" => next = true,
+                    "-p" => prev = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-o" | "-E" => {} // tmux: previous layout / spread out
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let name = a.next().map(str::to_string);
+            a.none_left(n)?;
+            if name.is_none() && !next && !prev {
+                return Err("select-layout: layout name, -n or -p required".into());
+            }
+            Cmd::SelectLayout { name, next, prev, target }
+        }
         "break-pane" => {
             let mut target = None;
             while a.is_flag() {
@@ -1066,6 +1228,19 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "paste-buffer" => {
             a.none_left(n)?;
             Cmd::PasteBuffer
+        }
+        "display-panes" => {
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-b" | "-N" => {} // tmux: background / no key wait
+                    "-d" => {
+                        a.value("-d")?;
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::DisplayPanes
         }
         "command-prompt" => {
             let (mut prompt, mut initial) = (None, None);
@@ -1132,12 +1307,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::UnbindKey { root, key }
         }
         "set-option" => {
+            // -g / -s / -w are accepted and ignored; -a appends, and tmux
+            // users write it combined ("set -ag status-right ...").
+            let mut append = false;
             while a.is_flag() {
-                a.next(); // -g / -s / -w are accepted and ignored
+                let flag = a.next().unwrap();
+                if flag.contains('a') {
+                    append = true;
+                }
             }
             let name = a.next().ok_or("set-option: option name required")?.to_string();
             let value = a.rest().join(" ");
-            Cmd::SetOption { name, value }
+            Cmd::SetOption { name, value, append }
         }
         "switch-client" => {
             let (mut next, mut prev, mut target) = (false, false, None);
@@ -1500,6 +1681,25 @@ mod tests {
     }
 
     #[test]
+    fn unambiguous_prefixes_are_command_names() {
+        // tmux habits: att, splitw, lsp, neww, ...
+        assert!(matches!(p("att"), Cmd::AttachSession { .. }));
+        assert!(matches!(p("attach-s"), Cmd::AttachSession { .. }));
+        assert!(matches!(p("spl -h"), Cmd::SplitWindow { horizontal: true, .. }));
+        assert!(matches!(p("resi -Z"), Cmd::ResizePane { zoom: true, .. }));
+        assert!(matches!(p("choose-t"), Cmd::ChooseTree { .. }));
+        assert!(matches!(p("swap-p -U"), Cmd::SwapPane { up: true, .. }));
+        // The short aliases still win over the prefix rule.
+        assert!(matches!(p("ls"), Cmd::ListSessions));
+        assert!(matches!(p("new -d"), Cmd::NewSession { detached: true, .. }));
+        // Ambiguity is an error, not a guess.
+        let e = parse_line("kill").unwrap_err();
+        assert!(e.starts_with("ambiguous command: kill (could be kill-pane, kill-server"), "{e}");
+        assert!(parse_line("list-s").unwrap_err().starts_with("ambiguous command"));
+        assert_eq!(parse_line("nosuchthing").unwrap_err(), "unknown command: nosuchthing");
+    }
+
+    #[test]
     fn parse_choose_tree() {
         assert_eq!(p("choose-tree"), Cmd::ChooseTree { sessions: false, windows: false });
         assert_eq!(p("choose-tree -Zw"), Cmd::ChooseTree { sessions: false, windows: true });
@@ -1610,7 +1810,14 @@ mod tests {
             }
         );
         assert_eq!(p("bind -r C-h resize-pane -L 5").to_string(), "bind-key -r C-h resize-pane -L 5");
-        assert_eq!(p("set -g prefix C-a"), Cmd::SetOption { name: "prefix".into(), value: "C-a".into() });
+        assert_eq!(
+            p("set -g prefix C-a"),
+            Cmd::SetOption { name: "prefix".into(), value: "C-a".into(), append: false }
+        );
+        assert_eq!(
+            p("set -ag status-right \" | x\""),
+            Cmd::SetOption { name: "status-right".into(), value: " | x".into(), append: true }
+        );
     }
 
     #[test]

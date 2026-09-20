@@ -29,6 +29,94 @@ pub enum Node {
     },
 }
 
+/// The named arrangements of `select-layout`, in the order `-n` cycles them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preset {
+    EvenHorizontal,
+    EvenVertical,
+    MainHorizontal,
+    MainVertical,
+    Tiled,
+}
+
+pub const PRESETS: &[(&str, Preset)] = &[
+    ("even-horizontal", Preset::EvenHorizontal),
+    ("even-vertical", Preset::EvenVertical),
+    ("main-horizontal", Preset::MainHorizontal),
+    ("main-vertical", Preset::MainVertical),
+    ("tiled", Preset::Tiled),
+];
+
+impl Preset {
+    pub fn parse(name: &str) -> Option<Preset> {
+        // tmux takes unambiguous prefixes here too ("even-h", "til").
+        let hits: Vec<Preset> = PRESETS.iter().filter(|(n, _)| n.starts_with(name)).map(|(_, p)| *p).collect();
+        if hits.len() == 1 { Some(hits[0]) } else { PRESETS.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) }
+    }
+
+    pub fn name(self) -> &'static str {
+        PRESETS.iter().find(|(_, p)| *p == self).map(|(n, _)| *n).unwrap_or("tiled")
+    }
+
+    pub fn next(self) -> Preset {
+        let i = PRESETS.iter().position(|(_, p)| *p == self).unwrap_or(0);
+        PRESETS[(i + 1) % PRESETS.len()].1
+    }
+
+    pub fn prev(self) -> Preset {
+        let i = PRESETS.iter().position(|(_, p)| *p == self).unwrap_or(0);
+        PRESETS[(i + PRESETS.len() - 1) % PRESETS.len()].1
+    }
+
+    /// Rebuild a layout tree holding exactly `panes`, in that order.
+    pub fn build(self, panes: &[PaneId]) -> Option<Node> {
+        let (&first, rest) = panes.split_first()?;
+        if rest.is_empty() {
+            return Some(Node::Leaf(first));
+        }
+        let row = |ids: &[PaneId], horizontal: bool| Node::Split {
+            horizontal,
+            children: ids.iter().map(|id| Node::Leaf(*id)).collect(),
+            sizes: vec![1; ids.len()], // equal weights; `layout` scales them to the rect
+        };
+        Some(match self {
+            Preset::EvenHorizontal => row(panes, true),
+            Preset::EvenVertical => row(panes, false),
+            // The first pane keeps half; the others share the other half.
+            Preset::MainVertical => {
+                Node::Split { horizontal: true, children: vec![Node::Leaf(first), row(rest, false)], sizes: vec![1, 1] }
+            }
+            Preset::MainHorizontal => {
+                Node::Split { horizontal: false, children: vec![Node::Leaf(first), row(rest, true)], sizes: vec![1, 1] }
+            }
+            Preset::Tiled => {
+                // Columns first, like tmux: ceil(sqrt(n)) columns of rows.
+                let n = panes.len();
+                let cols = (n as f64).sqrt().ceil() as usize;
+                let rows = n.div_ceil(cols);
+                let mut columns: Vec<Node> = Vec::new();
+                let mut i = 0;
+                for c in 0..cols {
+                    // Spread the remainder over the first columns.
+                    let take = if c < n % cols || n.is_multiple_of(cols) { rows } else { rows - 1 };
+                    let take = take.min(n - i);
+                    if take == 0 {
+                        break;
+                    }
+                    let slice = &panes[i..i + take];
+                    i += take;
+                    columns.push(if slice.len() == 1 { Node::Leaf(slice[0]) } else { row(slice, false) });
+                }
+                if columns.len() == 1 {
+                    columns.pop().unwrap()
+                } else {
+                    Node::Split { horizontal: true, sizes: vec![1; columns.len()], children: columns }
+                }
+            }
+        })
+    }
+}
+
 impl Node {
     pub fn panes(&self) -> Vec<PaneId> {
         let mut out = Vec::new();
@@ -332,6 +420,54 @@ mod tests {
 
     fn rect_of(r: &[(PaneId, Rect)], id: PaneId) -> Rect {
         r.iter().find(|(i, _)| *i == id).unwrap().1
+    }
+
+    #[test]
+    fn presets_arrange_every_pane() {
+        let ids = [1, 2, 3, 4];
+        let sizes = |p: Preset| -> Vec<(u16, u16)> {
+            let mut n = p.build(&ids).unwrap();
+            assert_eq!(n.panes(), ids, "{}: keeps every pane, in order", p.name());
+            rects(&mut n, 80, 24).iter().map(|(_, r)| (r.w, r.h)).collect()
+        };
+        // Four rows and four columns, the leftover cell going to the last one
+        // (24 rows minus 3 separators splits 5/5/5/6).
+        assert_eq!(sizes(Preset::EvenVertical), [(80, 5), (80, 5), (80, 5), (80, 6)]);
+        assert_eq!(sizes(Preset::EvenHorizontal), [(19, 24), (19, 24), (19, 24), (20, 24)]);
+        // One big pane plus a stack of the rest.
+        let main_v = sizes(Preset::MainVertical);
+        assert_eq!(main_v[0], (39, 24), "the main pane keeps half the width");
+        assert!(main_v[1..].iter().all(|(w, h)| *w == 40 && (7..=8).contains(h)), "{main_v:?}");
+        let main_h = sizes(Preset::MainHorizontal);
+        assert_eq!(main_h[0].0, 80, "the main pane spans the width: {main_h:?}");
+        assert!(main_h[1..].iter().all(|(w, _)| *w == 26), "{main_h:?}");
+        // A 2x2 grid.
+        let tiled = sizes(Preset::Tiled);
+        assert!(tiled.iter().all(|(w, h)| (39..=40).contains(w) && (11..=12).contains(h)), "{tiled:?}");
+
+        // Degenerate counts still produce a tree with exactly those panes.
+        for p in PRESETS.iter().map(|(_, p)| *p) {
+            assert!(p.build(&[]).is_none(), "{}: nothing to arrange", p.name());
+            assert_eq!(p.build(&[7]).unwrap(), Node::Leaf(7));
+            let mut many: Node = p.build(&(1..=9).collect::<Vec<PaneId>>()).unwrap();
+            assert_eq!(many.panes().len(), 9);
+            assert_eq!(rects(&mut many, 80, 24).len(), 9, "{}: nine panes get nine rects", p.name());
+        }
+    }
+
+    #[test]
+    fn preset_names_take_prefixes_and_cycle() {
+        assert_eq!(Preset::parse("tiled"), Some(Preset::Tiled));
+        assert_eq!(Preset::parse("til"), Some(Preset::Tiled));
+        assert_eq!(Preset::parse("even-h"), Some(Preset::EvenHorizontal));
+        assert_eq!(Preset::parse("main"), None, "main-horizontal and main-vertical both match");
+        assert_eq!(Preset::parse("nope"), None);
+        assert_eq!(Preset::EvenHorizontal.next(), Preset::EvenVertical);
+        assert_eq!(Preset::Tiled.next(), Preset::EvenHorizontal, "the cycle wraps");
+        assert_eq!(Preset::EvenHorizontal.prev(), Preset::Tiled);
+        for (name, p) in PRESETS {
+            assert_eq!(p.name(), *name);
+        }
     }
 
     fn assert_tiling(r: &[(PaneId, Rect)], w: u16, h: u16) {

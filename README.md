@@ -68,6 +68,10 @@ wmux capture-pane -p -t work   # print what the pane shows (-S -200 adds scrollb
 wmux kill-server
 ```
 
+Any unambiguous prefix of a command name works, as in tmux: `wmux att`,
+`wmux lsp`, `wmux splitw -h`. `wmux kill` is refused, because four commands
+start that way.
+
 Inside a session, press the prefix (`Ctrl+b`) and then:
 
 | Key | Action |
@@ -83,8 +87,10 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `z` | zoom (toggle) the current pane |
 | `x` | kill the current pane |
 | `{` / `}` | swap pane with previous / next |
+| `q` | show the pane numbers; press one to go there |
+| `Space` | cycle the layout (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) |
 | `!` | break the pane out into its own window |
-| `[` / `PgUp` | copy mode (scroll back; `Space` starts a selection, `Enter` copies) |
+| `[` / `PgUp` | copy mode (scroll back; `Space` starts a selection, `Enter` copies, `/` `?` search, `n` `N` repeat) |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...) |
 | `d` | detach |
@@ -165,18 +171,32 @@ bind - split-window -v
 bind -n M-Left previous-window     # -n: no prefix
 bind -n M-Right next-window
 bind r source-file ~/.wmux.conf
+
+set -ag status-right " | wmux"    # -a adds to what the option already holds
+source-file ~/.wmux/themes/nord.conf
 ```
 
 Options unknown to wmux but common in `.tmux.conf` (`escape-time`,
-`default-terminal`, `status-left`, ...) are accepted and ignored, so an
-existing tmux config can be reused as a starting point.
+`default-terminal`, ...) are accepted and ignored, so an existing tmux config
+can be reused as a starting point.
+
+### Themes
+
+`themes/` in this repository holds ready-made colour schemes (Nord, Gruvbox
+dark, Dracula, Catppuccin Mocha). They are ordinary wmux commands, so a theme
+is just a file to source and an easy thing to copy and edit:
+
+```tmux
+source-file ~/.wmux/themes/dracula.conf
+```
 
 ### Status line
 
 `status-left`, `status-right`, `window-status-format` and
 `window-status-current-format` take tmux format strings: `#S` session, `#W`
 window name, `#I` window index, `#P` pane index, `#T` pane title, `#H` host,
-`#F` flags, `#{session_name}`-style names, `%H:%M` time fields,
+`#F` flags, `#{session_name}`-style names, `#{?flag,then,else}` conditionals
+(`#{?window_flags,busy,idle}`, `#{?session_name==work,…,…}`), `%H:%M` time fields,
 `#[fg=colour39,bg=black,bold]` style changes and `#(command)`, which runs the
 command every `status-interval` seconds (default 15) and shows its first
 line. `status-left-length` / `status-right-length` clip.
@@ -271,10 +291,11 @@ covered without a human at the keyboard.
 
 Relative to tmux: `synchronize-panes` applies to the current window (no
 `-t`), multiple clients on the same session see the same size
-(last attach wins, no per-client viewport), only the hooks listed above, no
-`#{?cond,a,b}` conditionals in formats, no named paste buffers (the Windows
+(last attach wins, no per-client viewport), only the hooks listed above,
+`swap-window` and `move-window` work inside one session, `bind -r` has no
+per-key repeat count, no named paste buffers (the Windows
 clipboard is the only buffer), `choose-tree` without per-session
 collapsing, tagging or a filter, `swap-pane` swaps with the previous or
 next pane (`-U` / `-D`; `-s` and `-t` both name the pane to swap, there is
-no pair form), no window layout presets
-(`select-layout`), and `list-panes -a`/`-s` always list the target window only.
+no pair form), `select-layout` has the five named layouts but not tmux's
+layout strings, and `list-panes -a`/`-s` always list the target window only.

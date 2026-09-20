@@ -75,6 +75,10 @@ enum PromptKind {
         template: Option<String>,
     },
     Confirm(Cmd),
+    /// `/` or `?` in copy mode: the input is a pattern, not a command.
+    Search {
+        back: bool,
+    },
 }
 
 struct Prompt {
@@ -124,6 +128,8 @@ struct Client {
     prefix: bool,
     /// A `bind -r` key ran; until this instant its table answers bare keys.
     repeat_until: Option<Instant>,
+    /// `display-panes` is showing the pane numbers until this instant.
+    panes_until: Option<Instant>,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
     /// Multi-line command output shown over the window until a key is pressed
@@ -183,6 +189,8 @@ struct Window {
     active: PaneId,
     last_pane: Option<PaneId>,
     zoomed: bool,
+    /// Last layout applied by `select-layout`, so `-n` knows where to go next.
+    layout_preset: Option<layout::Preset>,
     /// `synchronize-panes`: input goes to every pane of the window.
     synchronized: bool,
     rects: Vec<(PaneId, Rect)>,
@@ -488,6 +496,8 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("{", "swap-pane -U"),
         ("}", "swap-pane -D"),
         ("!", "break-pane"),
+        ("Space", "select-layout -n"),
+        ("q", "display-panes"),
         ("(", "switch-client -p"),
         (")", "switch-client -n"),
         ("w", "choose-tree -Zw"),
@@ -899,6 +909,7 @@ impl Server {
                         last_cursor: None,
                         prefix: false,
                         repeat_until: None,
+                        panes_until: None,
                         prompt: None,
                         message: None,
                         overlay: None,
@@ -1313,6 +1324,7 @@ impl Server {
             panes: vec![pane],
             last_pane: None,
             zoomed: false,
+            layout_preset: None,
             synchronized: false,
             rects: Vec::new(),
         };
@@ -1747,6 +1759,38 @@ impl Server {
                     Err(e) => Outcome::Error(e),
                 }
             }
+            Cmd::SwapWindow { src, dst, move_it } => {
+                let (ssid, si) = match self.resolve(src.as_ref(), cid) {
+                    Ok((s, w, _)) => (s, w),
+                    Err(e) => return Outcome::Error(e),
+                };
+                let (dsid, di) = match self.resolve(dst.as_ref(), cid) {
+                    Ok((s, w, _)) => (s, w),
+                    Err(e) => return Outcome::Error(e),
+                };
+                if ssid != dsid {
+                    return Outcome::Error("swap-window and move-window work inside one session".into());
+                }
+                let cur_id = self.session(ssid).and_then(|s| s.windows.get(s.cur)).map(|w| w.id);
+                let s = self.session_mut(ssid).unwrap();
+                if si == di {
+                    return Outcome::Ok;
+                }
+                if move_it {
+                    let w = s.windows.remove(si);
+                    s.windows.insert(di.min(s.windows.len()), w);
+                } else {
+                    s.windows.swap(si, di);
+                }
+                // Follow the window that was current, wherever it landed.
+                if let Some(id) = cur_id
+                    && let Some(i) = s.windows.iter().position(|w| w.id == id)
+                {
+                    s.cur = i;
+                }
+                self.autosave_changed();
+                Outcome::Ok
+            }
             Cmd::NextWindow { ref target } | Cmd::PreviousWindow { ref target } | Cmd::LastWindow { ref target } => {
                 let w = match cmd {
                     Cmd::NextWindow { .. } => "+",
@@ -1884,6 +1928,35 @@ impl Server {
                 self.relayout_session(sid);
                 Outcome::Ok
             }
+            Cmd::SelectLayout { name, next, prev: _, target } => {
+                let (sid, widx, _) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let w = &self.session(sid).unwrap().windows[widx];
+                let current = w.layout_preset;
+                let preset = match name {
+                    Some(n) => match layout::Preset::parse(&n) {
+                        Some(p) => p,
+                        None => {
+                            let all: Vec<&str> = layout::PRESETS.iter().map(|(n, _)| *n).collect();
+                            return Outcome::Error(format!("unknown layout: {n} (one of {})", all.join(", ")));
+                        }
+                    },
+                    // Cycling from nothing starts at the first layout.
+                    None if next => current.map(|p| p.next()).unwrap_or(layout::PRESETS[0].1),
+                    None => current.map(|p| p.prev()).unwrap_or(layout::PRESETS[0].1),
+                };
+                let panes = w.layout.panes();
+                let Some(tree) = preset.build(&panes) else { return Outcome::Error("window has no panes".into()) };
+                let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                w.layout = tree;
+                w.layout_preset = Some(preset);
+                w.zoomed = false;
+                self.relayout_session(sid);
+                self.message(cid.unwrap_or(0), preset.name());
+                Outcome::Ok
+            }
             Cmd::SwapPane { up, target } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
@@ -1930,6 +2003,7 @@ impl Server {
                     panes: vec![pane],
                     last_pane: None,
                     zoomed: false,
+                    layout_preset: None,
                     synchronized: false,
                     rects: Vec::new(),
                 });
@@ -1972,6 +2046,15 @@ impl Server {
                     }
                 } else if let Some(p) = self.find_pane_mut(pid) {
                     p.write_input(&bytes);
+                }
+                Outcome::Ok
+            }
+            Cmd::DisplayPanes => {
+                let Some(cid) = cid else { return Outcome::Error("display-panes: no client".into()) };
+                // tmux waits a second by default; `display-time` is ours.
+                let ms = self.opts.display_time_ms.max(1000);
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.panes_until = Some(Instant::now() + Duration::from_millis(ms));
                 }
                 Outcome::Ok
             }
@@ -2050,7 +2133,12 @@ impl Server {
                 }
                 None => Outcome::Error(format!("unknown key: {key}")),
             },
-            Cmd::SetOption { name, value } if name == "synchronize-panes" => {
+            Cmd::SetOption { name, value, append } if append && name != "synchronize-panes" => {
+                // `set -a`: add to what is there (tmux appends the text).
+                let current = self.opts.get(&name).unwrap_or_default();
+                self.exec(Cmd::SetOption { name, value: format!("{current}{value}"), append: false }, cid)
+            }
+            Cmd::SetOption { name, value, .. } if name == "synchronize-panes" => {
                 // Window-scoped in tmux; here it applies to the current window.
                 let on = match value.trim().to_ascii_lowercase().as_str() {
                     "on" | "true" | "yes" | "1" => Some(true),
@@ -2066,7 +2154,7 @@ impl Server {
                 w.synchronized = on.unwrap_or(!w.synchronized);
                 Outcome::Ok
             }
-            Cmd::SetOption { name, value } => {
+            Cmd::SetOption { name, value, .. } => {
                 let r = self.opts.set(&name, &value);
                 if r.is_ok() {
                     // Status line toggles change the window area.
@@ -2265,18 +2353,44 @@ impl Server {
         }
     }
 
-    /// Expand `#S` (session), `#W` (window), `#P` (pane index), `#T` (pane title).
-    fn expand_format(&self, s: &str, cid: ClientId) -> String {
+    /// Expand a format string for `display-message` and the prompts, with the
+    /// same engine the status line uses, so `#{...}`, `#{?...}` and `#(...)`
+    /// mean the same thing everywhere.
+    fn expand_format(&mut self, s: &str, cid: ClientId) -> String {
         let Ok((sid, widx, pid)) = self.resolve(None, Some(cid)) else { return s.to_string() };
         let sess = self.session(sid).unwrap();
         let w = &sess.windows[widx];
         let pidx = w.layout.panes().iter().position(|p| *p == pid).unwrap_or(0);
-        let title = w.pane(pid).map(|p| p.display_title().to_string()).unwrap_or_default();
-        s.replace("#S", &sess.name)
-            .replace("#W", &w.name)
-            .replace("#P", &(pidx + self.opts.pane_base_index).to_string())
-            .replace("#T", &title)
-            .replace("#I", &(widx + self.opts.base_index).to_string())
+        let pane = w.pane(pid);
+        let ctx = crate::format::Context {
+            session: sess.name.clone(),
+            window: w.name.clone(),
+            window_index: widx + self.opts.base_index,
+            pane_index: pidx + self.opts.pane_base_index,
+            pane_title: pane.map(|p| p.display_title().to_string()).unwrap_or_default(),
+            pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
+            pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
+            host: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            flags: format!(
+                "{}{}",
+                if widx == sess.cur {
+                    "*"
+                } else if Some(w.id) == sess.last {
+                    "-"
+                } else {
+                    ""
+                },
+                match (w.zoomed, w.synchronized) {
+                    (true, true) => "ZS",
+                    (true, false) => "Z",
+                    (false, true) => "S",
+                    (false, false) => "",
+                }
+            ),
+        };
+        let now = chrono::Local::now();
+        let base = render::Style::default();
+        crate::format::expand(s, &ctx, &mut self.shell_cache, base, now).into_iter().map(|seg| seg.text).collect()
     }
 
     // ------------------------------------------------------------------ keys
@@ -2303,6 +2417,20 @@ impl Server {
             if let Some(k) = key {
                 c.swallow_up.insert(rec.vk);
                 self.prompt_key(cid, k);
+            }
+            return;
+        }
+        // While `display-panes` numbers are up, a digit picks that pane and
+        // anything else just puts them away (tmux does the same).
+        if c.panes_until.is_some_and(|t| Instant::now() < t)
+            && let Some(k) = key
+        {
+            c.panes_until = None;
+            c.swallow_up.insert(rec.vk);
+            if let KeyCode::Char(d @ '0'..='9') = k.code {
+                let idx = d as usize - '0' as usize;
+                let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(idx) }, Some(cid));
+                self.reply(cid, out);
             }
             return;
         }
@@ -2415,9 +2543,14 @@ impl Server {
                     self.reply(cid, out);
                 }
             }
-            PromptKind::Command { .. } => match (k.code, k.ctrl, k.alt) {
+            PromptKind::Command { .. } | PromptKind::Search { .. } => match (k.code, k.ctrl, k.alt) {
                 (KeyCode::Escape, _, _) | (KeyCode::Char('c'), true, _) | (KeyCode::Char('g'), true, _) => {
                     c.prompt = None;
+                }
+                (KeyCode::Enter, _, _) if matches!(p.kind, PromptKind::Search { .. }) => {
+                    let prompt = c.prompt.take().unwrap();
+                    let PromptKind::Search { back } = prompt.kind else { unreachable!() };
+                    self.search_in_copy_mode(cid, &prompt.input, back, true);
                 }
                 (KeyCode::Enter, _, _) => {
                     let prompt = c.prompt.take().unwrap();
@@ -2479,6 +2612,67 @@ impl Server {
                 }
                 _ => {}
             },
+        }
+    }
+
+    /// `/` `?` `n` `N` in copy mode: move the cursor to the next line holding
+    /// `pattern`, case-insensitively, and remember it for `n`.
+    ///
+    /// `back` searches towards older lines (what `/` does in a scrollback,
+    /// like less). `fresh` starts from the cursor line itself so that a new
+    /// search can match what is already on screen.
+    fn search_in_copy_mode(&mut self, cid: ClientId, pattern: &str, back: bool, fresh: bool) {
+        let pattern = pattern.to_string();
+        if pattern.is_empty() {
+            return;
+        }
+        let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
+        let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut()) else {
+            return;
+        };
+        if p.copy.is_none() {
+            enter_copy_mode(p);
+        }
+        let needle = pattern.to_lowercase();
+        let from = copy_abs(p);
+        let last = p.scrollback_len() + p.rows as usize - 1;
+        // Where to look, nearest first.
+        let candidates: Vec<usize> = if back {
+            let start = if fresh { from } else { from.saturating_sub(1) };
+            (0..=start).rev().collect()
+        } else {
+            let start = if fresh { from } else { from + 1 };
+            (start..=last).collect()
+        };
+        let hit = candidates.into_iter().find_map(|abs| {
+            let (text, _) = p.line_text(abs);
+            text.to_lowercase().find(&needle).map(|byte| {
+                // Column in characters, which is what the copy cursor counts.
+                let col = text[..byte].chars().count() as u16;
+                (abs, col)
+            })
+        });
+        let Some((abs, col)) = hit else {
+            if let Some(c) = p.copy.as_mut() {
+                c.search = Some(pattern.clone());
+                c.search_back = back;
+            }
+            self.message(cid, &format!("no match: {pattern}"));
+            return;
+        };
+        // Put the hit in the middle of the view when there is room above it.
+        let max = p.scrollback_len();
+        let rows = p.rows as usize;
+        let want_row = (rows / 2).min(abs);
+        let offset = (max + want_row).saturating_sub(abs).min(max);
+        let cy = (abs + offset).saturating_sub(max).min(rows.saturating_sub(1));
+        let cols = p.cols;
+        if let Some(c) = p.copy.as_mut() {
+            c.offset = offset;
+            c.cy = cy as u16;
+            c.cx = col.min(cols.saturating_sub(1));
+            c.search = Some(pattern);
+            c.search_back = back;
         }
     }
 
@@ -2661,6 +2855,27 @@ impl Server {
                 let abs = copy_abs(p);
                 let c = p.copy.as_mut().unwrap();
                 c.anchor = Some((abs, c.cx));
+            }
+            // Search, like less and vim: / goes back through the scrollback,
+            // ? goes forward, n and N repeat.
+            (KeyCode::Char('/'), false, false) | (KeyCode::Char('?'), false, false) => {
+                let back = k.code == KeyCode::Char('/');
+                if let Some(cl) = self.clients.get_mut(&cid) {
+                    cl.prompt = Some(Prompt {
+                        kind: PromptKind::Search { back },
+                        label: if back { "/".into() } else { "?".into() },
+                        input: String::new(),
+                        cursor: 0,
+                    });
+                }
+            }
+            (KeyCode::Char('n'), false, false) | (KeyCode::Char('N'), false, false) => {
+                let Some((pattern, back)) = c.search.clone().map(|s| (s, c.search_back)) else {
+                    self.message(cid, "no previous search");
+                    return;
+                };
+                let back = if k.code == KeyCode::Char('N') { !back } else { back };
+                self.search_in_copy_mode(cid, &pattern, back, false);
             }
             (KeyCode::Enter, _, _) | (KeyCode::Char('y'), false, false) | (KeyCode::Char('w'), true, _) => {
                 if c.anchor.is_some() {
@@ -3065,6 +3280,16 @@ impl Server {
                 p.parser.screen_mut().set_scrollback(0);
             }
         }
+        // `display-panes`: each pane wears its number until the timer runs out.
+        if self.clients.get(&cid).is_some_and(|c| c.panes_until.is_some_and(|t| Instant::now() < t)) {
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            let order = w.layout.panes();
+            for (id, rect) in &w.rects {
+                let n = order.iter().position(|p| p == id).unwrap_or(0) + pane_base_index;
+                render::draw_pane_number(&mut grid, *rect, n, *id == w.active);
+            }
+            cursor = None;
+        }
         let area = self.window_area(cols, rows);
         let c = self.clients.get_mut(&cid).unwrap();
         c.window_hits = window_hits;
@@ -3256,6 +3481,8 @@ fn enter_copy_mode(p: &mut Pane) {
             cy: row.min(p.rows.saturating_sub(1)),
             anchor: None,
             dragging: false,
+            search: None,
+            search_back: true,
         });
     }
 }
@@ -3353,6 +3580,7 @@ mod tests {
             last_cursor: Some((0, 0)),
             prefix: false,
             repeat_until: None,
+            panes_until: None,
             prompt: None,
             message: None,
             overlay: None,

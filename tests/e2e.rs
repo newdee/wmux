@@ -1009,6 +1009,127 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn window_order_formats_and_short_names() {
+    let h = Harness::start("order").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "w", "-n", "one"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["new-window", "-d", "-t", "w", "-n", "two"]).await;
+    h.cli(&["new-window", "-d", "-t", "w", "-n", "three"]).await;
+    let names = || async {
+        let (_, out, _) = h.cli(&["list-windows", "-t", "w"]).await;
+        // "0: one* (1 panes) [80x24]" -> "one"
+        out.lines()
+            .map(|l| {
+                let after = l.split_once(": ").unwrap().1;
+                let word = after.split_whitespace().next().unwrap_or("");
+                word.trim_end_matches(['*', '-']).to_string()
+            })
+            .collect::<Vec<String>>()
+    };
+    assert_eq!(names().await, ["one", "two", "three"]);
+
+    // swap exchanges two windows, move takes one out and re-inserts it.
+    let (code, _, err) = h.cli(&["swap-window", "-s", "w:0", "-t", "w:2"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(names().await, ["three", "two", "one"]);
+    let (code, _, err) = h.cli(&["move-window", "-s", "w:2", "-t", "w:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(names().await, ["one", "three", "two"]);
+    // Short forms of the command names work as in tmux.
+    let (code, out, _) = h.cli(&["lsw", "-t", "w"]).await;
+    assert_eq!(code, 0);
+    assert_eq!(out.lines().count(), 3);
+    let (code, _, err) = h.cli(&["kill"]).await;
+    assert_eq!(code, 1);
+    assert!(err.starts_with("ambiguous command: kill"), "{err}");
+
+    // `set -a` appends, and formats understand conditionals everywhere.
+    h.cli(&["set", "-g", "status-right", "A"]).await;
+    h.cli(&["set", "-ag", "status-right", "B"]).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "status-right"]).await;
+    assert_eq!(out.trim(), "AB");
+    let (_, out, _) = h.cli(&["display-message", "-p", "#{?window_flags,busy,idle}|#{?session_name==w,yes,no}"]).await;
+    assert_eq!(out.trim(), "busy|yes");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn layouts_and_pane_numbers() {
+    let h = Harness::start("layout").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "g"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    for _ in 0..3 {
+        h.cli(&["split-window", "-h", "-t", "g"]).await;
+    }
+    let widths = || async {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "g"]).await;
+        out.lines().map(|l| l.split(['[', 'x']).nth(1).unwrap().parse::<u16>().unwrap()).collect::<Vec<u16>>()
+    };
+
+    // prefix Space cycles: the first layout is even-horizontal, four columns.
+    c.prefix(' ').await;
+    c.wait_for("even-horizontal", |s| s.contents().contains("even-horizontal")).await;
+    let w = widths().await;
+    assert_eq!(w.len(), 4);
+    assert!(w.iter().all(|x| (19..=20).contains(x)), "four equal columns: {w:?}");
+    // Again: even-vertical, so every pane is full width.
+    c.prefix(' ').await;
+    c.wait_for("even-vertical", |s| s.contents().contains("even-vertical")).await;
+    assert!(widths().await.iter().all(|x| *x == COLS), "full width rows");
+    // By name, with a prefix of the name and a target.
+    let (code, _, err) = h.cli(&["select-layout", "-t", "g", "til"]).await;
+    assert_eq!(code, 0, "{err}");
+    let w = widths().await;
+    assert!(w.iter().all(|x| (39..=40).contains(x)), "a 2x2 grid: {w:?}");
+    let (code, _, err) = h.cli(&["select-layout", "-t", "g", "nope"]).await;
+    assert_eq!(code, 1);
+    assert!(err.starts_with("unknown layout: nope"), "{err}");
+
+    // prefix q shows the numbers; a digit then picks that pane.
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.key(b'2' as u16, '2', 0).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "g"]).await;
+    assert!(out.lines().nth(2).unwrap().contains("(active)"), "pane 2 is active now: {out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copy_mode_search_finds_scrolled_off_lines() {
+    let h = Harness::start("search").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "f"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // More output than fits, so the early lines are only in the scrollback.
+    c.type_str("for /l %i in (1,1,60) do @echo marker-%i").await;
+    c.enter().await;
+    c.wait_for("output", |s| s.contents().contains("marker-60")).await;
+    assert!(!c.text().contains("marker-3 "), "line 3 has scrolled away: {}", c.text());
+
+    // prefix [ enters copy mode, / searches back through the scrollback.
+    c.prefix('[').await;
+    c.type_str("/marker-3 ").await;
+    c.enter().await;
+    c.wait_for("found", |s| s.contents().contains("marker-3 ")).await;
+
+    // n repeats the search further back; N turns around.
+    c.type_str("n").await;
+    c.wait_for("earlier hit", |s| s.contents().contains("marker-3 ")).await;
+    c.type_str("/nothing-like-this").await;
+    c.enter().await;
+    c.wait_for("miss reported", |s| s.contents().contains("no match: nothing-like-this")).await;
+    // Escape leaves copy mode; the pane is still usable.
+    c.key(0x1B, '\x1b', 0).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.type_str("echo after-search").await;
+    c.enter().await;
+    let pane = h.wait_capture("f", "the echo after copy mode", |t| t.contains("after-search")).await;
+    assert!(pane.contains("after-search"), "{pane}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pane_base_index_shifts_every_pane_number() {
     let h = Harness::start("panebase").await;
     h.cli(&["set", "-g", "pane-base-index", "1"]).await;

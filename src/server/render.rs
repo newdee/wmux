@@ -499,6 +499,49 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
     g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
 }
 
+/// `display-panes`: a pane's number, centred in its rectangle, big enough to
+/// read at a glance (the active pane in the active colour).
+pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {
+    // Five rows of 3x5 block digits, so a number reads from across the room.
+    const DIGITS: [[u8; 5]; 10] = [
+        [0b111, 0b101, 0b101, 0b101, 0b111], // 0
+        [0b010, 0b110, 0b010, 0b010, 0b111], // 1
+        [0b111, 0b001, 0b111, 0b100, 0b111], // 2
+        [0b111, 0b001, 0b111, 0b001, 0b111], // 3
+        [0b101, 0b101, 0b111, 0b001, 0b001], // 4
+        [0b111, 0b100, 0b111, 0b001, 0b111], // 5
+        [0b111, 0b100, 0b111, 0b101, 0b111], // 6
+        [0b111, 0b001, 0b001, 0b001, 0b001], // 7
+        [0b111, 0b101, 0b111, 0b101, 0b111], // 8
+        [0b111, 0b101, 0b111, 0b001, 0b111], // 9
+    ];
+    let text = number.to_string();
+    let style = Style::colors(Color::Idx(0), if active { Color::Idx(2) } else { Color::Idx(4) });
+    let digit_w = 4u16; // 3 columns plus a gap
+    let big_w = text.len() as u16 * digit_w;
+    if rect.w >= big_w && rect.h >= 5 {
+        let x0 = rect.x + (rect.w - big_w) / 2;
+        let y0 = rect.y + (rect.h - 5) / 2;
+        for (i, ch) in text.chars().enumerate() {
+            let d = DIGITS[ch.to_digit(10).unwrap_or(0) as usize];
+            for (row, bits) in d.iter().enumerate() {
+                for col in 0..3u16 {
+                    if bits & (1 << (2 - col)) != 0 {
+                        // A solid block rather than a coloured space, so the
+                        // number is visible whatever the pane's background is.
+                        g.set(x0 + i as u16 * digit_w + col, y0 + row as u16, Cell::new("█", false, style));
+                    }
+                }
+            }
+        }
+        return;
+    }
+    // Too small for the block digits: plain text in the corner.
+    if rect.w > 0 && rect.h > 0 {
+        g.put_str(rect.x, rect.y, &text, style, rect.w);
+    }
+}
+
 /// The `choose-tree` picker: `lines` from `top` fill the area, line `sel` is
 /// highlighted (tmux mode-style: black on yellow), the last row is the key hint.
 pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize) {

@@ -15,6 +15,7 @@ Sessions:
 Windows / panes (from inside a session, or with -t):
   new-window (neww) [-n name] [-c dir] [command...]   kill-window   rename-window name
   select-window -t N   next-window   previous-window   last-window   list-windows
+  swap-window -s A -t B   move-window -s A -t B   select-layout [-n|-p] [name]
   split-window (splitw) [-h|-v] [-c dir] [command...]  kill-pane   select-pane -L|-R|-U|-D
   resize-pane -L|-R|-U|-D [n] | -Z   swap-pane -U|-D   break-pane   list-panes
   send-keys [-t target] keys...   capture-pane -p [-S -N]   copy-mode   paste-buffer   list-keys
@@ -26,7 +27,8 @@ Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
 Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name)
-Default prefix: C-b.  Prefix ? lists key bindings.";
+Any unambiguous prefix of a command name works: `wmux att`, `wmux lsp`, `wmux splitw -h`.
+Default prefix: C-b.  Prefix ? lists key bindings, prefix q shows pane numbers.";
 
 fn main() {
     // args() panics on non-UTF-8 (unpaired surrogates in a path); be lossy instead.
