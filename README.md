@@ -67,7 +67,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...) |
 | `d` | detach |
 | `?` | list key bindings |
-| `s` / `w` | list sessions / windows |
+| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels) |
 | `(` / `)` | switch the client to the previous / next session |
 
 Mouse: click selects a pane, drag a border to resize, click a window name on
@@ -244,6 +244,7 @@ Relative to tmux: `synchronize-panes` applies to the current window (no
 `-t`), multiple clients on the same session see the same size
 (last attach wins, no per-client viewport), only the hooks listed above, no
 `#{?cond,a,b}` conditionals in formats, no named paste buffers (the Windows
-clipboard is the only buffer), no `choose-tree` UI, no window layout presets
+clipboard is the only buffer), `choose-tree` without per-session
+collapsing, tagging or a filter, no window layout presets
 (`select-layout`), no repeatable bindings (`bind -r` is accepted, the repeat
 is ignored), and `list-panes -a`/`-s` always list the target window only.

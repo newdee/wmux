@@ -18,6 +18,7 @@ Windows / panes (from inside a session, or with -t):
   split-window (splitw) [-h|-v] [-c dir] [command...]  kill-pane   select-pane -L|-R|-U|-D
   resize-pane -L|-R|-U|-D [n] | -Z   swap-pane -U|-D   break-pane   list-panes
   send-keys [-t target] keys...   capture-pane -p [-S -N]   copy-mode   paste-buffer   list-keys
+  choose-tree [-s|-w]  (prefix s / w: pick a session / window with j k g G Enter q)
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)

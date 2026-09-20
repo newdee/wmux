@@ -90,6 +90,26 @@ struct Drag {
     last: i32,
 }
 
+/// The `choose-tree` picker (prefix `w` / `s`): a list of sessions, each
+/// followed by its windows when `expand` is set. `items` and `lines` are
+/// rebuilt from the live sessions at every render; the selection follows the
+/// item's identity, so windows appearing or vanishing meanwhile do not move it.
+struct Chooser {
+    expand: bool,
+    /// (session, window) behind every line; `None` is the session line itself.
+    items: Vec<(SessionId, Option<WindowId>)>,
+    lines: Vec<String>,
+    sel: usize,
+    top: usize,
+}
+
+impl Chooser {
+    fn step(&mut self, delta: i64) {
+        let last = self.items.len().saturating_sub(1) as i64;
+        self.sel = (self.sel as i64 + delta).clamp(0, last) as usize;
+    }
+}
+
 struct Client {
     id: ClientId,
     tx: mpsc::Sender<ServerMsg>,
@@ -107,6 +127,7 @@ struct Client {
     /// Multi-line command output shown over the window until a key is pressed
     /// (tmux "view mode"), e.g. `list-keys`.
     overlay: Option<Vec<String>>,
+    chooser: Option<Chooser>,
     mouse_buttons: u32,
     drag: Option<Drag>,
     /// Virtual keys whose key-down we consumed; drop the matching key-up.
@@ -451,8 +472,8 @@ fn default_bindings() -> HashMap<Key, Cmd> {
         ("!", "break-pane"),
         ("(", "switch-client -p"),
         (")", "switch-client -n"),
-        ("w", "list-windows"),
-        ("s", "list-sessions"),
+        ("w", "choose-tree -Zw"),
+        ("s", "choose-tree -Zs"),
         ("i", "display-message \"#S:#W.#P #T\""),
         ("C-s", "save-session"),
         ("C-r", "restore-session"),
@@ -861,6 +882,7 @@ impl Server {
                         prompt: None,
                         message: None,
                         overlay: None,
+                        chooser: None,
                         mouse_buttons: 0,
                         drag: None,
                         swallow_up: HashSet::new(),
@@ -998,6 +1020,7 @@ impl Server {
                 c.prefix = false;
                 c.prompt = None;
                 c.overlay = config_errors;
+                c.chooser = None;
                 c.message = None;
                 c.drag = None;
                 c.mouse_buttons = 0;
@@ -2041,6 +2064,24 @@ impl Server {
                 }
                 Outcome::Ok
             }
+            Cmd::ChooseTree { sessions, windows } => {
+                let Some(cid) = cid else { return Outcome::Error("choose-tree: no client".into()) };
+                let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else {
+                    return Outcome::Error("choose-tree: client not attached".into());
+                };
+                let expand = windows || !sessions;
+                let (items, lines) = self.chooser_lines(expand);
+                // Start on the current window (or session).
+                let cur = self.session(sid).and_then(|s| s.window()).map(|w| w.id).filter(|_| expand);
+                let sel = items.iter().position(|i| *i == (sid, cur)).unwrap_or(0);
+                let c = self.clients.get_mut(&cid).unwrap();
+                // One modal at a time: a picker opened from the `:` prompt
+                // replaces it, or its keys would go to an invisible prompt.
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser { expand, items, lines, sel, top: 0 });
+                Outcome::Ok
+            }
             Cmd::ListKeys => {
                 let mut lines: Vec<String> =
                     self.prefix_binds.iter().map(|(k, c)| format!("bind-key -T prefix {k:<10} {c}")).collect();
@@ -2214,6 +2255,9 @@ impl Server {
 
         let in_copy =
             self.session(sid).and_then(|s| s.window()).and_then(|w| w.active_pane()).is_some_and(|p| p.copy.is_some());
+        // The picker is a mode, like copy mode: the prefix still works (so
+        // `prefix d` detaches out of it), everything else belongs to the mode.
+        let in_chooser = self.clients.get(&cid).is_some_and(|c| c.chooser.is_some());
 
         if let Some(k) = key {
             let c = self.clients.get_mut(&cid).unwrap();
@@ -2239,6 +2283,11 @@ impl Server {
                 c.swallow_up.insert(rec.vk);
                 return;
             }
+            if in_chooser {
+                c.swallow_up.insert(rec.vk);
+                self.chooser_key(cid, k);
+                return;
+            }
             if in_copy {
                 c.swallow_up.insert(rec.vk);
                 self.copy_key(cid, sid, k);
@@ -2250,7 +2299,7 @@ impl Server {
                 self.reply(cid, out);
                 return;
             }
-        } else if in_copy {
+        } else if in_copy || in_chooser {
             return;
         }
         self.write_active(sid, &input::encode_key_record(&rec));
@@ -2351,6 +2400,125 @@ impl Server {
         }
     }
 
+    // ----------------------------------------------------------- choose-tree
+
+    /// The picker's lines from the live sessions, tmux `choose-tree` style:
+    /// `(n) - name: 2 windows (attached)` and, when expanded,
+    /// `(n)   - 0: cmd* (2 panes) "title"` under each session.
+    fn chooser_lines(&self, expand: bool) -> (Vec<(SessionId, Option<WindowId>)>, Vec<String>) {
+        let mut items = Vec::new();
+        let mut lines = Vec::new();
+        let tag = |n: usize| if n < 10 { format!("({n}) ") } else { "    ".to_string() };
+        for s in &self.sessions {
+            let attached = self.clients.values().any(|c| c.session == Some(s.id));
+            items.push((s.id, None));
+            lines.push(format!(
+                "{}{} {}: {} windows{}",
+                tag(lines.len()),
+                if expand { "-" } else { "+" },
+                s.name,
+                s.windows.len(),
+                if attached { " (attached)" } else { "" }
+            ));
+            if !expand {
+                continue;
+            }
+            for (i, w) in s.windows.iter().enumerate() {
+                let flag = if i == s.cur {
+                    "*"
+                } else if Some(w.id) == s.last {
+                    "-"
+                } else {
+                    ""
+                };
+                let title = w.active_pane().map(|p| p.title.as_str()).unwrap_or("");
+                items.push((s.id, Some(w.id)));
+                lines.push(format!(
+                    "{}  - {}: {}{} ({} panes) \"{}\"",
+                    tag(lines.len()),
+                    i + self.opts.base_index,
+                    w.name,
+                    flag,
+                    w.panes.len(),
+                    title
+                ));
+            }
+        }
+        (items, lines)
+    }
+
+    fn chooser_key(&mut self, cid: ClientId, k: Key) {
+        let Some((cols, rows)) = self.clients.get(&cid).map(|c| (c.cols, c.rows)) else { return };
+        let page = self.window_area(cols, rows).h.saturating_sub(1).max(1) as i64; // body rows of the picker
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let Some(ch) = c.chooser.as_mut() else { return };
+        match (k.code, k.ctrl, k.alt) {
+            (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
+                c.chooser = None;
+            }
+            (KeyCode::Down, _, _) | (KeyCode::Char('j'), false, false) | (KeyCode::Char('n'), true, _) => ch.step(1),
+            (KeyCode::Up, _, _) | (KeyCode::Char('k'), false, false) | (KeyCode::Char('p'), true, _) => ch.step(-1),
+            (KeyCode::Home, _, _) | (KeyCode::Char('g'), false, false) => ch.sel = 0,
+            (KeyCode::End, _, _) | (KeyCode::Char('G'), false, false) => ch.sel = ch.items.len().saturating_sub(1),
+            (KeyCode::NPage, _, _) | (KeyCode::Char('f'), true, _) => ch.step(page),
+            (KeyCode::PPage, _, _) | (KeyCode::Char('b'), true, _) => ch.step(-page),
+            (KeyCode::Char('d'), true, _) => ch.step(page / 2),
+            (KeyCode::Char('u'), true, _) => ch.step(-(page / 2)),
+            (KeyCode::Char(d @ '0'..='9'), false, false) => {
+                let i = d as usize - '0' as usize;
+                if i < ch.items.len() {
+                    ch.sel = i;
+                }
+            }
+            (KeyCode::Enter, _, _) => {
+                let target = ch.items.get(ch.sel).copied();
+                c.chooser = None;
+                if let Some((sid, wid)) = target {
+                    self.chooser_go(cid, sid, wid);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Switch the client to `sid` and, when given, make `wid` its window.
+    fn chooser_go(&mut self, cid: ClientId, sid: SessionId, wid: Option<WindowId>) {
+        let Some(s) = self.session(sid) else {
+            self.message(cid, "session is gone");
+            return;
+        };
+        let widx = match wid {
+            Some(w) => match s.windows.iter().position(|x| x.id == w) {
+                Some(i) => Some(i),
+                None => {
+                    self.message(cid, "window is gone");
+                    return;
+                }
+            },
+            None => None,
+        };
+        let name = s.name.clone();
+        let out = self.exec(
+            Cmd::SwitchClient {
+                next: false,
+                prev: false,
+                target: Some(Target { session: Some(name), ..Default::default() }),
+            },
+            Some(cid),
+        );
+        if let Outcome::Error(e) = out {
+            self.message(cid, &e);
+            return;
+        }
+        // Same effect as `select-window -t`, hook included.
+        if let Some(i) = widx
+            && let Some(s) = self.session_mut(sid)
+        {
+            s.select_window(i);
+            self.fire_hook("after-select-window", Some(cid));
+        }
+    }
+
     // ------------------------------------------------------------- copy mode
 
     fn copy_key(&mut self, cid: ClientId, sid: SessionId, k: Key) {
@@ -2440,6 +2608,21 @@ impl Server {
         let buttons = m.buttons & 0x7;
         let prev = c.mouse_buttons;
         c.mouse_buttons = buttons;
+        if c.chooser.is_some() {
+            // Wheel moves the selection; a click puts it on that line.
+            let (cols, rows) = (c.cols, c.rows);
+            let area = self.window_area(cols, rows);
+            let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
+            if m.flags & MOUSE_WHEELED != 0 {
+                ch.step(if (m.buttons >> 16) as i16 > 0 { -1 } else { 1 });
+            } else if buttons & 1 != 0 && prev & 1 == 0 && y >= area.y && y + 1 < area.y + area.h {
+                let i = ch.top + (y - area.y) as usize;
+                if i < ch.items.len() {
+                    ch.sel = i;
+                }
+            }
+            return;
+        }
         let shift = m.ctrl & crate::keys::SHIFT_PRESSED != 0;
         let alt = m.ctrl & (crate::keys::LEFT_ALT_PRESSED | crate::keys::RIGHT_ALT_PRESSED) != 0;
         let ctrl = m.ctrl & (crate::keys::LEFT_CTRL_PRESSED | crate::keys::RIGHT_CTRL_PRESSED) != 0;
@@ -2677,6 +2860,17 @@ impl Server {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
         let (cols, rows) = (c.cols, c.rows);
+        // The picker shows the live tree; keep the selection on the same item.
+        if let Some((expand, want, sel)) =
+            c.chooser.as_ref().map(|ch| (ch.expand, ch.items.get(ch.sel).copied(), ch.sel))
+        {
+            let (items, lines) = self.chooser_lines(expand);
+            let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
+            ch.sel =
+                want.and_then(|w| items.iter().position(|i| *i == w)).unwrap_or(sel.min(items.len().saturating_sub(1)));
+            ch.items = items;
+            ch.lines = lines;
+        }
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else { return };
         let (status_top, border_fg, active_fg, base_index, opts_status) = (
             self.opts.status_top,
@@ -2791,6 +2985,18 @@ impl Server {
         let area = self.window_area(cols, rows);
         let c = self.clients.get_mut(&cid).unwrap();
         c.window_hits = window_hits;
+        if let Some(ch) = c.chooser.as_mut() {
+            let body_h = area.h.saturating_sub(1) as usize;
+            if ch.sel < ch.top {
+                ch.top = ch.sel;
+            } else if body_h > 0 && ch.sel >= ch.top + body_h {
+                ch.top = ch.sel + 1 - body_h;
+            }
+            render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top);
+            cursor = None;
+        }
+        // An overlay (a hook's message, a `run-shell` result) draws over the
+        // picker, because the next key goes to the overlay, not the picker.
         if let Some(lines) = &c.overlay {
             render::draw_overlay(&mut grid, area, lines);
             cursor = None;
@@ -3066,6 +3272,7 @@ mod tests {
             prompt: None,
             message: None,
             overlay: None,
+            chooser: None,
             mouse_buttons: 0,
             drag: None,
             swallow_up: HashSet::new(),

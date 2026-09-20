@@ -181,6 +181,14 @@ pub enum Cmd {
         target: Option<Target>,
     },
     ListKeys,
+    /// `choose-tree [-s|-w]`: interactive session/window picker (tmux
+    /// `choose-tree`); `choose-session` = `-s`, `choose-window` = `-w`.
+    ChooseTree {
+        /// `-s`: sessions only (collapsed).
+        sessions: bool,
+        /// `-w`: every session expanded to its windows.
+        windows: bool,
+    },
     /// `run-shell [-b] [-t target] command`: run a shell command with
     /// `WMUX`/`WMUX_PANE` set; output is shown (or printed) when it finishes.
     RunShell {
@@ -448,6 +456,16 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)
             }
             Cmd::ListKeys => f.write_str("list-keys"),
+            Cmd::ChooseTree { sessions, windows } => {
+                f.write_str("choose-tree")?;
+                if *sessions {
+                    f.write_str(" -s")?;
+                }
+                if *windows {
+                    f.write_str(" -w")?;
+                }
+                Ok(())
+            }
             Cmd::ShowOptions { name, value_only, quiet } => {
                 f.write_str("show-options -g")?;
                 if *value_only {
@@ -717,6 +735,9 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "show-options" | "show-option" | "show" => "show-options",
         "switch-client" | "switchc" => "switch-client",
         "list-keys" | "lsk" => "list-keys",
+        "choose-tree" => "choose-tree",
+        "choose-window" => "choose-window",
+        "choose-session" => "choose-session",
         "run-shell" | "run" => "run-shell",
         "set-hook" => "set-hook",
         "show-hooks" => "show-hooks",
@@ -1073,6 +1094,25 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SwitchClient { next, prev, target }
         }
         "list-keys" => Cmd::ListKeys,
+        "choose-tree" | "choose-window" | "choose-session" => {
+            let (mut sessions, mut windows) = (n == "choose-session", n == "choose-window");
+            while a.is_flag() {
+                // Combined flags as tmux configs write them: -Zw, -Zs.
+                let flag = a.next().unwrap();
+                if flag.len() < 2 || !flag[1..].chars().all(|c| "swZNGr".contains(c)) {
+                    return Err(bad_flag(n, flag));
+                }
+                for c in flag[1..].chars() {
+                    match c {
+                        's' => sessions = true,
+                        'w' => windows = true,
+                        _ => {} // -Z -N -G -r: tmux flags without a wmux meaning
+                    }
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ChooseTree { sessions, windows }
+        }
         "show-options" => {
             let (mut value_only, mut quiet) = (false, false);
             while a.is_flag() {
@@ -1386,6 +1426,17 @@ mod tests {
         assert!(matches!(p("killp -a -t :.1"), Cmd::KillPane { all_but: true, .. }));
         assert!(matches!(p("kill-session -a"), Cmd::KillSession { all_but: true, .. }));
         assert!(matches!(p("send -l Enter"), Cmd::SendKeys { literal: true, .. }));
+    }
+
+    #[test]
+    fn parse_choose_tree() {
+        assert_eq!(p("choose-tree"), Cmd::ChooseTree { sessions: false, windows: false });
+        assert_eq!(p("choose-tree -Zw"), Cmd::ChooseTree { sessions: false, windows: true });
+        assert_eq!(p("choose-window"), Cmd::ChooseTree { sessions: false, windows: true });
+        assert_eq!(p("choose-session"), Cmd::ChooseTree { sessions: true, windows: false });
+        assert_eq!(p("choose-tree -s -w").to_string(), "choose-tree -s -w");
+        assert!(parse_line("choose-tree -x").is_err());
+        assert!(parse_line("choose-tree extra").is_err());
     }
 
     #[test]

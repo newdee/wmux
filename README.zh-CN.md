@@ -57,7 +57,7 @@ wmux kill-server
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
 | `d` | 脱离 |
 | `?` | 列出所有按键 |
-| `s` / `w` | 列出 session / 窗口 |
+| `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消 |
 | `(` / `)` | 切到上一个 / 下一个 session |
 
 鼠标也管用：点一下选 pane，拖边框调大小，点状态栏上的窗口名切窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了。
@@ -180,4 +180,4 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；没有 `choose-tree` 那种选择界面；没有 `select-layout` 布局预设；`bind -r` 会被接受但不会重复触发；`list-panes -a` / `-s` 只列目标窗口。
+和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；没有 `select-layout` 布局预设；`bind -r` 会被接受但不会重复触发；`list-panes -a` / `-s` 只列目标窗口。

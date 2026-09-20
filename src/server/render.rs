@@ -421,7 +421,16 @@ pub fn compose(f: &Frame) -> Composed {
             g.put_str(0, sy, m, mstyle, f.cols);
         } else {
             let mut x = g.put_segments(0, sy, &s.left, f.cols);
-            let right_w = seg_width(&s.right);
+            // The right side never squeezes out the window list: the current
+            // window keeps its place and the right side is clipped instead.
+            // (A long pane title on a narrow terminal used to hide it.)
+            // Reserving room is pointless when the label cannot fit anyway.
+            let need = s.windows.iter().find(|(_, cur)| *cur).map(|(l, _)| seg_width(l) + 1).unwrap_or(0);
+            let full = seg_width(&s.right);
+            let right_w = match f.cols.checked_sub(x.saturating_add(need).saturating_add(1)) {
+                Some(room) => full.min(room),
+                None => full,
+            };
             let win_end = f.cols.saturating_sub(right_w + 1);
             for (label, current) in &s.windows {
                 let w = seg_width(label) + 1;
@@ -490,9 +499,63 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
     g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
 }
 
+/// The `choose-tree` picker: `lines` from `top` fill the area, line `sel` is
+/// highlighted (tmux mode-style: black on yellow), the last row is the key hint.
+pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize) {
+    if area.h == 0 || area.w == 0 {
+        return;
+    }
+    let style = Style::colors(Color::Default, Color::Default);
+    let hi = Style::colors(Color::Idx(0), Color::Idx(3));
+    g.fill(area, style);
+    let body_h = area.h.saturating_sub(1) as usize;
+    for (row, (i, line)) in lines.iter().enumerate().skip(top).take(body_h).enumerate() {
+        let y = area.y + row as u16;
+        let st = if i == sel { hi } else { style };
+        if i == sel {
+            g.fill(Rect { x: area.x, y, w: area.w, h: 1 }, hi);
+        }
+        g.put_str(area.x, y, line, st, area.w);
+    }
+    let hint = format!(
+        "[{}/{}] j/k move  g/G top/bottom  Enter select  q quit",
+        if lines.is_empty() { 0 } else { sel + 1 },
+        lines.len()
+    );
+    let hint_style = Style::colors(Color::Idx(0), Color::Idx(3));
+    g.fill(Rect { x: area.x, y: area.y + area.h - 1, w: area.w, h: 1 }, hint_style);
+    g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chooser_highlights_selection_and_scrolls() {
+        let mut g = Grid::new(40, 4);
+        let lines: Vec<String> = (0..6).map(|i| format!("item{i}")).collect();
+        let row = |g: &Grid, y: u16| (0..40).map(|x| g.get(x, y).text()).collect::<String>();
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 1, 0);
+        assert_eq!(row(&g, 0).trim_end(), "item0");
+        assert_eq!(row(&g, 1).trim_end(), "item1");
+        assert_eq!(row(&g, 2).trim_end(), "item2");
+        assert_eq!(g.get(0, 1).style.bg, Color::Idx(3), "selected line highlighted");
+        assert_eq!(g.get(39, 1).style.bg, Color::Idx(3), "highlight spans the row");
+        assert_eq!(g.get(0, 0).style.bg, Color::Default);
+        assert!(row(&g, 3).starts_with("[2/6] j/k move"), "{}", row(&g, 3));
+        // Scrolled: top=3 shows items 3..5, selection 5 on the last body row.
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 5, 3);
+        assert_eq!(row(&g, 0).trim_end(), "item3");
+        assert_eq!(row(&g, 2).trim_end(), "item5");
+        assert_eq!(g.get(0, 2).style.bg, Color::Idx(3));
+        assert!(row(&g, 3).starts_with("[6/6]"));
+        // Empty list and degenerate areas never panic.
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &[], 0, 0);
+        assert!(row(&g, 3).starts_with("[0/0]"));
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 0, h: 0 }, &lines, 0, 0);
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 1 }, &lines, 0, 0);
+    }
 
     #[test]
     fn overlay_draws_lines_and_hint() {
@@ -676,6 +739,13 @@ mod tests {
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
         assert_eq!(row, "abcd0:x   RR");
         assert!(g.get(4, 1).style.inverse);
+        assert_eq!(hits, vec![(4, 7)]);
+        // A long right side is clipped rather than hiding the current window
+        // (a pane title on a narrow terminal used to push the list off).
+        f.status.as_mut().unwrap().right = seg("0123456789ab", Style { bold: true, ..st });
+        let (g, _, hits) = compose(&f);
+        let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
+        assert_eq!(row, "abcd0:x  012");
         assert_eq!(hits, vec![(4, 7)]);
     }
 

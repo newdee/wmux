@@ -64,6 +64,19 @@ impl Harness {
         Conn { rd, wr, screen: vt100::Parser::new(ROWS, COLS, 0) }
     }
 
+    /// Poll `capture-pane` until the pane's text satisfies `pred`.
+    async fn wait_capture(&self, target: &str, what: &str, pred: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (_, out, _) = self.cli(&["capture-pane", "-p", "-t", target]).await;
+            if pred(&out) {
+                return out;
+            }
+            assert!(Instant::now() < deadline, "timeout waiting for {what} in {target}; pane:\n{out}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Run a CLI-style command; returns (code, stdout text, stderr text).
     async fn cli(&self, argv: &[&str]) -> (i32, String, String) {
         let mut c = self.connect().await;
@@ -808,6 +821,190 @@ async fn vim_keys_and_synchronize_panes() {
     let (code, _, _) = h.cli(&["set", "-w", "synchronize-panes", "off"]).await;
     assert_eq!(code, 0);
     c.wait_for("S flag gone", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*S")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_picker() {
+    let h = Harness::start("choose").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "a"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.prefix('c').await;
+    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "b"]).await;
+    assert_eq!(code, 0, "{err}");
+    // The shell in the detached session must be up before its keystrokes matter.
+    h.wait_capture("b:0", "shell prompt", |t| t.contains("wmux>")).await;
+
+    // prefix w: every session expanded, cursor on the current window (item 3 of 5).
+    c.prefix('w').await;
+    // The pane title arrives over OSC, so wait for the fully drawn tree.
+    c.wait_for("picker", |s| {
+        let t = s.contents();
+        // The title is the shell's own path, with "Administrator: " (localized)
+        // in front of it when the test runs elevated.
+        t.contains("[3/5] j/k move") && t.contains("(1)   - 0: cmd- (1 panes) \"") && t.contains("cmd.exe\"")
+    })
+    .await;
+    let text = c.text();
+    assert!(text.contains("(0) - a: 2 windows (attached)"), "{text}");
+    assert!(text.contains("(2)   - 1: cmd* (1 panes)"), "{text}");
+    assert!(text.contains("(3) - b: 1 windows"), "{text}");
+    // Every session's current window carries the *, as in tmux.
+    assert!(text.contains("(4)   - 0: cmd* (1 panes)"), "{text}");
+    // vim motions: k up, g top, G bottom, j clamps at the end, digits jump.
+    c.type_str("k").await;
+    c.wait_for("k", |s| s.contents().contains("[2/5]")).await;
+    c.type_str("g").await;
+    c.wait_for("g", |s| s.contents().contains("[1/5]")).await;
+    c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
+    c.wait_for("G", |s| s.contents().contains("[5/5]")).await;
+    c.type_str("j").await;
+    c.key(b'X' as u16, 'x', 0).await; // unbound key: ignored, picker stays
+    c.wait_for("clamped", |s| s.contents().contains("[5/5]")).await;
+    c.key(b'1' as u16, '1', 0).await;
+    c.wait_for("digit", |s| s.contents().contains("[2/5]")).await;
+    // Enter on "a:0" selects window 0 and closes the picker.
+    c.enter().await;
+    c.wait_for("window 0", |s| {
+        let t = s.contents();
+        !t.contains("j/k move") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*")
+    })
+    .await;
+
+    // prefix s: sessions only; Enter switches the client to "b".
+    c.prefix('s').await;
+    c.wait_for("sessions", |s| s.contents().contains("[1/2] j/k move")).await;
+    let text = c.text();
+    assert!(text.contains("(0) + a: 2 windows (attached)") && text.contains("(1) + b: 1 windows"), "{text}");
+    assert!(!text.contains("0: cmd"), "collapsed: {text}");
+    c.type_str("j").await;
+    c.enter().await;
+    c.wait_for("switched to b", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("[b] 0:cmd*")).await;
+
+    // The picker is a mode, not a keyboard trap: the prefix still works, so
+    // `prefix ?` (list-keys) overlays it and the next key dismisses the
+    // overlay and leaves the picker standing.
+    c.prefix('w').await;
+    c.wait_for("picker", |s| s.contents().contains("j/k move")).await;
+    c.prefix('?').await;
+    c.wait_for("keys overlay", |s| s.contents().contains("bind-key -T prefix")).await;
+    c.type_str("q").await; // dismisses the overlay only
+    c.wait_for("picker back", |s| {
+        let t = s.contents();
+        t.contains("j/k move") && !t.contains("bind-key -T prefix")
+    })
+    .await;
+
+    // q and Escape cancel without touching anything; keys never reach the pane.
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
+    c.prefix('w').await;
+    c.wait_for("picker again", |s| s.contents().contains("[5/5] j/k move")).await;
+    // The tree is live: a window created meanwhile shows up, the cursor stays
+    // on the same item (b:0 is now 5 of 6).
+    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "b"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("live", |s| s.contents().contains("[5/6] j/k move") && s.contents().contains("(5)   - 1: cmd")).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
+    // Nothing the picker consumed reached the shell: one untouched prompt.
+    let out = h.cli(&["capture-pane", "-p", "-t", "b:0"]).await.1;
+    assert_eq!(out.trim(), "wmux>", "picker keys leaked into the pane: {out:?}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_scrolls_and_follows_the_live_tree() {
+    let h = Harness::start("choose-scroll").await;
+    // base-index 1 must show through, and with the status line off the picker
+    // gets the whole screen.
+    h.cli(&["set", "-g", "base-index", "1"]).await;
+    h.cli(&["set", "-g", "status", "off"]).await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "many"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    for _ in 0..29 {
+        let (code, _, err) = h.cli(&["new-window", "-d", "-t", "many"]).await;
+        assert_eq!(code, 0, "{err}");
+    }
+
+    // 1 session + 30 windows = 31 items, 23 body rows (24 rows, no status line).
+    c.prefix('w').await;
+    c.wait_for("picker", |s| s.contents().contains("[2/31] j/k move")).await;
+    assert!(c.row(0).starts_with("(0) - many: 30 windows (attached)"), "{:?}", c.row(0));
+    assert!(c.row(1).starts_with("(1)   - 1: cmd*"), "base-index 1: {:?}", c.row(1));
+    // Nothing scrolled yet; the last body row is item 22.
+    assert!(c.row(22).starts_with("      - 22:"), "{:?}", c.row(22));
+    // G: the last item is visible on the last body row, the list scrolled.
+    c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
+    c.wait_for("bottom", |s| s.contents().contains("[31/31]")).await;
+    // Item 8 is now the top line; its "(8)" jump tag travels with it.
+    assert!(c.row(0).starts_with("(8)   - 8:"), "scrolled: {:?}", c.row(0));
+    assert!(c.row(22).starts_with("      - 30:"), "{:?}", c.row(22));
+    // g: back to the top, scrolled back.
+    c.type_str("g").await;
+    c.wait_for("top", |s| s.contents().contains("[1/31]")).await;
+    assert!(c.row(0).starts_with("(0) - many: 30 windows"), "{:?}", c.row(0));
+
+    // The tree is live under the cursor: kill a window and the count drops
+    // while the selection stays on the session line.
+    c.key(0x22, '\0', 0).await; // PageDown (VK_NEXT): one body page down
+    c.wait_for("paged", |s| s.contents().contains("[24/31]")).await;
+    let (code, _, err) = h.cli(&["kill-window", "-t", "many:30"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("30 items", |s| s.contents().contains("[24/30]")).await;
+    // Enter on window 23 (item 24 with base-index 1) selects it.
+    c.enter().await;
+    c.wait_for("selected", |s| !s.contents().contains("j/k move")).await;
+    let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
+    assert!(out.lines().nth(22).unwrap().starts_with("23: cmd*"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_degenerate_sizes_and_wide_names() {
+    let h = Harness::start("choose-edge").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "会话", "-n", "编辑器"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "gone"]).await;
+    assert_eq!(code, 0, "{err}");
+
+    c.prefix('w').await;
+    // 2 sessions + their 2 windows = 4 items; the cursor starts on 会话:0.
+    c.wait_for("picker", |s| s.contents().contains("[2/4] j/k move")).await;
+    // Double-width names survive the layout.
+    assert!(c.row(0).starts_with("(0) - 会话: 1 windows (attached)"), "{:?}", c.row(0));
+    assert!(c.row(1).starts_with("(1)   - 0: 编辑器*"), "{:?}", c.row(1));
+
+    // A terminal with room for a single body row still renders hint and all.
+    c.send(ClientMsg::Resize { cols: 20, rows: 3 }).await;
+    c.screen = vt100::Parser::new(3, 20, 0);
+    c.wait_for("tiny", |s| s.rows(0, 20).nth(1).unwrap().starts_with("[2/4] j/k move")).await;
+    assert!(c.row(0).starts_with("(1)   - 0: 编辑器*"), "the selection stays visible: {:?}", c.row(0));
+    // One column wide is degenerate but must not panic or wedge the server.
+    c.send(ClientMsg::Resize { cols: 1, rows: 1 }).await;
+    c.screen = vt100::Parser::new(1, 1, 0);
+    c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
+    c.screen = vt100::Parser::new(ROWS, COLS, 0);
+    c.wait_for("back", |s| s.contents().contains("[2/4] j/k move")).await;
+
+    // The item under the cursor vanishing clamps the selection instead of
+    // pointing past the end.
+    c.key(0x23, '\0', 0).await; // End: the last item, the window of "gone"
+    c.wait_for("last", |s| s.contents().contains("[4/4]")).await;
+    let (code, _, err) = h.cli(&["kill-session", "-t", "gone"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("clamped", |s| s.contents().contains("[2/2] j/k move")).await;
+    c.enter().await;
+    c.wait_for("still alive", |s| {
+        !s.contents().contains("j/k move") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:编辑器*")
+    })
+    .await;
+    let (_, out, _) = h.cli(&["ls"]).await;
+    assert!(out.starts_with("会话: 1 windows") && !out.contains("gone"), "{out}");
     h.cli(&["kill-server"]).await;
 }
 

@@ -348,3 +348,81 @@ IME 说明：WT 窗口输入法处于中文模式时，字母进入拼音合成�
 ## 结论（第五次验收）
 
 第 27、28、29 轮连续零发现，验收通过。本次新增修复 1 项（相对路径解析），新增测试 2 项；最终 83 项自动化测试。
+
+---
+
+# 第六次验收：choose-tree 选择界面（prefix s / w）
+
+新增：`choose-tree [-s|-w]`（别名 `choose-window` / `choose-session`，接受 tmux 的 `-Z/-N/-G/-r` 组合写法），
+默认绑定 `prefix w` = `choose-tree -Zw`（所有 session 展开到窗口）、`prefix s` = `choose-tree -Zs`（只列 session）。
+交互：`j`/`k`（或方向键、`C-n`/`C-p`）移动，`g`/`G`（或 Home/End）到头到尾，PgUp/PgDn 与 `C-f`/`C-b`/`C-d`/`C-u` 翻页，
+数字键跳到带 `(n)` 标签的前 10 项，`Enter` 选中（切 session + 选窗口，走 `switch-client` 并触发 `after-select-window`），
+`q`/`Esc`/`C-c` 取消；鼠标滚轮移动光标、单击把光标放到那一行。列表每帧按活的会话树重建，光标跟着条目身份走。
+
+## 第 1 轮（不计数）— 视角：静态一致性
+
+做了什么：对照新命令在解析器、默认绑定、`--help`、两份 README 的一致性；检查 `needs_server` 是否会因新命令误启服务端。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | picker 与 `:` 命令行、overlay 可同时存在，按键会喂给看不见的 prompt | 打开 picker 时清掉 prompt/overlay，保证同一时刻只有一个模态 |
+
+## 第 2 轮（不计数）— 视角：机制通路（真实键盘路径）
+
+做了什么：新增 `tests/console.rs::choose_tree_through_the_real_keyboard`，用真实 `wmux.exe` 在 ConPTY 里走
+ConPTY → conhost → `ReadConsoleInputW` → win32 输入记录 → server 的完整链路，验证 j/k/g/G/Enter 真的生效。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | （测试自身）新窗口用默认 shell（pwsh），断言写成 `cmd`；断言里的 pane 标题在提权终端下多了 `管理员:` 前缀 | 测试显式指定窗口命令；标题断言改为不依赖提权前缀 |
+
+## 第 3 轮（不计数）— 视角：逻辑正确性与不变量
+
+做了什么：通读 `chooser_key`/`chooser_go`/`handle_mouse`/`render_client` 的新分支，逐条对照 copy mode 的既有语义。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | picker 把前缀键也吞了（copy mode 不是这样），`prefix d` 无法从 picker 里脱离，且 `C-b` 被当成翻页 | picker 改成和 copy mode 同级：先处理前缀，再交给模式 |
+| 2 | overlay 画在 picker 底下，但按键归 overlay：用户看不到却按一下就"没反应" | 渲染顺序改为 picker 在下、overlay 在上 |
+| 3 | 状态栏右侧（pane 标题）可以把整个窗口列表挤没——提权时 cmd 标题变成 `管理员: C:\WINDOWS\...`，60 列下 `[r] 0:cmd*` 消失 | `compose` 为当前窗口标签预留位置，宁可裁剪右侧；放不下时退回旧行为；新增单元断言 |
+
+## 第 4 轮（不计数）— 视角：边界与退化输入
+
+做了什么：新增 `choose_tree_degenerate_sizes_and_wide_names`：中文 session/窗口名（双宽）、20x3 与 1x1 终端、
+游标下的 session 被 `kill-session` 掉。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | （测试自身）条目数算错（2 session + 2 窗口 = 4 项，写成 3） | 修断言 |
+
+## 第 5 轮（不计数）— 视角：代码正确性（通读 diff）
+
+做了什么：`git diff -- src` 全文复核，盯溢出、借用、panic 路径、确定性。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 状态栏新算式 `x + need + 1` 是普通加法，极长窗口名会在 debug 下整数溢出 panic | 改 `saturating_add` |
+
+## 第 6 轮（计数 1/3，无发现）— 视角：机制通路 + release 二进制
+
+数据：`cargo test --release --all-targets` 89 项全过（lib 73 / console 3 / e2e 13）；
+picker 专项 6 项单独跑全过（含真实 ConPTY 键盘路径）；release 二进制 `choose-tree` 未 attach 时退出码 1、
+提示 `choose-tree: client not attached`。
+
+## 第 7 轮（计数 2/3，无发现）— 视角：静态一致性终审
+
+数据：release 二进制 `list-keys` 输出 `bind-key -T prefix s choose-tree -s` / `w choose-tree -w`（可被解析器原样回读）；
+`choose-tree` / `choose-window` / `choose-session` / `-Zw` 四种写法均被接受，`-x` 报 `unknown flag '-x'` 且退出码 1；
+两份 README 的按键表与"未实现"段、`--help` 三处口径一致；无残留的"列出 session / 窗口"旧说法。
+
+## 第 8 轮（计数 3/3，无发现）— 视角：可复现性 + 无残留
+
+数据：连续 3 次 `cargo test --all-targets` 结果逐项相同（73/0/3/13）；测试名指纹 `736D60A2B88738B0`（89 项）；
+真实 `%LOCALAPPDATA%\wmux\sessions` 运行前后均为 2 个文件（未被测试污染）；测试进程无残留；
+TEMP 下的 `wmux-*` 目录只剩手工调试留下的（已清），通过的测试自身不留目录。
+
+观察（非缺陷）：`tests/console.rs` 的临时目录清理写在测试末尾，测试 panic 时会留下一个目录；e2e 侧走 `Drop` 不受影响。
+
+## 结论（第六次验收）
+
+第 6、7、8 轮连续零发现，验收通过。本次修复 5 项（含一个既有的状态栏挤压 bug），新增测试 6 项；最终 89 项自动化测试。
