@@ -31,7 +31,9 @@ Default prefix: C-b.  Prefix ? lists key bindings.";
 fn main() {
     // args() panics on non-UTF-8 (unpaired surrogates in a path); be lossy instead.
     let mut args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
-    let mut socket = "default".to_string();
+    // Inside a pane, talk to the server that owns it (tmux does the same with
+    // $TMUX), so `wmux ls` from a script or a plugin means "this server".
+    let mut socket = std::env::var("WMUX").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
     // Global flags.
     loop {
         match args.first().map(String::as_str) {

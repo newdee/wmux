@@ -1,0 +1,333 @@
+//! Records a scripted wmux session and writes one JSON file per frame.
+//!
+//! The real `wmux.exe` runs inside a ConPTY, exactly as under Windows
+//! Terminal; this program plays a fixed sequence of keystrokes into it, parses
+//! the VT stream it sends back and dumps the screen as coloured text runs.
+//! `installer/../tools/render-frames.ps1` turns those into PNGs, and ffmpeg
+//! turns the PNGs into the GIF used by the README and the site.
+//!
+//! It is a test so that it runs the same way the console tests do, and it is
+//! ignored by default because it is a recording, not an assertion:
+//!
+//! ```powershell
+//! $env:WMUX_DEMO_OUT = "target/demo-frames"
+//! cargo test --release --test demo_frames -- --ignored --nocapture
+//! ```
+
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use std::fmt::Write as _;
+use std::io::{Read, Write};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+const COLS: u16 = 96;
+const ROWS: u16 = 26;
+/// Wall-clock distance between recorded frames.
+const FRAME_MS: u64 = 200;
+
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_demo() {
+    let out_dir = std::env::var("WMUX_DEMO_OUT").unwrap_or_else(|_| "target/demo-frames".into());
+    let exe = env!("CARGO_BIN_EXE_wmux").to_string();
+    std::fs::create_dir_all(&out_dir).expect("create out dir");
+
+    let socket = "demo".to_string();
+    let tmp = std::env::temp_dir().join(format!("wmux-demo-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("temp dir");
+    let sessions = tmp.join("sessions");
+
+    // A short prompt, so the recording shows wmux rather than path names.
+    let prompt = tmp.join("prompt.ps1");
+    std::fs::write(&prompt, "function global:prompt { 'PS> ' }\n$Host.UI.RawUI.WindowTitle = 'pwsh'\nClear-Host\n")
+        .expect("prompt script");
+    let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
+    let conf = tmp.join("wmux.conf");
+    // A clock on the right instead of the pane title: the recording should
+    // show wmux, not this machine's paths.
+    std::fs::write(&conf, format!("set -g default-command \"{shell}\"\nset -g status-right \"%H:%M\"\n"))
+        .expect("config");
+
+    let pty = native_pty_system();
+    let pair = pty.openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 }).expect("openpty");
+    // The recording starts in a plain shell: wmux is started from it, and
+    // detaching comes back to it.
+    let mut cmd = CommandBuilder::new("pwsh.exe");
+    cmd.args(["-NoLogo", "-NoProfile", "-NoExit", "-File", &prompt.to_string_lossy()]);
+    let exe_dir = std::path::Path::new(&exe).parent().unwrap().to_string_lossy().into_owned();
+    cmd.env("PATH", format!("{exe_dir};{}", std::env::var("PATH").unwrap_or_default()));
+    cmd.env("WMUX_SESSIONS_DIR", sessions.to_string_lossy().to_string());
+    cmd.env("WMUX_CONFIG", conf.to_string_lossy().to_string());
+    cmd.env_remove("WMUX");
+    cmd.env_remove("WMUX_PANE");
+    let child = pair.slave.spawn_command(cmd).expect("spawn wmux");
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader().expect("reader");
+    let mut writer = pair.master.take_writer().expect("writer");
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    // Never drop the master on this thread: ClosePseudoConsole waits for
+    // conhost, which may be blocked writing to us.
+    std::mem::forget(pair.master);
+
+    let mut rec = Recorder {
+        parser: vt100::Parser::new(ROWS, COLS, 200),
+        rx,
+        writer: &mut writer,
+        out_dir: out_dir.clone(),
+        frame: 0,
+        raw: Vec::new(),
+        child,
+    };
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(3);
+
+    // It starts as one command in an ordinary terminal.
+    rec.type_line(&format!("wmux -L {socket} new -s dev"));
+    rec.wait_for("session", |s| s.contents().contains("[dev]"), 30);
+    rec.hold(4);
+
+    // Two shells side by side. Inside a pane, wmux commands need no -L.
+    rec.key("\x02%");
+    rec.hold(3);
+    rec.type_line("wmux list-panes");
+    rec.hold(5);
+
+    // Three.
+    rec.key("\x02\"");
+    rec.hold(3);
+    rec.type_line("1..3 | ForEach-Object { \"build step $_ ok\" }");
+    rec.hold(5);
+
+    // vim keys move between them: left, back right, up.
+    rec.key("\x02h");
+    rec.hold(3);
+    rec.key("\x02l");
+    rec.hold(3);
+    rec.key("\x02k");
+    rec.hold(3);
+
+    // Zoom one pane full screen and come back.
+    rec.key("\x02z");
+    rec.hold(4);
+    rec.key("\x02z");
+    rec.hold(3);
+
+    // A second window, and the picker that switches between them.
+    rec.key("\x02c");
+    rec.hold(3);
+    rec.type_line("cmd.exe /c ver");
+    rec.hold(4);
+    rec.key("\x02w");
+    rec.hold(5);
+    rec.key("j");
+    rec.hold(3);
+    rec.key("\r");
+    rec.hold(4);
+
+    // Detach: back to the plain shell, everything still running.
+    rec.key("\x02d");
+    rec.hold(5);
+
+    // Attach again, exactly where it was left.
+    rec.type_line(&format!("wmux -L {socket} attach"));
+    rec.hold(4);
+    rec.key("\x020");
+    rec.hold(8);
+
+    // Tidy up: kill the server and the temp directory.
+    let _ = std::process::Command::new(&exe)
+        .args(["-L", &socket, "kill-server"])
+        .env("WMUX_SESSIONS_DIR", sessions.to_string_lossy().to_string())
+        .status();
+    let _ = rec.child.kill();
+    let _ = std::fs::remove_dir_all(&tmp);
+    println!("wrote {} frames to {}", rec.frame, out_dir);
+}
+
+struct Recorder<'a> {
+    parser: vt100::Parser,
+    rx: mpsc::Receiver<Vec<u8>>,
+    writer: &'a mut Box<dyn Write + Send>,
+    out_dir: String,
+    frame: u32,
+    raw: Vec<u8>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+impl Recorder<'_> {
+    /// Drain the pty for `d`, answering the cursor-position requests ConPTY
+    /// makes before it lets a child run.
+    fn pump(&mut self, d: Duration) {
+        let end = Instant::now() + d;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match self.rx.recv_timeout(left) {
+                Ok(b) => {
+                    self.raw.extend_from_slice(&b);
+                    self.parser.process(&b);
+                    let n = b.windows(4).filter(|w| *w == b"\x1b[6n").count();
+                    for _ in 0..n {
+                        let (r, c) = self.parser.screen().cursor_position();
+                        let reply = format!("\x1b[{};{}R", r + 1, c + 1);
+                        self.writer.write_all(reply.as_bytes()).expect("answer DSR");
+                        self.writer.flush().expect("flush DSR");
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn wait_for(&mut self, what: &str, pred: impl Fn(&vt100::Screen) -> bool, secs: u64) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !pred(self.parser.screen()) {
+            assert!(
+                Instant::now() < deadline,
+                "timeout waiting for {what}:\n{}\nraw ({} bytes): {:?}\nchild: {:?}",
+                self.parser.screen().contents(),
+                self.raw.len(),
+                String::from_utf8_lossy(&self.raw[..self.raw.len().min(600)]),
+                self.child.try_wait()
+            );
+            self.pump(Duration::from_millis(100));
+        }
+    }
+
+    /// Record `n` frames, one every FRAME_MS.
+    fn hold(&mut self, n: u32) {
+        for _ in 0..n {
+            self.pump(Duration::from_millis(FRAME_MS));
+            self.snapshot();
+        }
+    }
+
+    fn key(&mut self, s: &str) {
+        let _ = self.writer.write_all(s.as_bytes());
+        let _ = self.writer.flush();
+        self.pump(Duration::from_millis(120));
+    }
+
+    /// Type a line the way a person does, then press Enter.
+    fn type_line(&mut self, text: &str) {
+        for (i, ch) in text.chars().enumerate() {
+            let mut buf = [0u8; 4];
+            let _ = self.writer.write_all(ch.encode_utf8(&mut buf).as_bytes());
+            let _ = self.writer.flush();
+            self.pump(Duration::from_millis(45));
+            // A frame every few characters keeps the typing visible.
+            if i % 4 == 0 {
+                self.snapshot();
+            }
+        }
+        self.snapshot();
+        let _ = self.writer.write_all(b"\r");
+        let _ = self.writer.flush();
+        self.pump(Duration::from_millis(120));
+    }
+
+    /// One frame: every row as runs of identically styled text.
+    fn snapshot(&mut self) {
+        self.frame += 1;
+        let screen = self.parser.screen();
+        let (rows, cols) = screen.size();
+        let mut json = String::with_capacity(8192);
+        let _ = write!(json, "{{\"cols\":{cols},\"rows\":{rows},\"lines\":[");
+        for y in 0..rows {
+            if y > 0 {
+                json.push(',');
+            }
+            json.push('[');
+            let mut first = true;
+            let mut run = String::new();
+            let mut run_style: Option<(String, String, bool, bool)> = None;
+            let mut x = 0;
+            while x < cols {
+                let Some(cell) = screen.cell(y, x) else {
+                    x += 1;
+                    continue;
+                };
+                let wide = cell.is_wide();
+                let style = (color(cell.fgcolor()), color(cell.bgcolor()), cell.bold(), cell.inverse());
+                let text = cell.contents();
+                let text = if text.is_empty() { " ".to_string() } else { text.to_string() };
+                match &run_style {
+                    Some(s) if *s == style => run.push_str(&text),
+                    Some(s) => {
+                        push_run(&mut json, &mut first, s, &run);
+                        run.clear();
+                        run.push_str(&text);
+                        run_style = Some(style);
+                    }
+                    None => {
+                        run.push_str(&text);
+                        run_style = Some(style);
+                    }
+                }
+                x += if wide { 2 } else { 1 };
+            }
+            if let Some(s) = &run_style {
+                push_run(&mut json, &mut first, s, &run);
+            }
+            json.push(']');
+        }
+        let (cy, cx) = screen.cursor_position();
+        let _ = write!(json, "],\"cursor\":[{cx},{cy}],\"cursor_visible\":{}}}", !screen.hide_cursor());
+        let path = format!("{}/f{:04}.json", self.out_dir, self.frame);
+        std::fs::write(path, json).expect("write frame");
+    }
+}
+
+fn push_run(json: &mut String, first: &mut bool, style: &(String, String, bool, bool), text: &str) {
+    if !*first {
+        json.push(',');
+    }
+    *first = false;
+    let _ = write!(
+        json,
+        "{{\"fg\":\"{}\",\"bg\":\"{}\",\"b\":{},\"i\":{},\"t\":{}}}",
+        style.0,
+        style.1,
+        style.2,
+        style.3,
+        json_string(text)
+    );
+}
+
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// "default", "0".."255" or "#rrggbb".
+fn color(c: vt100::Color) -> String {
+    match c {
+        vt100::Color::Default => "default".into(),
+        vt100::Color::Idx(i) => i.to_string(),
+        vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+    }
+}

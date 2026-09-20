@@ -122,6 +122,8 @@ struct Client {
     last_grid: Option<Grid>,
     last_cursor: Option<(u16, u16)>,
     prefix: bool,
+    /// A `bind -r` key ran; until this instant its table answers bare keys.
+    repeat_until: Option<Instant>,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
     /// Multi-line command output shown over the window until a key is pressed
@@ -251,6 +253,14 @@ impl Session {
     }
 }
 
+/// What a key runs, and whether it keeps running without the prefix for
+/// `repeat-time` afterwards (tmux `bind -r`).
+#[derive(Clone)]
+struct Binding {
+    cmd: Cmd,
+    repeat: bool,
+}
+
 enum Outcome {
     Ok,
     Text(String),
@@ -271,8 +281,8 @@ impl From<Result<(), String>> for Outcome {
 
 pub struct Server {
     opts: Options,
-    prefix_binds: HashMap<Key, Cmd>,
-    root_binds: HashMap<Key, Cmd>,
+    prefix_binds: HashMap<Key, Binding>,
+    root_binds: HashMap<Key, Binding>,
     sessions: Vec<Session>,
     clients: HashMap<ClientId, Client>,
     next_id: u32,
@@ -424,7 +434,15 @@ pub async fn run(socket: String) -> Result<()> {
     Ok(())
 }
 
-fn default_bindings() -> HashMap<Key, Cmd> {
+/// Keys that keep working without the prefix for `repeat-time`: moving
+/// between panes, resizing them and walking the window list, the things one
+/// presses several times in a row.
+const REPEATABLE: &[&str] = &[
+    "h", "j", "k", "l", "H", "J", "K", "L", "Up", "Down", "Left", "Right", "C-Up", "C-Down", "C-Left", "C-Right",
+    "M-Up", "M-Down", "M-Left", "M-Right", "n", "p", "o", "{", "}",
+];
+
+fn default_bindings() -> HashMap<Key, Binding> {
     let mut m = HashMap::new();
     let lines = [
         ("c", "new-window"),
@@ -482,10 +500,11 @@ fn default_bindings() -> HashMap<Key, Cmd> {
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
         let cmd = crate::command::parse_line(l).expect(l).expect(l);
-        m.insert(key, cmd);
+        m.insert(key, Binding { cmd, repeat: REPEATABLE.contains(&k) });
     }
     for d in 0..10u8 {
-        m.insert(Key::ch((b'0' + d) as char), Cmd::SelectWindow { target: Target::parse(&format!(":{d}")) });
+        let cmd = Cmd::SelectWindow { target: Target::parse(&format!(":{d}")) };
+        m.insert(Key::ch((b'0' + d) as char), Binding { cmd, repeat: false });
     }
     m
 }
@@ -879,6 +898,7 @@ impl Server {
                         last_grid: None,
                         last_cursor: None,
                         prefix: false,
+                        repeat_until: None,
                         prompt: None,
                         message: None,
                         overlay: None,
@@ -1018,6 +1038,7 @@ impl Server {
                 c.last_grid = None;
                 c.last_cursor = None;
                 c.prefix = false;
+                c.repeat_until = None;
                 c.prompt = None;
                 c.overlay = config_errors;
                 c.chooser = None;
@@ -2007,9 +2028,10 @@ impl Server {
                 let m = self.expand_format(&msg, cid);
                 Outcome::Text(m)
             }
-            Cmd::BindKey { root, key, cmd } => match Key::parse(&key) {
+            Cmd::BindKey { root, key, repeat, cmd } => match Key::parse(&key) {
                 Some(k) => {
-                    if root { &mut self.root_binds } else { &mut self.prefix_binds }.insert(k, *cmd);
+                    let b = Binding { cmd: *cmd, repeat };
+                    if root { &mut self.root_binds } else { &mut self.prefix_binds }.insert(k, b);
                     Outcome::Ok
                 }
                 None => Outcome::Error(format!("unknown key: {key}")),
@@ -2103,9 +2125,14 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::ListKeys => {
-                let mut lines: Vec<String> =
-                    self.prefix_binds.iter().map(|(k, c)| format!("bind-key -T prefix {k:<10} {c}")).collect();
-                lines.extend(self.root_binds.iter().map(|(k, c)| format!("bind-key -T root   {k:<10} {c}")));
+                let mut lines: Vec<String> = self
+                    .prefix_binds
+                    .iter()
+                    .map(|(k, b)| format!("bind-key {}-T prefix {k:<10} {}", if b.repeat { "-r " } else { "" }, b.cmd))
+                    .collect();
+                lines.extend(self.root_binds.iter().map(|(k, b)| {
+                    format!("bind-key {}-T root   {k:<10} {}", if b.repeat { "-r " } else { "" }, b.cmd)
+                }));
                 lines.sort();
                 Outcome::Text(lines.join("\n"))
             }
@@ -2290,14 +2317,37 @@ impl Server {
                     return;
                 }
                 match self.prefix_binds.get(&k).cloned() {
-                    Some(cmd) => {
-                        let out = self.exec(cmd, Some(cid));
+                    Some(b) => {
+                        // `bind -r`: the same table answers bare keys for a
+                        // while, so `prefix h h h` walks three panes left.
+                        let until = (b.repeat && self.opts.repeat_time_ms > 0)
+                            .then(|| Instant::now() + Duration::from_millis(self.opts.repeat_time_ms));
+                        let out = self.exec(b.cmd, Some(cid));
                         self.reply(cid, out);
+                        if let Some(c) = self.clients.get_mut(&cid) {
+                            c.repeat_until = until;
+                        }
                     }
                     None => self.message(cid, &format!("unbound key: {k}")),
                 }
                 return;
             }
+            // Still inside the repeat window: a repeatable key runs again.
+            if c.repeat_until.is_some_and(|t| Instant::now() < t) {
+                match self.prefix_binds.get(&k).cloned() {
+                    Some(b) if b.repeat => {
+                        let c = self.clients.get_mut(&cid).unwrap();
+                        c.swallow_up.insert(rec.vk);
+                        c.repeat_until = Some(Instant::now() + Duration::from_millis(self.opts.repeat_time_ms));
+                        let out = self.exec(b.cmd, Some(cid));
+                        self.reply(cid, out);
+                        return;
+                    }
+                    // Anything else ends the repeat and is handled normally.
+                    _ => self.clients.get_mut(&cid).unwrap().repeat_until = None,
+                }
+            }
+            let c = self.clients.get_mut(&cid).unwrap();
             if k == self.opts.prefix {
                 c.prefix = true;
                 c.swallow_up.insert(rec.vk);
@@ -2313,10 +2363,15 @@ impl Server {
                 self.copy_key(cid, sid, k);
                 return;
             }
-            if let Some(cmd) = self.root_binds.get(&k).cloned() {
+            if let Some(b) = self.root_binds.get(&k).cloned() {
                 c.swallow_up.insert(rec.vk);
-                let out = self.exec(cmd, Some(cid));
+                let until = (b.repeat && self.opts.repeat_time_ms > 0)
+                    .then(|| Instant::now() + Duration::from_millis(self.opts.repeat_time_ms));
+                let out = self.exec(b.cmd, Some(cid));
                 self.reply(cid, out);
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.repeat_until = until;
+                }
                 return;
             }
         } else if in_copy || in_chooser {
@@ -3289,6 +3344,7 @@ mod tests {
             last_grid: Some(Grid::new(10, 2)),
             last_cursor: Some((0, 0)),
             prefix: false,
+            repeat_until: None,
             prompt: None,
             message: None,
             overlay: None,

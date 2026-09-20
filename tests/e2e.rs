@@ -1009,6 +1009,50 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn repeatable_keys_chain_without_the_prefix() {
+    let h = Harness::start("repeat").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "r"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // Three panes side by side: 0 | 1 | 2, with 2 active.
+    c.prefix('%').await;
+    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.prefix('%').await;
+    c.wait_for("split again", |s| s.contents().matches("wmux>").count() >= 3).await;
+    let active = |out: &str| out.lines().position(|l| l.contains("(active)")).unwrap();
+    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
+    assert_eq!(active(&out), 2, "{out}");
+
+    // prefix h, then a bare h: two panes left in one go.
+    c.prefix('h').await;
+    c.type_str("h").await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
+    assert_eq!(active(&out), 0, "bare h repeated the binding: {out}");
+
+    // The window closes: after repeat-time a bare h is just text again.
+    let (code, _, err) = h.cli(&["set", "-g", "repeat-time", "150"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.prefix('l').await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    c.type_str("hhh").await;
+    c.enter().await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
+    assert_eq!(active(&out), 1, "the late h's must not move the pane: {out}");
+    let pane = h.wait_capture("r:0.1", "the typed text", |t| t.contains("hhh")).await;
+    assert!(pane.contains("hhh"), "{pane}");
+
+    // repeat-time 0 turns it off entirely.
+    h.cli(&["set", "-g", "repeat-time", "0"]).await;
+    c.prefix('h').await;
+    c.type_str("h").await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
+    assert_eq!(active(&out), 0, "the prefixed h still moves: {out}");
+    let pane = h.wait_capture("r:0.0", "the second h as text", |t| t.contains("h")).await;
+    assert!(pane.contains("h"), "{pane}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn zoomed_pane_still_navigates_by_direction() {
     let h = Harness::start("zoom-nav").await;
     let mut c = h.connect().await;

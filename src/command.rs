@@ -169,6 +169,8 @@ pub enum Cmd {
     BindKey {
         root: bool,
         key: String,
+        /// `-r`: the key repeats without the prefix for `repeat-time`.
+        repeat: bool,
         cmd: Box<Cmd>,
     },
     UnbindKey {
@@ -455,10 +457,13 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " {}", quote(&cmd.to_string()))
             }
-            Cmd::BindKey { root, key, cmd } => {
+            Cmd::BindKey { root, key, repeat, cmd } => {
                 f.write_str("bind-key")?;
                 if *root {
                     f.write_str(" -n")?;
+                }
+                if *repeat {
+                    f.write_str(" -r")?;
                 }
                 write!(f, " {} {}", quote(key), cmd)
             }
@@ -1095,11 +1100,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ConfirmBefore { prompt, cmd: Box::new(parse(&inner)?) }
         }
         "bind-key" => {
-            let mut root = false;
+            let (mut root, mut repeat) = (false, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-n" => root = true,
-                    "-r" => {}
+                    "-r" => repeat = true,
                     "-T" => {
                         root = a.value("-T")? == "root";
                     }
@@ -1109,7 +1114,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             let key = a.next().ok_or("bind-key: key required")?.to_string();
             let rest = a.rest();
             let inner = if rest.len() == 1 { tokenize(&rest[0])? } else { rest };
-            Cmd::BindKey { root, key, cmd: Box::new(parse(&inner)?) }
+            Cmd::BindKey { root, key, repeat, cmd: Box::new(parse(&inner)?) }
         }
         "unbind-key" => {
             let mut root = false;
@@ -1582,6 +1587,7 @@ mod tests {
             Cmd::BindKey {
                 root: true,
                 key: "M-h".into(),
+                repeat: false,
                 cmd: Box::new(Cmd::SelectPane { sel: PaneSel::Dir(Dir::Left) })
             }
         );
@@ -1590,9 +1596,20 @@ mod tests {
             Cmd::BindKey {
                 root: false,
                 key: "h".into(),
+                repeat: false,
                 cmd: Box::new(Cmd::SelectPane { sel: PaneSel::Dir(Dir::Left) })
             }
         );
+        assert_eq!(
+            p("bind -r C-h resize-pane -L 5"),
+            Cmd::BindKey {
+                root: false,
+                key: "C-h".into(),
+                repeat: true,
+                cmd: Box::new(Cmd::ResizePane { dir: Some(Dir::Left), amount: 5, zoom: false, target: None })
+            }
+        );
+        assert_eq!(p("bind -r C-h resize-pane -L 5").to_string(), "bind-key -r C-h resize-pane -L 5");
         assert_eq!(p("set -g prefix C-a"), Cmd::SetOption { name: "prefix".into(), value: "C-a".into() });
     }
 

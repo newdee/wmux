@@ -59,6 +59,7 @@ wmux kill-server
 | `%` / `"` | 左右分 / 上下分 |
 | `h` `j` `k` `l`（或方向键）/ `o` / `;` | 在 pane 之间移动（vim 键位）/ 下一个 pane / 刚才那个 pane |
 | `H` `J` `K` `L`、`Alt`+方向键 / `Ctrl`+方向键 | 调整当前 pane 大小，每次 5 格 / 1 格 |
+| 移动、改大小、`n` / `p`、`{` / `}` 都能连按 | 按一次前缀之后半秒内（`repeat-time`）接着按同一个键就行，不用再按前缀 |
 | `z` | 当前 pane 放大到整个窗口，再按一次还原 |
 | `x` | 关掉当前 pane |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
@@ -124,9 +125,11 @@ set -g status-position top
 set -g status-style fg=black,bg=colour39
 set -g pane-active-border-style fg=colour39
 set -g base-index 1
+set -g repeat-time 500            # `bind -r` 的键在多久之内还能接着按；0 就是关掉
 
 bind | split-window -h
 bind - split-window -v
+bind -r C-h resize-pane -L 5      # -r：按一次前缀之后可以连着按
 bind -n M-Left previous-window     # -n：不用按前缀
 bind -n M-Right next-window
 bind r source-file ~/.wmux.conf
@@ -178,7 +181,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 `wmux` 这个命令本身是个客户端。第一次运行时它会拉起一个后台 server（`wmux __server`），所有 session 都归 server 管；客户端和 server 之间走一条按用户隔离的命名管道（`\\.\pipe\wmux-<用户名>-<socket>`，`-L` 可以换 socket）。每个 pane 是一个 ConPTY，server 这边用 `vt100` 维护一份终端画面；server 把可见的 pane、边框、状态栏拼成一帧，只把变化的格子发给接上来的客户端，客户端用 VT 序列写到控制台。最后一个 session 结束，server 就退出。
 
-pane 里能看到两个环境变量：`WMUX`（socket 名）和 `WMUX_PANE`（pane 编号）。server 的日志在 `%LOCALAPPDATA%\wmux\server.log`，`WMUX_LOG=debug` 会记得更详细。
+pane 里能看到两个环境变量：`WMUX`（socket 名）和 `WMUX_PANE`（pane 编号）。在 pane 里敲 `wmux` 命令会自动连到管着这个 pane 的 server（和 tmux 用 `$TMUX` 一个道理），所以 `wmux ls` 之类不用再写 `-L`。server 的日志在 `%LOCALAPPDATA%\wmux\server.log`，`WMUX_LOG=debug` 会记得更详细。
 
 命名管道带了只允许当前用户（和 SYSTEM）访问的 DACL，相当于 tmux 那个 0700 的 socket 目录。每个 pane 都跑在一个 kill-on-close 的 job object 里，所以 `kill-pane`、`kill-session`、server 退出都会把整棵进程树带走，不留孤儿。客户端写控制台慢的时候，server 不会无限缓冲帧，而是直接改成全量重绘。
 
@@ -195,4 +198,4 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；没有 `select-layout` 布局预设；`bind -r` 会被接受但不会重复触发；`list-panes -a` / `-s` 只列目标窗口。
+和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；没有 `select-layout` 布局预设；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口。

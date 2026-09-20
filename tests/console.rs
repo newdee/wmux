@@ -142,6 +142,11 @@ fn real_client_in_conpty() {
     t.send("echo typed-in-conpty\r");
     t.wait_for("echo", |s| s.contents().matches("typed-in-conpty").count() >= 2);
 
+    // A wmux command run inside a pane talks to the server that owns the pane,
+    // without -L: $WMUX names the socket, as $TMUX does for tmux.
+    t.send("wmux ls\r");
+    t.wait_for("ls from inside the pane", |s| s.contents().contains("t: 1 windows"));
+
     // Prefix + % splits; a vertical border shows up in the middle.
     t.send("\x02%");
     t.wait_for("split", |s| (0..23).all(|y| s.cell(y, 40).is_some_and(|c| c.contents() == "│")));
@@ -150,6 +155,23 @@ fn real_client_in_conpty() {
     // pane shells are told the new size.
     // (ResizePseudoConsole is not exposed through the forgotten master, so
     // this is covered by the pipe-level e2e test instead.)
+
+    // A repeatable binding (`bind -r`, the default for pane movement) keeps
+    // working without the prefix: one C-b, then two bare h's, walks left twice.
+    let out = wmux().args(["-L", &socket, "split-window", "-h", "-t", "t"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let panes = || {
+        let out = wmux().args(["-L", &socket, "list-panes", "-t", "t"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let active = || panes().lines().position(|l| l.contains("(active)")).unwrap();
+    t.pump(Duration::from_millis(300));
+    assert_eq!(panes().lines().count(), 3, "three panes now:\n{}", panes());
+    assert_eq!(active(), 2, "the new pane is active");
+    t.send("\x02h");
+    t.send("h");
+    t.pump(Duration::from_millis(300));
+    assert_eq!(active(), 0, "the bare h repeated the binding");
 
     // Prefix + d detaches; the client restores the main screen and prints why.
     t.send("\x02d");

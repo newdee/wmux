@@ -484,3 +484,39 @@ TEMP 下的 `wmux-*` 目录只剩手工调试留下的（已清），通过的�
 ## 结论（第七次验收）
 
 第 5、6、7 轮连续零发现，验收通过。本次修复 7 项（1 项来自用户反馈，6 项为验收过程中发现），新增测试 3 项；最终 93 项自动化测试。
+
+---
+
+# 第八次验收：连按（`bind -r`）与 pane 内的 `wmux`
+
+起因：用户反馈“ctrl b 之后 jkl 不能连续跳”。确认是缺失功能——`bind -r` 一直只是被解析器接受然后丢掉，
+README 的“未实现”里也这么写着。另外在录制演示时发现：pane 里敲 `wmux list-panes` 连到了本机 `default` socket 上
+**另一台** server（用户自己正在跑的那个），而不是管着这个 pane 的 server。
+
+新增：
+- `bind -r`：按一次前缀后，同一个键在 `repeat-time`（默认 500ms，设 0 关闭）内可以连着按。
+  默认给 `h j k l`、`H J K L`、方向键、`C-`/`M-` 方向键、`n p`、`o`、`{ }` 都开了。
+- 客户端默认 socket 取自环境变量 `WMUX`（tmux 用 `$TMUX` 是一个道理），所以 pane 或插件脚本里
+  `wmux ls` 直接就是“这台 server”。
+
+## 第 1 轮（计数 1/3，无发现）— 视角：静态一致性 + 全量
+
+数据：clippy 零告警；95 项（lib 75 / console 4 / e2e 15 / 录制 1 个 ignored）；
+`list-keys` 输出 10 条 `-r` 绑定且能被解析器回读；`show-options -gv repeat-time` 默认 500，`set` 后为 250；
+两份 README 的按键表、配置示例、“未实现”段与实现一致。
+
+## 第 2 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：pane 里 `wmux ls > 文件` 写出的是本 server 的 `s: 1 windows`（修复前会列出另一台 server 的 session）；
+`bind -r C-y select-pane -U` 回读为 `bind-key -r -T prefix C-y select-pane -U`；`set -g repeat-time 0` 退出码 0。
+真实键盘路径在 `tests/console.rs` 里验证：ConPTY 中发 `C-b h` 再发一个裸 `h`，活动 pane 从 2 跳到 0。
+
+## 第 3 轮（计数 3/3，无发现）— 视角：可复现性
+
+数据：连续 3 次 `cargo test --all-targets` 结果逐项相同（75/0/4/0/15）；测试名指纹 `3126F1F62B3250D4`；
+真实 sessions 目录仍是用户自己的 2 个文件。
+
+## 结论（第八次验收）
+
+三轮连续零发现，验收通过。本次新增 2 项能力，新增测试 3 项（1 个单元、1 个 e2e、1 个真实键盘断言）；
+最终 94 项自动化测试 + 1 个按需运行的演示录制。

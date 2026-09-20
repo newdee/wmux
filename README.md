@@ -72,6 +72,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `%` / `"` | split left-right / top-bottom |
 | `h` `j` `k` `l` or arrows / `o` / `;` | move between panes (vim keys) / next pane / last pane |
 | `H` `J` `K` `L`, `Alt`+arrows / `Ctrl`+arrows | resize the current pane by 5 / by 1 |
+| (moving, resizing, `n` / `p` and `{` / `}` repeat: after the prefix, keep pressing the key for half a second, `repeat-time`) | |
 | `S` | toggle `synchronize-panes` (type into every pane of the window; `S` flag on the status line) |
 | `C-s` / `C-r` | save the session / restore saved sessions (see Resume) |
 | `z` | zoom (toggle) the current pane |
@@ -147,10 +148,12 @@ set -g status-style fg=black,bg=colour39
 set -g pane-active-border-style fg=colour39
 set -g base-index 1
 
-bind h select-pane -L
-bind j select-pane -D
-bind k select-pane -U
-bind l select-pane -R
+set -g repeat-time 500            # how long a `bind -r` key keeps working; 0 disables
+
+bind -r h select-pane -L          # -r: press h h h after one prefix
+bind -r j select-pane -D
+bind -r k select-pane -U
+bind -r l select-pane -R
 bind | split-window -h
 bind - split-window -v
 bind -n M-Left previous-window     # -n: no prefix
@@ -231,7 +234,9 @@ server composites the visible panes, borders and status line into a frame and
 sends only the cells that changed to the attached client, which writes them to
 the console with VT sequences. The server exits when its last session ends.
 
-Environment inside panes: `WMUX` (socket name) and `WMUX_PANE` (pane id).
+Environment inside panes: `WMUX` (socket name) and `WMUX_PANE` (pane id). A
+`wmux` command run inside a pane talks to the server that owns it, the way
+`$TMUX` works for tmux, so `wmux ls` from a script or a plugin needs no `-L`.
 Server log: `%LOCALAPPDATA%\wmux\server.log` (`WMUX_LOG=debug` for more).
 
 The pipe carries a DACL that admits only the creating user (and SYSTEM), the
@@ -266,5 +271,4 @@ clipboard is the only buffer), `choose-tree` without per-session
 collapsing, tagging or a filter, `swap-pane` swaps with the previous or
 next pane (`-U` / `-D`; `-s` and `-t` both name the pane to swap, there is
 no pair form), no window layout presets
-(`select-layout`), no repeatable bindings (`bind -r` is accepted, the repeat
-is ignored), and `list-panes -a`/`-s` always list the target window only.
+(`select-layout`), and `list-panes -a`/`-s` always list the target window only.

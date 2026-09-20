@@ -20,6 +20,9 @@ pub struct Options {
     pub status_bg: Color,
     pub base_index: usize,
     pub display_time_ms: u64,
+    /// How long after a `bind -r` key another one counts without the prefix
+    /// (tmux `repeat-time`); 0 turns repeating off.
+    pub repeat_time_ms: u64,
     pub pane_border_active_fg: Color,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
@@ -64,6 +67,7 @@ pub const SHOWABLE: &[&str] = &[
     "window-status-current-format",
     "base-index",
     "display-time",
+    "repeat-time",
     "plugin-path",
     "autosave",
     "restore-on-start",
@@ -84,6 +88,7 @@ impl Default for Options {
             status_bg: Color::Idx(2),
             base_index: 0,
             display_time_ms: 1500,
+            repeat_time_ms: 500,
             pane_border_active_fg: Color::Idx(2),
             pane_border_fg: Color::Idx(8),
             status_left: "[#S] ".into(),
@@ -219,6 +224,7 @@ impl Options {
             }
             "base-index" => self.base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "display-time" => self.display_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "repeat-time" => self.repeat_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "status-left" => self.status_left = value.to_string(),
             "status-right" => self.status_right = value.to_string(),
             "status-left-length" => {
@@ -258,7 +264,6 @@ impl Options {
             | "bell-action"
             | "monitor-activity"
             | "visual-activity"
-            | "repeat-time"
             | "set-titles"
             | "set-titles-string"
             | "pane-base-index"
@@ -292,6 +297,7 @@ impl Options {
             "window-status-current-format" => self.window_status_current_format.clone(),
             "base-index" => self.base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
+            "repeat-time" => self.repeat_time_ms.to_string(),
             "plugin-path" => self.plugin_path.clone(),
             "autosave" => onoff(self.autosave),
             "restore-on-start" => onoff(self.restore_on_start),
