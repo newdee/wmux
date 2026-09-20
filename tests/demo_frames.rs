@@ -39,8 +39,16 @@ fn record_demo() {
 
     // A short prompt, so the recording shows wmux rather than path names.
     let prompt = tmp.join("prompt.ps1");
-    std::fs::write(&prompt, "function global:prompt { 'PS> ' }\n$Host.UI.RawUI.WindowTitle = 'pwsh'\nClear-Host\n")
-        .expect("prompt script");
+    // No prediction and no shared history: a recording must show wmux, never
+    // whatever this machine's shell history happens to hold.
+    std::fs::write(
+        &prompt,
+        "function global:prompt { 'PS> ' }\n\
+         $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
+         try { Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing } catch {}\n\
+         Clear-Host\n",
+    )
+    .expect("prompt script");
     let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
     let conf = tmp.join("wmux.conf");
     // A clock on the right instead of the pane title: the recording should
@@ -108,13 +116,15 @@ fn record_demo() {
     rec.type_line("1..3 | ForEach-Object { \"build step $_ ok\" }");
     rec.hold(5);
 
-    // vim keys move between them: left, back right, up.
+    // vim keys move between them, and repeat without the prefix again:
+    // left, back right, then down into the pane below.
     rec.key("\x02h");
     rec.hold(3);
     rec.key("\x02l");
-    rec.hold(3);
-    rec.key("\x02k");
-    rec.hold(3);
+    rec.hold(1);
+    // Within repeat-time, so this bare j moves a pane instead of typing one.
+    rec.key("j");
+    rec.hold(4);
 
     // Zoom one pane full screen and come back.
     rec.key("\x02z");

@@ -3,11 +3,16 @@
 [![CI](https://github.com/newdee/wmux/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/wmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/wmux)](https://github.com/newdee/wmux/releases)
 
-[中文说明](README.zh-CN.md)
+[中文说明](README.zh-CN.md) · **[Feature tour →](https://newdee.github.io/wmux/)**
 
 A tmux-style terminal multiplexer for Windows. Sessions survive closing the
 terminal, panes and windows split the screen, and PowerShell, WSL and cmd all
 run inside panes with full key fidelity.
+
+<p align="center">
+  <img src="docs/img/wmux-demo.gif" width="880"
+       alt="Splitting a shell into panes, moving with h/j/k/l, zooming, the window picker, detaching and attaching again">
+</p>
 
 - **Native**: built on ConPTY and the Win32 console API. No Cygwin, no MSYS,
   no WSL requirement. Works in Windows Terminal, the classic console host,
