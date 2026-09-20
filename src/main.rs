@@ -46,11 +46,21 @@ fn main() {
             Some(s) if s.starts_with("-L") => {
                 socket = args.remove(0)[2..].to_string();
             }
+            // These answer locally, so they take nothing else: a typo must not
+            // look like it worked.
             Some("-h" | "--help" | "help") => {
+                if args.len() > 1 {
+                    eprintln!("{}: takes no arguments", args[0]);
+                    std::process::exit(1);
+                }
                 println!("{USAGE}");
                 return;
             }
             Some("-V" | "--version" | "version") => {
+                if args.len() > 1 {
+                    eprintln!("{}: takes no arguments", args[0]);
+                    std::process::exit(1);
+                }
                 println!("wmux {}", env!("CARGO_PKG_VERSION"));
                 return;
             }

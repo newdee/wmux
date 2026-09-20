@@ -1009,6 +1009,45 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn zoomed_pane_still_navigates_by_direction() {
+    let h = Harness::start("zoom-nav").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "z"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.prefix('%').await; // left | right, the right one active
+    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.prefix('z').await; // zoom the right pane
+    c.wait_for("Z flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*Z")).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
+    assert!(out.lines().nth(1).unwrap().contains("[80x23]"), "zoomed pane fills the window: {out}");
+    // The hidden pane keeps running at its own size; it is not 0x0.
+    assert!(out.lines().next().unwrap().contains("[40x23]"), "hidden pane keeps its size: {out}");
+    h.cli(&["send-keys", "-t", "z:0.0", "echo hidden-alive", "Enter"]).await;
+    let hidden = h.wait_capture("z:0.0", "the hidden pane's echo", |t| t.contains("hidden-alive")).await;
+    assert!(hidden.contains("hidden-alive"), "{hidden}");
+
+    // The whole point: h moves left out of the zoom instead of "no such pane".
+    c.prefix('h').await;
+    c.wait_for("unzoomed", |s| {
+        let row = s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
+        row.contains("0:cmd*") && !row.contains("*Z")
+    })
+    .await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
+    assert!(out.lines().next().unwrap().contains("(active)"), "left pane is active: {out}");
+    assert!(!c.text().contains("no such pane"), "{}", c.text());
+
+    // And back: zoom the left pane, l returns to the right one.
+    c.prefix('z').await;
+    c.wait_for("Z flag again", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*Z")).await;
+    c.prefix('l').await;
+    c.wait_for("unzoomed again", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("*Z")).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
+    assert!(out.lines().nth(1).unwrap().contains("(active)"), "right pane is active: {out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn list_keys_is_reproducible_across_servers() {
     // Two independent servers (different HashMap seeds) must print the key
     // table byte-for-byte identically.

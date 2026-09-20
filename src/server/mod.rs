@@ -1500,12 +1500,15 @@ impl Server {
                     .iter()
                     .enumerate()
                     .map(|(i, id)| {
-                        let r = w.rect_of(*id).unwrap_or_default();
                         let p = w.pane(*id);
+                        // The pane's own size, not its rectangle: a zoomed
+                        // window has no rectangle for the panes it hides, and
+                        // those panes keep running at their previous size.
+                        let (cols, rows) = p.map(|p| (p.cols, p.rows)).unwrap_or_default();
                         format!(
                             "{i}: [{}x{}] %{id} {}{}{}",
-                            r.w,
-                            r.h,
+                            cols,
+                            rows,
                             p.map(|p| p.display_title()).unwrap_or(""),
                             p.and_then(|p| p.cwd.as_deref()).map(|d| format!(" [{d}]")).unwrap_or_default(),
                             if *id == w.active { " (active)" } else { "" }
@@ -1717,13 +1720,17 @@ impl Server {
                     Err(e) => Outcome::Error(e),
                 }
             }
-            Cmd::NextWindow | Cmd::PreviousWindow | Cmd::LastWindow => {
+            Cmd::NextWindow { ref target } | Cmd::PreviousWindow { ref target } | Cmd::LastWindow { ref target } => {
                 let w = match cmd {
-                    Cmd::NextWindow => "+",
-                    Cmd::PreviousWindow => "-",
+                    Cmd::NextWindow { .. } => "+",
+                    Cmd::PreviousWindow { .. } => "-",
                     _ => "!",
                 };
-                self.exec(Cmd::SelectWindow { target: Target::parse(&format!(":{w}")) }, cid)
+                let target = target.clone();
+                // `-t` names the session to move around in; the window part is
+                // ours ("the next one", "the last one").
+                let session = target.and_then(|t| t.session);
+                self.exec(Cmd::SelectWindow { target: Target { session, window: Some(w.into()), pane: None } }, cid)
             }
             Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
@@ -1796,11 +1803,24 @@ impl Server {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
+                let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
+                let area = self.window_area(scols, srows);
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 let order = w.layout.panes();
                 let cur = order.iter().position(|p| *p == w.active).unwrap_or(0);
                 let next = match sel {
-                    PaneSel::Dir(d) => layout::neighbour(&w.rects, w.active, d),
+                    PaneSel::Dir(d) => {
+                        // Zoomed, the only rectangle is the zoomed pane itself,
+                        // so directions are answered from the real layout (and
+                        // moving unzooms, as it does for any other selection).
+                        if w.zoomed {
+                            let mut rects = Vec::new();
+                            w.layout.layout(area, &mut rects);
+                            layout::neighbour(&rects, w.active, d)
+                        } else {
+                            layout::neighbour(&w.rects, w.active, d)
+                        }
+                    }
                     PaneSel::Next => order.get((cur + 1) % order.len().max(1)).copied(),
                     PaneSel::Prev => order.get((cur + order.len().max(1) - 1) % order.len().max(1)).copied(),
                     PaneSel::Last => w.last_pane.filter(|l| w.pane(*l).is_some()),
@@ -1821,8 +1841,8 @@ impl Server {
                     None => Outcome::Error("no such pane".into()),
                 }
             }
-            Cmd::ResizePane { dir, amount, zoom } => {
-                let (sid, widx, pid) = match self.resolve(None, cid) {
+            Cmd::ResizePane { dir, amount, zoom, target } => {
+                let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
@@ -1836,8 +1856,8 @@ impl Server {
                 self.relayout_session(sid);
                 Outcome::Ok
             }
-            Cmd::SwapPane { up } => {
-                let (sid, widx, pid) = match self.resolve(None, cid) {
+            Cmd::SwapPane { up, target } => {
+                let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
@@ -1853,8 +1873,8 @@ impl Server {
                 self.relayout_session(sid);
                 Outcome::Ok
             }
-            Cmd::BreakPane => {
-                let (sid, widx, pid) = match self.resolve(None, cid) {
+            Cmd::BreakPane { target } => {
+                let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };

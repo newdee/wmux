@@ -217,7 +217,9 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 Every window and pane command accepts `-t target` as in tmux:
 `session`, `session:window`, `:window`, `session:window.pane`, and the window
-part may be an index, a name, `+`, `-` or `!`.
+part may be an index, a name, `+`, `-` or `!`. The one exception is
+`select-pane`, whose `-t` takes the pane to move to (`next`, `last` or an
+index) rather than a window target, next to `-L` `-R` `-U` `-D`.
 
 ## How it works
 
@@ -261,6 +263,8 @@ Relative to tmux: `synchronize-panes` applies to the current window (no
 (last attach wins, no per-client viewport), only the hooks listed above, no
 `#{?cond,a,b}` conditionals in formats, no named paste buffers (the Windows
 clipboard is the only buffer), `choose-tree` without per-session
-collapsing, tagging or a filter, no window layout presets
+collapsing, tagging or a filter, `swap-pane` swaps with the previous or
+next pane (`-U` / `-D`; `-s` and `-t` both name the pane to swap, there is
+no pair form), no window layout presets
 (`select-layout`), no repeatable bindings (`bind -r` is accepted, the repeat
 is ignored), and `list-panes -a`/`-s` always list the target window only.

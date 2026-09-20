@@ -170,6 +170,26 @@ fn real_client_in_conpty() {
     let _ = std::fs::remove_dir_all(sessions_dir());
 }
 
+/// The two answers the binary gives without a server at all.
+#[test]
+fn version_and_help_answer_locally_and_reject_junk() {
+    let out = wmux().arg("-V").output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.trim(), format!("wmux {}", env!("CARGO_PKG_VERSION")));
+
+    let out = wmux().arg("-h").output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: wmux"));
+
+    // A typo must not look like it worked.
+    for args in [vec!["version", "-v"], vec!["help", "me"]] {
+        let out = wmux().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?} should fail");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("takes no arguments"), "{args:?}");
+    }
+}
+
 /// The picker driven through the real keyboard path: ConPTY -> conhost ->
 /// ReadConsoleInputW in the client -> win32 input records -> server.
 #[test]

@@ -101,9 +101,15 @@ pub enum Cmd {
     SelectWindow {
         target: Target,
     },
-    NextWindow,
-    PreviousWindow,
-    LastWindow,
+    NextWindow {
+        target: Option<Target>,
+    },
+    PreviousWindow {
+        target: Option<Target>,
+    },
+    LastWindow {
+        target: Option<Target>,
+    },
     SplitWindow {
         horizontal: bool,
         cwd: Option<String>,
@@ -127,11 +133,15 @@ pub enum Cmd {
         dir: Option<Dir>,
         amount: u16,
         zoom: bool,
+        target: Option<Target>,
     },
     SwapPane {
         up: bool,
+        target: Option<Target>,
     },
-    BreakPane,
+    BreakPane {
+        target: Option<Target>,
+    },
     SendKeys {
         target: Option<Target>,
         keys: Vec<String>,
@@ -336,9 +346,18 @@ impl fmt::Display for Cmd {
                 f.write_str("select-window")?;
                 fmt_target(f, &Some(target.clone()))
             }
-            Cmd::NextWindow => f.write_str("next-window"),
-            Cmd::PreviousWindow => f.write_str("previous-window"),
-            Cmd::LastWindow => f.write_str("last-window"),
+            Cmd::NextWindow { target } => {
+                f.write_str("next-window")?;
+                fmt_target(f, target)
+            }
+            Cmd::PreviousWindow { target } => {
+                f.write_str("previous-window")?;
+                fmt_target(f, target)
+            }
+            Cmd::LastWindow { target } => {
+                f.write_str("last-window")?;
+                fmt_target(f, target)
+            }
             Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full } => {
                 f.write_str("split-window")?;
                 f.write_str(if *horizontal { " -h" } else { " -v" })?;
@@ -380,7 +399,7 @@ impl fmt::Display for Cmd {
                     PaneSel::Index(i) => write!(f, " -t {i}"),
                 }
             }
-            Cmd::ResizePane { dir, amount, zoom } => {
+            Cmd::ResizePane { dir, amount, zoom, target } => {
                 f.write_str("resize-pane")?;
                 if *zoom {
                     f.write_str(" -Z")?;
@@ -392,10 +411,16 @@ impl fmt::Display for Cmd {
                     Some(Dir::Down) => write!(f, " -D {amount}")?,
                     None => {}
                 }
-                Ok(())
+                fmt_target(f, target)
             }
-            Cmd::SwapPane { up } => write!(f, "swap-pane {}", if *up { "-U" } else { "-D" }),
-            Cmd::BreakPane => f.write_str("break-pane"),
+            Cmd::SwapPane { up, target } => {
+                write!(f, "swap-pane {}", if *up { "-U" } else { "-D" })?;
+                fmt_target(f, target)
+            }
+            Cmd::BreakPane { target } => {
+                f.write_str("break-pane")?;
+                fmt_target(f, target)
+            }
             Cmd::SendKeys { target, keys, literal } => {
                 f.write_str("send-keys")?;
                 if *literal {
@@ -874,9 +899,22 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::SelectWindow { target: target.ok_or("select-window: -t required")? }
         }
-        "next-window" => Cmd::NextWindow,
-        "previous-window" => Cmd::PreviousWindow,
-        "last-window" => Cmd::LastWindow,
+        "next-window" | "previous-window" | "last-window" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-a" => {} // tmux: next window with an alert; wmux has none
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            match n {
+                "next-window" => Cmd::NextWindow { target },
+                "previous-window" => Cmd::PreviousWindow { target },
+                _ => Cmd::LastWindow { target },
+            }
+        }
         "split-window" => {
             let (mut horizontal, mut cwd, mut target) = (false, None, None);
             let (mut detached, mut before, mut full) = (false, false, false);
@@ -937,10 +975,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SelectPane { sel: sel.ok_or("select-pane: direction or -t required")? }
         }
         "resize-pane" => {
-            let (mut dir, mut amount, mut zoom) = (None, 1u16, false);
+            let (mut dir, mut amount, mut zoom, mut target) = (None, 1u16, false, None);
             while a.is_flag() {
                 let f = a.next().unwrap();
                 match f {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
                     "-L" | "-R" | "-U" | "-D" => {
                         dir = Some(match f {
                             "-L" => Dir::Left,
@@ -969,21 +1008,33 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if dir.is_none() && !zoom {
                 return Err("resize-pane: direction or -Z required".into());
             }
-            Cmd::ResizePane { dir, amount, zoom }
+            Cmd::ResizePane { dir, amount, zoom, target }
         }
         "swap-pane" => {
-            let mut up = false;
+            let (mut up, mut target) = (false, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-U" => up = true,
                     "-D" => up = false,
+                    "-t" | "-s" => target = Some(Target::parse(a.value("-t")?)),
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::SwapPane { up }
+            Cmd::SwapPane { up, target }
         }
-        "break-pane" => Cmd::BreakPane,
+        "break-pane" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" | "-s" => target = Some(Target::parse(a.value("-t")?)),
+                    "-d" | "-P" => {} // tmux flags without a wmux meaning
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::BreakPane { target }
+        }
         "send-keys" => {
             let (mut target, mut literal) = (None, false);
             while a.is_flag() {
@@ -1007,7 +1058,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::CopyMode { page_up }
         }
-        "paste-buffer" => Cmd::PasteBuffer,
+        "paste-buffer" => {
+            a.none_left(n)?;
+            Cmd::PasteBuffer
+        }
         "command-prompt" => {
             let (mut prompt, mut initial) = (None, None);
             while a.is_flag() {
@@ -1093,7 +1147,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::SwitchClient { next, prev, target }
         }
-        "list-keys" => Cmd::ListKeys,
+        "list-keys" => {
+            a.none_left(n)?;
+            Cmd::ListKeys
+        }
         "choose-tree" | "choose-window" | "choose-session" => {
             let (mut sessions, mut windows) = (n == "choose-session", n == "choose-window");
             while a.is_flag() {
@@ -1189,7 +1246,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::LoadPlugin { path }
         }
-        "list-plugins" => Cmd::ListPlugins,
+        "list-plugins" => {
+            a.none_left(n)?;
+            Cmd::ListPlugins
+        }
         "save-session" => {
             let (mut target, mut all) = (None, false);
             while a.is_flag() {
@@ -1231,7 +1291,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::DeleteSaved { name }
         }
-        "clear-history" => Cmd::ClearHistory,
+        "clear-history" => {
+            a.none_left(n)?;
+            Cmd::ClearHistory
+        }
         "set-cwd" => {
             let mut target = None;
             while a.is_flag() {
@@ -1270,7 +1333,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::SourceFile { path }
         }
-        "version" => Cmd::Version,
+        "version" => {
+            a.none_left(n)?;
+            Cmd::Version
+        }
         _ => unreachable!(),
     };
     Ok(cmd)
@@ -1443,8 +1509,11 @@ mod tests {
     fn parse_pane_commands() {
         assert_eq!(p("select-pane -L"), Cmd::SelectPane { sel: PaneSel::Dir(Dir::Left) });
         assert_eq!(p("selectp -t next"), Cmd::SelectPane { sel: PaneSel::Next });
-        assert_eq!(p("resize-pane -R 5"), Cmd::ResizePane { dir: Some(Dir::Right), amount: 5, zoom: false });
-        assert_eq!(p("resizep -Z"), Cmd::ResizePane { dir: None, amount: 1, zoom: true });
+        assert_eq!(
+            p("resize-pane -R 5"),
+            Cmd::ResizePane { dir: Some(Dir::Right), amount: 5, zoom: false, target: None }
+        );
+        assert_eq!(p("resizep -Z"), Cmd::ResizePane { dir: None, amount: 1, zoom: true, target: None });
         assert_eq!(
             p("splitw -h -c C:\\src"),
             Cmd::SplitWindow {
@@ -1459,6 +1528,44 @@ mod tests {
         );
         assert!(parse_line("resize-pane").is_err());
         assert!(parse_line("select-pane -X").is_err());
+    }
+
+    #[test]
+    fn pane_commands_take_a_target() {
+        // tmux scripts address a pane from outside the session; every pane
+        // command must accept -t, and print it back.
+        let t = |s: &str| Some(Target::parse(s));
+        assert_eq!(
+            p("resize-pane -Z -t work:1"),
+            Cmd::ResizePane { dir: None, amount: 1, zoom: true, target: t("work:1") }
+        );
+        assert_eq!(
+            p("resizep -L 5 -t work:1.0"),
+            Cmd::ResizePane { dir: Some(Dir::Left), amount: 5, zoom: false, target: t("work:1.0") }
+        );
+        assert_eq!(p("swap-pane -U -t work"), Cmd::SwapPane { up: true, target: t("work") });
+        assert_eq!(p("break-pane -t work:2"), Cmd::BreakPane { target: t("work:2") });
+        assert_eq!(p("break-pane"), Cmd::BreakPane { target: None });
+        assert_eq!(p("resize-pane -Z -t work:1").to_string(), "resize-pane -Z -t work:1");
+        assert_eq!(p("swap-pane -D -t w:0.1").to_string(), "swap-pane -D -t w:0.1");
+        assert_eq!(p("break-pane -t work:2").to_string(), "break-pane -t work:2");
+        // Unknown flags are still rejected rather than silently dropped.
+        assert!(parse_line("break-pane -x").is_err());
+        assert!(parse_line("break-pane extra").is_err());
+        assert!(parse_line("swap-pane -t").is_err());
+    }
+
+    #[test]
+    fn window_navigation_takes_a_session_and_rejects_junk() {
+        assert_eq!(p("next-window"), Cmd::NextWindow { target: None });
+        assert_eq!(p("next -t work"), Cmd::NextWindow { target: Some(Target::parse("work")) });
+        assert_eq!(p("prev -t work"), Cmd::PreviousWindow { target: Some(Target::parse("work")) });
+        assert_eq!(p("last -t work"), Cmd::LastWindow { target: Some(Target::parse("work")) });
+        assert_eq!(p("next-window -t work").to_string(), "next-window -t work");
+        // Commands that take nothing say so instead of ignoring the argument.
+        for junk in ["next-window -x", "paste-buffer -x", "list-keys extra", "version -v", "clear-history now"] {
+            assert!(parse_line(junk).is_err(), "{junk} should be rejected");
+        }
     }
 
     #[test]

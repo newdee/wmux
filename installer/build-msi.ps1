@@ -68,12 +68,17 @@ $outDirFull = Join-Path $root $OutDir
 New-Item -ItemType Directory -Force $outDirFull | Out-Null
 $msi = Join-Path $outDirFull "wmux-$Version-windows-x86_64.msi"
 
-& "$wix/candle.exe" -nologo -arch x64 "-dVersion=$Version" "-dSourceDir=$stage" `
-    (Join-Path $root "installer/wmux.wxs") -o $obj
-if ($LASTEXITCODE -ne 0) { throw "candle failed" }
-# ICE61 fires on same-version upgrades, which MajorUpgrade allows on purpose.
-& "$wix/light.exe" -nologo -ext WixUIExtension -sice:ICE61 -spdb -b $root $obj -o $msi
-if ($LASTEXITCODE -ne 0) { throw "light failed" }
+try {
+    & "$wix/candle.exe" -nologo -arch x64 "-dVersion=$Version" "-dSourceDir=$stage" `
+        (Join-Path $root "installer/wmux.wxs") -o $obj
+    if ($LASTEXITCODE -ne 0) { throw "candle failed" }
+    # ICE61 fires on same-version upgrades, which MajorUpgrade allows on purpose.
+    & "$wix/light.exe" -nologo -ext WixUIExtension -sice:ICE61 -spdb -b $root $obj -o $msi
+    if ($LASTEXITCODE -ne 0) { throw "light failed" }
+}
+finally {
+    # A failed build must not leave a copy of the staged files behind.
+    Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+}
 
-Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 Write-Host "built $msi"

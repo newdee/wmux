@@ -172,6 +172,8 @@ set -g status-interval 5
 bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
 ```
 
+窗口和 pane 相关的命令都接受 `-t 目标`，写法和 tmux 一样：`session`、`session:窗口`、`:窗口`、`session:窗口.pane`，窗口那段可以是编号、名字，也可以是 `+`、`-`、`!`。只有 `select-pane` 例外，它的 `-t` 跟的是要跳到哪个 pane（`next`、`last` 或编号），和 `-L` `-R` `-U` `-D` 是一类。
+
 ## 它是怎么工作的
 
 `wmux` 这个命令本身是个客户端。第一次运行时它会拉起一个后台 server（`wmux __server`），所有 session 都归 server 管；客户端和 server 之间走一条按用户隔离的命名管道（`\\.\pipe\wmux-<用户名>-<socket>`，`-L` 可以换 socket）。每个 pane 是一个 ConPTY，server 这边用 `vt100` 维护一份终端画面；server 把可见的 pane、边框、状态栏拼成一帧，只把变化的格子发给接上来的客户端，客户端用 VT 序列写到控制台。最后一个 session 结束，server 就退出。
@@ -193,4 +195,4 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；没有 `select-layout` 布局预设；`bind -r` 会被接受但不会重复触发；`list-panes -a` / `-s` 只列目标窗口。
+和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；格式串不支持 `#{?条件,a,b}`；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；没有 `select-layout` 布局预设；`bind -r` 会被接受但不会重复触发；`list-panes -a` / `-s` 只列目标窗口。

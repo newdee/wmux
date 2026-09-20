@@ -426,3 +426,61 @@ TEMP 下的 `wmux-*` 目录只剩手工调试留下的（已清），通过的�
 ## 结论（第六次验收）
 
 第 6、7、8 轮连续零发现，验收通过。本次修复 5 项（含一个既有的状态栏挤压 bug），新增测试 6 项；最终 89 项自动化测试。
+
+---
+
+# 第七次验收：全屏下的方向切换 + 补齐 `-t`
+
+起因：用户反馈“全屏的时候不能切换窗格”。确认是 bug——`select-pane -L/-R/-U/-D` 从 `w.rects` 找邻居，
+而 zoom 时 rects 只剩铺满整窗的那一个矩形，于是永远找不到邻居，返回 `no such pane`；
+`o` / `;` / `select-pane -t N` 走布局顺序，所以那几个在全屏下一直是好的。
+
+修复：zoom 时用真实布局重新算一遍矩形来找邻居，选中后照常取消 zoom（和 `o`、`;` 的行为一致）。
+回归测试 `zoomed_pane_still_navigates_by_direction` 先验证过“撤掉修复就超时失败”。
+
+## 第 1 轮（不计数）— 视角：不变量
+
+数据：`zoomed` 的 8 处写入点逐一核对，不变量“zoomed ⇒ 窗口里不止一个 pane，且 rects 由 relayout 重建”成立；90 项测试通过。
+
+发现：无（本轮只做审查）。
+
+## 第 2 轮（不计数）— 视角：机制通路（release 二进制）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `resize-pane -t` / `swap-pane -t` 报 `unknown flag '-t'`，但 README 写着“每个窗口和 pane 命令都接受 `-t`” | 两个命令补上 `-t`（`swap-pane` 同时接受 `-s`） |
+| 2 | `break-pane` 压根不解析 flag，`-t` 被静默吞掉，作用在当前 pane 上 | 正常解析 `-t`/`-s`，未知 flag 报错 |
+
+## 第 3 轮（不计数）— 视角：边界（全屏下的隐藏 pane）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 全屏时 `list-panes` 把被藏起来的 pane 报成 `[0x0]`（它其实还在原尺寸正常跑，`send-keys` + `capture-pane` 可证） | 改为显示 pane 自己的尺寸而不是布局矩形；e2e 补断言：隐藏 pane 仍是 40x23 且能收到按键 |
+
+## 第 4 轮（不计数）— 视角：静态一致性（解析器口径）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 8 个命令（`next/previous/last-window`、`paste-buffer`、`list-keys`、`list-plugins`、`clear-history`、`version`）不解析参数，`next-window -x` 之类的笔误被静默忽略 | 统一 `none_left` 校验；顺带给三个窗口切换命令加上 tmux 的 `-t <session>` |
+| 2 | `version` / `help` 在 `main.rs` 里前置处理，`wmux version -v` 照样成功 | 多余参数报错退出 1；`tests/console.rs` 增加真实二进制的守卫测试 |
+| 3 | MSI 构建脚本失败时会留下临时 stage 目录 | `try/finally` 清理，失败与成功两条路径都验证过 |
+| 4 | README 没说清 `swap-pane` 的 `-s`/`-t` 只是“要交换的那个 pane”，没有 tmux 的成对形式 | 两份 README 的“未实现”段补上 |
+
+## 第 5 轮（计数 1/3，无发现）— 视角：clippy + 全量
+
+数据：`cargo clippy --all-targets` 零告警；93 项测试通过（lib 75 / console 4 / e2e 14）。
+
+## 第 6 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制走完所有改动路径）
+
+数据：全屏时隐藏 pane 仍是 `[40x23]`；左右布局下 `select-pane -U` 正确地说“no such pane”且保持全屏，`-L` 则切走并取消全屏（尺寸回到 40/39）；
+`resize-pane -L 10 -t w:0` 生效（30/49）；`next-window -t`、`break-pane -t` 均作用在指定目标上；
+`next-window -x`、`paste-buffer junk`、`version -v`、`break-pane -x`、`swap-pane -q` 全部退出码 1。
+
+## 第 7 轮（计数 3/3，无发现）— 视角：可复现性
+
+数据：连续 3 次 `cargo test --all-targets` 结果逐项相同（75/0/4/14）；测试名指纹 `DE62C34C9AE61A79`（93 项）；
+真实 sessions 目录仍是 2 个文件（用户自己的），测试与构建脚本均无临时目录残留。
+
+## 结论（第七次验收）
+
+第 5、6、7 轮连续零发现，验收通过。本次修复 7 项（1 项来自用户反馈，6 项为验收过程中发现），新增测试 3 项；最终 93 项自动化测试。
