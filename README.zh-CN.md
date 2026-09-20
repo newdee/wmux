@@ -156,7 +156,7 @@ source-file ~/.wmux/themes/nord.conf
 
 ### 状态栏
 
-`status-left`、`status-right`、`window-status-format`、`window-status-current-format` 接受 tmux 的格式串：`#S` session 名，`#W` 窗口名，`#I` 窗口编号，`#P` pane 编号，`#T` pane 标题，`#H` 主机名，`#F` 标记，`#{session_name}` 这种长写法，`%H:%M` 之类的时间字段，`#[fg=colour39,bg=black,bold]` 改样式，还有 `#(命令)`——每隔 `status-interval` 秒（默认 15）跑一次，取输出的第一行。`status-left-length` / `status-right-length` 限制长度。
+`status-left`、`status-right`、`window-status-format`、`window-status-current-format` 接受 tmux 的格式串：`#S` session 名，`#W` 窗口名，`#I` 窗口编号，`#P` pane 编号，`#T` pane 标题，`#H` 主机名，`#F` 标记，`#{session_name}` 这种长写法，`#{?条件,真,假}` 条件（条件可以是变量名，也可以是 `变量==值` / `变量!=值`），`%H:%M` 之类的时间字段，`#[fg=colour39,bg=black,bold]` 改样式，还有 `#(命令)`——每隔 `status-interval` 秒（默认 15）跑一次，取输出的第一行。`status-left-length` / `status-right-length` 限制长度。
 
 ```tmux
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
