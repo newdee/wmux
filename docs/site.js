@@ -29,6 +29,12 @@ const ZH = {
   "c2.sub":
     "<kbd>C-b z</kbd> 把当前 pane 放大到整个窗口，再按一次还原。<kbd>C-b w</kbd> 弹出 session 和窗口的树：<kbd>j</kbd> <kbd>k</kbd> 上下，<kbd>g</kbd> <kbd>G</kbd> 到头到尾，数字直接跳，<kbd>Enter</kbd> 进去。",
 
+  "c2.p1":
+    "<b>一个键重排。</b> <kbd>C-b Space</kbd> 轮换五种布局：等宽列、等高行、主窗在左或在上，还有平铺网格。",
+  "c2.p2": "<b>找得到是哪一块。</b> <kbd>C-b q</kbd> 在每个 pane 上写一个大号数字，按下去就跳过去。",
+  "c2.p3":
+    "<b>翻回滚能搜。</b> copy mode 里 <kbd>/</kbd> 和 <kbd>?</kbd> 搜索，<kbd>n</kbd> <kbd>N</kbd> 找下一个，命中的那行会落到屏幕中间。",
+
   "c3.title": "关掉终端，什么都不会死",
   "c3.sub": "<kbd>C-b d</kbd> 脱离，里面的程序照常跑。换个终端窗口敲 <code>wmux attach</code> 就接回来了。",
   "c3.p1":
