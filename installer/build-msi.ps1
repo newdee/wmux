@@ -10,7 +10,7 @@
 
 .EXAMPLE
   cargo build --release
-  pwsh -File installer/build-msi.ps1 -Version 0.2.0
+  pwsh -File installer/build-msi.ps1 -Version 0.2.1
 #>
 [CmdletBinding()]
 param(
