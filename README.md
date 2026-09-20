@@ -3,7 +3,7 @@
 [![CI](https://github.com/newdee/wmux/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/wmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/wmux)](https://github.com/newdee/wmux/releases)
 
-[中文说明](README.zh-CN.md) · **[Feature tour →](https://newdee.github.io/wmux/)**
+[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/wmux/)**
 
 A tmux-style terminal multiplexer for Windows. Sessions survive closing the
 terminal, panes and windows split the screen, and PowerShell, WSL and cmd all

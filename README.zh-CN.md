@@ -3,7 +3,7 @@
 [![CI](https://github.com/newdee/wmux/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/wmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/wmux)](https://github.com/newdee/wmux/releases)
 
-Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://newdee.github.io/wmux/)**
+Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine.tech/wmux/)**
 
 <p align="center">
   <img src="docs/img/wmux-demo.gif" width="880"
