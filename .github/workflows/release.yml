@@ -21,7 +21,7 @@ jobs:
         run: cargo test --all-targets
       - name: build
         run: cargo build --release --locked
-      - name: package
+      - name: package (zip)
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
@@ -32,10 +32,20 @@ jobs:
           $hash = (Get-FileHash dist\$name.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Set-Content -NoNewline dist\$name.zip.sha256
           Get-Content dist\$name.zip.sha256
+      - name: package (msi)
+        shell: pwsh
+        run: |
+          # Tags are vX.Y.Z; the MSI wants the bare X.Y.Z.
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          pwsh -File installer/build-msi.ps1 -Version $version -OutDir dist
+          $msi = "dist\wmux-$version-windows-x86_64.msi"
+          $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLower()
+          "$hash  $(Split-Path -Leaf $msi)" | Set-Content -NoNewline "$msi.sha256"
+          Get-Content "$msi.sha256"
       - name: release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ github.ref_name }}"
-          gh release create $tag dist\*.zip dist\*.sha256 --title "wmux $tag" --generate-notes
+          gh release create $tag dist\*.zip dist\*.msi dist\*.sha256 --title "wmux $tag" --generate-notes

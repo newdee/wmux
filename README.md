@@ -24,15 +24,31 @@ run inside panes with full key fidelity.
 
 ## Install
 
-Grab `wmux-<version>-windows-x86_64.zip` from the
-[releases page](https://github.com/newdee/wmux/releases), unzip, and put
-`wmux.exe` somewhere on your `PATH`. Or build it yourself:
+From the [releases page](https://github.com/newdee/wmux/releases):
+
+- `wmux-<version>-windows-x86_64.msi` installs into `Program Files`, puts
+  `wmux` on the system `PATH` and uninstalls from "Apps & features"
+  (`msiexec /i wmux-<version>-windows-x86_64.msi /qn` for an unattended
+  install).
+- `wmux-<version>-windows-x86_64.zip` is the same `wmux.exe` to unzip
+  wherever you like.
+
+Or build from source, which needs Rust 1.88+:
 
 ```powershell
-cargo install --path .
+cargo install --git https://github.com/newdee/wmux --locked   # latest master
+cargo install --path .                                         # a local clone
 ```
 
-Requires Windows 10 1809 or newer (ConPTY). Rust 1.88+ to build.
+Requires Windows 10 1809 or newer (ConPTY).
+
+Building the installer yourself needs nothing but the repository; WiX is
+downloaded on demand if it is not already installed:
+
+```powershell
+cargo build --release
+pwsh -File installer/build-msi.ps1        # target\wmux-<version>-windows-x86_64.msi
+```
 
 ## Use
 

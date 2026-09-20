@@ -16,13 +16,26 @@ Windows 上的 tmux。
 
 ## 安装
 
-到 [Releases](https://github.com/newdee/wmux/releases) 下载 `wmux-<版本>-windows-x86_64.zip`，解压，把 `wmux.exe` 放到 `PATH` 里的某个目录就行。想自己编译的话：
+到 [Releases](https://github.com/newdee/wmux/releases) 下载，两种都有：
+
+- `wmux-<版本>-windows-x86_64.msi`：双击装到 `Program Files`，自动加进系统 `PATH`，以后在“应用和功能”里卸载。要静默装就 `msiexec /i wmux-<版本>-windows-x86_64.msi /qn`。
+- `wmux-<版本>-windows-x86_64.zip`：就是一个 `wmux.exe`，解压放哪都行。
+
+想自己编译的话（需要 Rust 1.88 以上）：
 
 ```powershell
-cargo install --path .
+cargo install --git https://github.com/newdee/wmux --locked   # 直接装最新的 master
+cargo install --path .                                         # 本地克隆
 ```
 
-需要 Windows 10 1809 或更新（ConPTY 是那时候加的）。编译需要 Rust 1.88 以上。
+需要 Windows 10 1809 或更新（ConPTY 是那时候加的）。
+
+自己打 MSI 也不用先装什么，脚本发现本机没有 WiX 会自己下一份临时用：
+
+```powershell
+cargo build --release
+pwsh -File installer/build-msi.ps1        # 产物在 target\wmux-<版本>-windows-x86_64.msi
+```
 
 ## 日常用法
 
