@@ -129,7 +129,8 @@ set -g history-limit 10000
 set -g status-position top
 set -g status-style fg=black,bg=colour39
 set -g pane-active-border-style fg=colour39
-set -g base-index 1
+set -g base-index 1               # 窗口和 pane 都从 1 开始编号
+set -g pane-base-index 1
 set -g repeat-time 500            # `bind -r` 的键在多久之内还能接着按；0 就是关掉
 
 bind | split-window -h

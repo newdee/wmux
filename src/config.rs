@@ -19,6 +19,8 @@ pub struct Options {
     pub status_fg: Color,
     pub status_bg: Color,
     pub base_index: usize,
+    /// First pane number shown to the user (tmux pane-base-index).
+    pub pane_base_index: usize,
     pub display_time_ms: u64,
     /// How long after a `bind -r` key another one counts without the prefix
     /// (tmux `repeat-time`); 0 turns repeating off.
@@ -66,6 +68,7 @@ pub const SHOWABLE: &[&str] = &[
     "window-status-format",
     "window-status-current-format",
     "base-index",
+    "pane-base-index",
     "display-time",
     "repeat-time",
     "plugin-path",
@@ -87,6 +90,7 @@ impl Default for Options {
             status_fg: Color::Idx(0),
             status_bg: Color::Idx(2),
             base_index: 0,
+            pane_base_index: 0,
             display_time_ms: 1500,
             repeat_time_ms: 500,
             pane_border_active_fg: Color::Idx(2),
@@ -223,6 +227,7 @@ impl Options {
                 }
             }
             "base-index" => self.base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "pane-base-index" => self.pane_base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "display-time" => self.display_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "repeat-time" => self.repeat_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "status-left" => self.status_left = value.to_string(),
@@ -266,7 +271,6 @@ impl Options {
             | "visual-activity"
             | "set-titles"
             | "set-titles-string"
-            | "pane-base-index"
             | "remain-on-exit"
             | "history-file" => {}
             other => return Err(format!("unknown option '{other}'")),
@@ -296,6 +300,7 @@ impl Options {
             "window-status-format" => self.window_status_format.clone(),
             "window-status-current-format" => self.window_status_current_format.clone(),
             "base-index" => self.base_index.to_string(),
+            "pane-base-index" => self.pane_base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
             "repeat-time" => self.repeat_time_ms.to_string(),
             "plugin-path" => self.plugin_path.clone(),

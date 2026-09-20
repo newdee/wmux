@@ -151,7 +151,8 @@ set -g history-limit 10000
 set -g status-position top
 set -g status-style fg=black,bg=colour39
 set -g pane-active-border-style fg=colour39
-set -g base-index 1
+set -g base-index 1               # windows and panes counted from 1
+set -g pane-base-index 1
 
 set -g repeat-time 500            # how long a `bind -r` key keeps working; 0 disables
 

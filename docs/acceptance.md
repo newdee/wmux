@@ -520,3 +520,41 @@ README 的“未实现”里也这么写着。另外在录制演示时发现：p
 
 三轮连续零发现，验收通过。本次新增 2 项能力，新增测试 3 项（1 个单元、1 个 e2e、1 个真实键盘断言）；
 最终 94 项自动化测试 + 1 个按需运行的演示录制。
+
+---
+
+# 第九次验收：`frame too large` 的真因 + `pane-base-index`
+
+起因：用户之前报过 `wmux` / `wmux attach` 直接输出 `[frame too large: 538976288]`。这次查到根因。
+
+538976288 = `0x20202020`，四个空格。客户端把**屏幕内容当成了帧长**，也就是帧流错位了。排查顺序与结论：
+
+1. 老客户端（安装版 0.1.0）连新 server、新客户端连老 server，`ls` 与 `list-panes` 都正常，**版本不兼容排除**。
+2. 服务端每条连接只有一个写任务，客户端的写也都串行在一个 `select!` 里，**并发写排除**。
+3. 真因在 `src/client.rs` 的 attached 循环：`m = read_frame::<_, ServerMsg>(rd)` 直接写在 `tokio::select!` 的分支里。
+   `read_frame` 是「先读 4 字节头，再读 body」两次 await，而 **`read_exact` 不是 cancellation-safe**：
+   只要同一轮里按键分支或那个 500ms 的尺寸轮询先就绪，这个 future 就在两次读之间被丢弃，4 字节头已经从管道里消费掉、body 还留着。
+   下一轮就把 body 的前 4 字节当帧头。用户那台 session 是 208x55，attach 时首帧整屏重绘很大、必然分多次到达，屏幕上又全是空格，于是读出 `0x20202020`。
+
+修复：帧读取移到独立任务，用有界 channel（256）交给 `select!`，channel 的 recv 是 cancellation-safe 的。
+回归测试 `frames_survive_a_select_loop`：在 duplex 上把每帧拆成「头 / 停 2ms / body」发送，同时有 1ms 的 ticker 抢占。
+把读帧改回内联写法，测试立刻失败（`deserialize frame: io error: unexpected end of file`）。
+
+同时发现并修复：`pane-base-index` 一直在「接受但忽略」名单里（而 `base-index` 是生效的），
+所以 `set -g pane-base-index 1` 之后 pane 仍从 0 编号。现在 `list-panes`、`-t session:window.pane` 解析、`select-pane -t N`、`#P` 四处统一。
+
+## 第 1 轮（计数 1/3，无发现）— 视角：静态一致性 + 全量
+
+数据：clippy 零告警；97 项（lib 76 / console 4 / e2e 16 / 录制 1 个 ignored）；`show-options -gv pane-base-index` 默认 0；两份 README 的配置示例同步更新。
+
+## 第 2 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：`set -g pane-base-index 1` 之后 `list-panes` 编号为 1 和 2；`send-keys -t s:0.1` 退出码 0；`-t s:0.0` 报 `no pane 0`；`show-options` 读回 1。
+
+## 第 3 轮（计数 3/3，无发现）— 视角：可复现性
+
+数据：连续 3 次 `cargo test --all-targets` 结果逐项相同（76/0/4/0/16）；测试名指纹 `C6F18B7C36796B3F`。
+
+## 结论（第九次验收）
+
+三轮连续零发现，验收通过。本次修复 2 项（其中一项是用户报过的帧错位真因），新增测试 2 项；最终 96 项自动化测试。

@@ -1009,6 +1009,33 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pane_base_index_shifts_every_pane_number() {
+    let h = Harness::start("panebase").await;
+    h.cli(&["set", "-g", "pane-base-index", "1"]).await;
+    h.cli(&["set", "-g", "base-index", "1"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "b"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["split-window", "-h", "-t", "b"]).await;
+    h.cli(&["split-window", "-v", "-t", "b"]).await;
+
+    // Listed, targeted and formatted with the same numbers.
+    let (_, out, _) = h.cli(&["list-panes", "-t", "b"]).await;
+    let nums: Vec<&str> = out.lines().map(|l| l.split(':').next().unwrap()).collect();
+    assert_eq!(nums, ["1", "2", "3"], "{out}");
+    let (code, _, err) = h.cli(&["send-keys", "-t", "b:1.1", "echo first-pane", "Enter"]).await;
+    assert_eq!(code, 0, "{err}");
+    let text = h.wait_capture("b:1.1", "the echo", |t| t.contains("first-pane")).await;
+    assert!(text.contains("first-pane"), "{text}");
+    // Pane 0 no longer exists when the base is 1.
+    let (code, _, err) = h.cli(&["send-keys", "-t", "b:1.0", "x"]).await;
+    assert_eq!(code, 1, "pane 0 should be gone");
+    assert_eq!(err, "no pane 0");
+    let (_, out, _) = h.cli(&["display-message", "-p", "#P"]).await;
+    assert_eq!(out.trim(), "3", "#P follows the base too: {out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn repeatable_keys_chain_without_the_prefix() {
     let h = Harness::start("repeat").await;
     let mut c = h.connect().await;

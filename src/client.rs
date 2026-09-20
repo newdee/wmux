@@ -156,7 +156,9 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
                 c.enter_raw()?;
                 c.set_title(&format!("wmux: {session}"));
                 let c = Arc::new(c);
-                let reason = attached(Arc::clone(&c), &session, &mut rd, &mut wr).await;
+                // `rd` moves into the reader task and never comes back: this
+                // arm always returns.
+                let reason = attached(Arc::clone(&c), &session, rd, &mut wr).await;
                 // The input thread still holds a reference; restore explicitly.
                 c.restore();
                 match reason {
@@ -175,9 +177,36 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
     }
 }
 
-async fn attached<R, W>(console: Arc<Console>, session: &str, rd: &mut R, wr: &mut W) -> Result<String>
+/// Read frames on their own task and hand them over one at a time.
+///
+/// `read_frame` is two reads, the header and then the body, so awaiting it
+/// directly in a `select!` loses the header whenever another branch wins the
+/// race: the next read then takes four bytes out of the middle of a frame and
+/// calls them a length. (That is where "frame too large: 538976288" came
+/// from: 0x20202020, four spaces of a full-screen redraw.) A channel receive
+/// is cancel-safe, so the reading happens where nothing can cancel it.
+fn spawn_frame_reader<R>(mut rd: R) -> mpsc::Receiver<Result<Option<ServerMsg>>>
 where
-    R: tokio::io::AsyncRead + Unpin,
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    // Bounded: a client that cannot keep up should slow the pipe down rather
+    // than grow without limit.
+    let (tx, rx) = mpsc::channel(256);
+    tokio::spawn(async move {
+        loop {
+            let msg = read_frame::<_, ServerMsg>(&mut rd).await;
+            let done = !matches!(msg, Ok(Some(_)));
+            if tx.send(msg).await.is_err() || done {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+async fn attached<R, W>(console: Arc<Console>, session: &str, rd: R, wr: &mut W) -> Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin,
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
@@ -223,16 +252,18 @@ where
     // Poll the window size too: not every host reports WINDOW_BUFFER_SIZE_EVENT.
     let mut poll = tokio::time::interval(Duration::from_millis(500));
     let mut last_size = s;
+    let mut frames = spawn_frame_reader(rd);
     loop {
         tokio::select! {
-            m = read_frame::<_, ServerMsg>(rd) => {
-                match m? {
-                    None => { reason = Some("server exited".into()); break; }
-                    Some(ServerMsg::Output(b)) => console.write_bytes(&b),
-                    Some(ServerMsg::Detached { reason: r }) => { reason = Some(format!("{r} (from session {session})")); break; }
-                    Some(ServerMsg::Error(e)) => { reason = Some(format!("error: {e}")); break; }
-                    Some(ServerMsg::SetMouse(on)) => console.set_mouse(on),
-                    Some(ServerMsg::Text(_) | ServerMsg::Done { .. } | ServerMsg::Attached { .. }) => {}
+            m = frames.recv() => {
+                match m {
+                    None | Some(Ok(None)) => { reason = Some("server exited".into()); break; }
+                    Some(Err(e)) => return Err(e),
+                    Some(Ok(Some(ServerMsg::Output(b)))) => console.write_bytes(&b),
+                    Some(Ok(Some(ServerMsg::Detached { reason: r }))) => { reason = Some(format!("{r} (from session {session})")); break; }
+                    Some(Ok(Some(ServerMsg::Error(e)))) => { reason = Some(format!("error: {e}")); break; }
+                    Some(Ok(Some(ServerMsg::SetMouse(on)))) => console.set_mouse(on),
+                    Some(Ok(Some(ServerMsg::Text(_) | ServerMsg::Done { .. } | ServerMsg::Attached { .. }))) => {}
                 }
             }
             Some(m) = rx.recv() => {
@@ -249,4 +280,54 @@ where
     }
     // The input thread is blocked in ReadConsoleInput; it dies with the process.
     Ok(reason.unwrap_or_else(|| "detached".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// Frames must survive a `select!` loop that keeps waking up for other
+    /// reasons. Reading them inline used to drop a half-read frame and read
+    /// the next length out of the middle of a payload.
+    #[tokio::test(flavor = "current_thread")]
+    async fn frames_survive_a_select_loop() {
+        let (mut server, client) = tokio::io::duplex(64 * 1024);
+        // Send each frame in two writes with a gap between them, which is what
+        // a big screen redraw looks like on a pipe.
+        let sent: Vec<String> = (0..20).map(|i| format!("frame {i} {}", "x".repeat(2000))).collect();
+        let expect = sent.clone();
+        tokio::spawn(async move {
+            for text in sent {
+                let mut buf = Vec::new();
+                let payload = bincode::serialize(&ServerMsg::Text(text)).unwrap();
+                buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                // header first, then the body a moment later
+                server.write_all(&buf).await.unwrap();
+                server.flush().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                server.write_all(&payload).await.unwrap();
+                server.flush().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+
+        let mut frames = spawn_frame_reader(client);
+        // The branch that used to cancel the read, firing constantly.
+        let mut ticker = tokio::time::interval(Duration::from_millis(1));
+        let mut got: Vec<String> = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while got.len() < expect.len() && tokio::time::Instant::now() < deadline {
+            tokio::select! {
+                m = frames.recv() => match m {
+                    Some(Ok(Some(ServerMsg::Text(t)))) => got.push(t),
+                    Some(Ok(Some(other))) => panic!("unexpected message {other:?}"),
+                    Some(Ok(None)) | None => break,
+                    Some(Err(e)) => panic!("{e:#}"),
+                },
+                _ = ticker.tick() => {}
+            }
+        }
+        assert_eq!(got, expect, "every frame arrives, in order and intact");
+    }
 }

@@ -1164,7 +1164,12 @@ impl Server {
         let w = s.windows.get(widx).ok_or("no such window")?;
         match target.and_then(|t| t.pane) {
             None => Ok(w.active),
-            Some(i) => w.layout.panes().get(i).copied().ok_or_else(|| format!("no pane {i}")),
+            Some(i) => w
+                .layout
+                .panes()
+                .get(i.wrapping_sub(self.opts.pane_base_index))
+                .copied()
+                .ok_or_else(|| format!("no pane {i}")),
         }
     }
 
@@ -1527,7 +1532,8 @@ impl Server {
                         // those panes keep running at their previous size.
                         let (cols, rows) = p.map(|p| (p.cols, p.rows)).unwrap_or_default();
                         format!(
-                            "{i}: [{}x{}] %{id} {}{}{}",
+                            "{}: [{}x{}] %{id} {}{}{}",
+                            i + self.opts.pane_base_index,
                             cols,
                             rows,
                             p.map(|p| p.display_title()).unwrap_or(""),
@@ -1826,6 +1832,7 @@ impl Server {
                 };
                 let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(scols, srows);
+                let pane_base = self.opts.pane_base_index;
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 let order = w.layout.panes();
                 let cur = order.iter().position(|p| *p == w.active).unwrap_or(0);
@@ -1845,7 +1852,7 @@ impl Server {
                     PaneSel::Next => order.get((cur + 1) % order.len().max(1)).copied(),
                     PaneSel::Prev => order.get((cur + order.len().max(1) - 1) % order.len().max(1)).copied(),
                     PaneSel::Last => w.last_pane.filter(|l| w.pane(*l).is_some()),
-                    PaneSel::Index(i) => order.get(i).copied(),
+                    PaneSel::Index(i) => order.get(i.wrapping_sub(pane_base)).copied(),
                 };
                 match next {
                     Some(id) if id != w.active => {
@@ -2267,7 +2274,7 @@ impl Server {
         let title = w.pane(pid).map(|p| p.display_title().to_string()).unwrap_or_default();
         s.replace("#S", &sess.name)
             .replace("#W", &w.name)
-            .replace("#P", &pidx.to_string())
+            .replace("#P", &(pidx + self.opts.pane_base_index).to_string())
             .replace("#T", &title)
             .replace("#I", &(widx + self.opts.base_index).to_string())
     }
@@ -2947,6 +2954,7 @@ impl Server {
             ch.lines = lines;
         }
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else { return };
+        let pane_base_index = self.opts.pane_base_index;
         let (status_top, border_fg, active_fg, base_index, opts_status) = (
             self.opts.status_top,
             self.opts.pane_border_fg,
@@ -2975,7 +2983,7 @@ impl Server {
                     session: s.name.clone(),
                     window: w.name.clone(),
                     window_index: widx + base_index,
-                    pane_index: pidx,
+                    pane_index: pidx + pane_base_index,
                     pane_title: pane.map(|p| truncate(p.display_title(), 30)).unwrap_or_default(),
                     pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
                     pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
