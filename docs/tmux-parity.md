@@ -192,6 +192,12 @@ the session file), `autosave`, `restore-on-start`, `sessions-dir`,
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`
 and `set -p` are accepted and set the option for the server.
 
+Two things wmux adds that tmux does not have: an option name may be
+abbreviated as long as it stays unambiguous (`set sync`, `set mon-act on`,
+`set w-s-f ...`, each dash-separated word taking a prefix), and an on/off
+option with no value flips (`set mouse`, `set sync`). tmux only abbreviates
+command names, and requires a value.
+
 ## Alerts
 
 `monitor-activity`, `monitor-bell` (on by default) and `monitor-silence`

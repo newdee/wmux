@@ -753,3 +753,62 @@ copy mode 的按键，逐条标注 wmux 是「有 / 部分 / 待做 / 明确不�
 修复 8 个自测中发现的缺陷（其中「跨 session move-window 顶掉当前窗口」「弹窗吞 key-up」
 「pipe-pane 静默丢输出」三个会被用户直接撞上）；测试从 109 项增加到 126 项
 （lib 86 / console 4 / e2e 36）。
+
+# 第十三次验收（2026-09-22）— 选项名缩写与开关切换
+
+用户提的：`prefix :` 之后能不能像 `set sync` 这样写，直接开同步。当时只有命令名
+支持前缀缩写（`set` = `set-option`），选项名必须写全，而且除了 `synchronize-panes`
+以外，开关类选项不给值就报 `bad boolean ''`。
+
+做了两件事：选项名支持不产生歧义的缩写（整体前缀 `sync`，以及按 `-` 分段各写前缀
+`mon-act`、`w-s-f`），开关类选项不给值就翻转（`set mouse`、`set sync`）。名字在解析期
+就展开成全名，所以 server、`list-keys`、配置文件三处看到的都是同一个名字。
+
+## 第 1 轮（不计数）— 视角：逻辑正确与不变量
+
+新增单元测试 `known_option_names_line_up_with_the_setter`：缩写表里的每个名字都必须
+解析回自己、都必须被 `set` 认识、`SHOWABLE` 和开关表必须是缩写表的子集。
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `synchronize-panes` 能 set、能 `show -gv`，却不在 `show-options` 的列表里——能设却看不见 | 列表末尾按当前窗口补一行 |
+
+## 第 2 轮（不计数）— 视角：机制通路（release 二进制）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `set hist 1000` 报歧义（`history-limit` vs `history-file`），而后者只是为了让 `.tmux.conf` 能加载而"接受并忽略"的名字 | 缩写表拆成 `KNOWN`（真正生效的 35 个）和 `ACCEPTED`（兼容用的 15 个）；先在生效的里面找唯一匹配，兼容名字永远抢不走缩写，写全名仍然被接受 |
+
+## 第 3 轮（不计数）— 视角：边界与退化输入
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `set ""` 列出全部 35 个候选（空串是所有名字的前缀），`set -` 列出 22 个 | 空名字、含空段的名字一律不当作缩写，直接落到 `unknown option` |
+| 2 | 歧义提示最长列了 13 个名字 | 最多列 4 个，其余写成 `and N more` |
+
+## 第 4 轮（计数 1/3，无发现）— 视角：机制通路
+
+数据（release 二进制，16 条）：`set sync` → `show -gv sync` = on；`set -w syn on`；
+`set mon-act on`；`set w-s-f #I:#W`；`set mou` 翻转；`set -ag s-r " | tail"` 追加成功；
+`set mon` / `set s-p` 报歧义并列出候选；`set hist 1000` 成功；
+`show-options` 列出 30 行且含 `synchronize-panes`。
+
+## 第 5 轮（计数 2/3，无发现）— 视角：边界与退化输入
+
+数据：`set`（无名字）→ `option name required`；`set ""` / `set -` → 干净的
+`unknown option`；`set s on` → 歧义且只列 4 个 + `and 9 more`；`set SYNC` → unknown
+（大小写敏感）；`@theme` 设/读正常；`set -a mou`、`set sav`（数字选项不翻转，报
+`bad number ''`）符合预期；整份配置文件用缩写写成（`set mou on` / `set mon-act on` /
+`set hist 4321` / `set sav 42`）在 server 启动时全部生效；`source-file` 里的歧义带
+文件名和行号报出来。
+
+## 第 6 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，128 项测试名+状态指纹均为 `805519A61590AEF6`；
+README 和 `--help` 里承诺的 6 个例子（`set sync`、`set mon-act on`、`set w-s-f`、
+`set mouse` 翻转、`set mon` 的歧义提示）逐条对着 release 二进制实测，全部相符；
+clippy 与 `cargo fmt --check` 无输出。
+
+## 结论（第十三次验收）
+
+第 4、5、6 轮连续零发现，验收通过。测试从 126 增加到 128（lib 87 / console 4 / e2e 37）。

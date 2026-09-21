@@ -2180,7 +2180,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     append = true;
                 }
             }
-            let name = a.next().ok_or("set-option: option name required")?.to_string();
+            // An option name may be abbreviated the way a command name is:
+            // `set sync` is `set synchronize-panes`. Expanding it here means
+            // everything downstream sees the real name.
+            let name = crate::config::resolve_name(a.next().ok_or("set-option: option name required")?)?;
             let value = a.rest().join(" ");
             Cmd::SetOption { name, value, append }
         }
@@ -2242,7 +2245,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            let name = a.next().map(str::to_string);
+            let name = a.next().map(crate::config::resolve_name).transpose()?;
             a.none_left(n)?;
             Cmd::ShowOptions { name, value_only, quiet }
         }

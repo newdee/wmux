@@ -61,6 +61,8 @@ const ZH = {
   "c4.title": "你的 .tmux.conf，基本能直接用",
   "c4.sub":
     "命令行、: 命令提示符、配置文件里是同一套命令名。tmux 有而 wmux 没有的选项会被接受然后忽略，所以现成配置可以拿来当起点。",
+  "c4.p0":
+    "<b>名字可以写短。</b> 命令名支持不产生歧义的前缀（<code>wmux att</code>、<code>wmux splitw -h</code>），选项名也一样：<code>set sync</code> 就是 <code>set synchronize-panes</code>，<code>set mon-act on</code> 就是 <code>set monitor-activity on</code>，开关类选项不给值就是切换。",
   "c4.p1":
     "<b>能被脚本驱动。</b> <code>wmux send-keys</code>（含 <code>-X</code> 那套 copy mode 命令）、<code>wmux capture-pane -p -e</code>、<code>wmux split-window</code> 可以从外面操作一个 session；在 pane 里面用则不用再写 socket 名。",
   "c4.p2":

@@ -181,6 +181,7 @@ bind | split-window -h
 bind -n M-Right next-window       <span class="c"># -n: no prefix at all</span>
 set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         <ul class="points">
+          <li data-i18n="c4.p0"><b>Short names.</b> Command names take an unambiguous prefix (<code>wmux att</code>, <code>wmux splitw -h</code>) and so do option names: <code>set sync</code> is <code>set synchronize-panes</code>, <code>set mon-act on</code> is <code>set monitor-activity on</code>, and an on/off option with no value flips.</li>
           <li data-i18n="c4.p1"><b>Scriptable.</b> <code>wmux send-keys</code> (including tmux's <code>-X</code> copy-mode commands), <code>wmux capture-pane -p -e</code> and <code>wmux split-window</code> drive a session from outside; inside a pane they need no socket name.</li>
           <li data-i18n="c4.p2"><b>Plugins.</b> A directory with a <code>&lt;name&gt;.wmux</code> file of commands, plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
         </ul>

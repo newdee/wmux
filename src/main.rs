@@ -36,6 +36,7 @@ Plugins / scripting:
   show-options [-gqv] [name]
 Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name)
 Any unambiguous prefix of a command name works: `wmux att`, `wmux lsp`, `wmux splitw -h`.
+Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
 Default prefix: C-b.  Prefix ? lists key bindings, prefix q shows pane numbers.";
 
 fn main() {

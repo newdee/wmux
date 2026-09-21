@@ -211,6 +211,13 @@ set -ag status-right " | wmux"    # -a adds to what the option already holds
 source-file ~/.wmux/themes/nord.conf
 ```
 
+Option names take an unambiguous abbreviation, the way command names do:
+`set sync` is `set synchronize-panes`, `set mon-act on` is
+`set monitor-activity on`, and each dash-separated word can be shortened
+(`set w-s-f "#I:#W"`). An on/off option with no value flips: `set mouse`,
+`set sync`. Something that could mean several options says which
+(`set mon` lists the three `monitor-*` ones).
+
 Options unknown to wmux but common in `.tmux.conf` (`escape-time`,
 `default-terminal`, ...) are accepted and ignored, so an existing tmux config
 can be reused as a starting point.

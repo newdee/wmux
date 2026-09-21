@@ -3505,6 +3505,18 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::SourceFile { path } => self.source_file(&path).map(|_| ()).into(),
+            // Window-scoped, so it is not in the global table: answer it from
+            // the window the client is looking at.
+            Cmd::ShowOptions { ref name, value_only, quiet: _ } if name.as_deref() == Some("synchronize-panes") => {
+                let on = match self.resolve(None, cid) {
+                    Ok((sid, widx, _)) => {
+                        self.session(sid).and_then(|s| s.windows.get(widx)).is_some_and(|w| w.synchronized)
+                    }
+                    Err(e) => return Outcome::Error(e),
+                };
+                let v = if on { "on" } else { "off" };
+                Outcome::Text(if value_only { v.to_string() } else { format!("synchronize-panes {v}") })
+            }
             Cmd::ShowOptions { name, value_only, quiet } => match name {
                 Some(n) => match self.opts.get(&n) {
                     Some(v) => Outcome::Text(if value_only { v } else { format!("{n} {}", crate::command::quote(&v)) }),
@@ -3516,6 +3528,13 @@ impl Server {
                         .iter()
                         .filter_map(|n| self.opts.get(n).map(|v| format!("{n} {}", crate::command::quote(&v))))
                         .collect();
+                    // Window-scoped, so it is not in the table, but leaving it
+                    // out of the listing hides an option that can be set.
+                    if let Ok((sid, widx, _)) = self.resolve(None, cid)
+                        && let Some(w) = self.session(sid).and_then(|s| s.windows.get(widx))
+                    {
+                        lines.push(format!("synchronize-panes {}", if w.synchronized { "on" } else { "off" }));
+                    }
                     for (k, v) in &self.opts.user {
                         lines.push(format!("{k} {}", crate::command::quote(v)));
                     }

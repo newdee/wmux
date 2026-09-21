@@ -167,6 +167,12 @@ bind -n M-Left previous-window     # -n：不用按前缀
 bind -n M-Right next-window
 bind r source-file ~/.wmux.conf
 
+# 选项名和命令名一样可以缩写，只要不产生歧义：
+# set sync          = set synchronize-panes（不给值就是切换）
+# set mon-act on    = set monitor-activity on（按 - 分段各写前缀）
+# set mou           = 翻转 mouse
+# set mon           会报歧义，并列出三个 monitor-* 让你选
+
 set -ag status-right " | wmux"    # -a 是往原值后面追加，不是覆盖
 source-file ~/.wmux/themes/nord.conf
 ```

@@ -206,9 +206,141 @@ fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
     Ok((fg, bg))
 }
 
+/// Every option wmux actually does something with, plus `synchronize-panes`
+/// (which the server handles itself). Used to expand an abbreviation.
+pub const KNOWN: &[&str] = &[
+    "autosave",
+    "base-index",
+    "default-command",
+    "default-shell",
+    "display-time",
+    "history-limit",
+    "monitor-activity",
+    "monitor-bell",
+    "monitor-silence",
+    "mouse",
+    "pane-active-border-style",
+    "pane-base-index",
+    "pane-border-style",
+    "plugin-path",
+    "prefix",
+    "remain-on-exit",
+    "repeat-time",
+    "restore-on-start",
+    "save-history",
+    "sessions-dir",
+    "status",
+    "status-bg",
+    "status-fg",
+    "status-interval",
+    "status-left",
+    "status-left-length",
+    "status-position",
+    "status-right",
+    "status-right-length",
+    "status-style",
+    "synchronize-panes",
+    "visual-activity",
+    "visual-bell",
+    "window-status-current-format",
+    "window-status-format",
+];
+
+/// Names taken only so that a `.tmux.conf` loads; setting them does nothing.
+/// They can be spelled out in full, but they never win an abbreviation from
+/// an option that has an effect (`hist` is `history-limit`, not
+/// `history-file`).
+pub const ACCEPTED: &[&str] = &[
+    "aggressive-resize",
+    "allow-rename",
+    "automatic-rename",
+    "bell-action",
+    "default-terminal",
+    "escape-time",
+    "focus-events",
+    "history-file",
+    "mode-keys",
+    "renumber-windows",
+    "set-clipboard",
+    "set-titles",
+    "set-titles-string",
+    "terminal-overrides",
+    "window-status-current-style",
+];
+
+/// Options that are on or off, so `set -g mouse` with no value flips them.
+const BOOLEAN: &[&str] = &[
+    "autosave",
+    "monitor-activity",
+    "monitor-bell",
+    "mouse",
+    "remain-on-exit",
+    "restore-on-start",
+    "status",
+    "synchronize-panes",
+    "visual-activity",
+    "visual-bell",
+];
+
+/// Expand an option name the way command names expand: an exact name wins,
+/// otherwise an unambiguous prefix (`sync` is `synchronize-panes`). A name
+/// that matches nothing is returned as it was, so the caller reports it as
+/// unknown; `@user` options are never touched.
+pub fn resolve_name(name: &str) -> Result<String, String> {
+    // An empty name (or an empty word in one) is a prefix of everything, so
+    // it is not an abbreviation of anything: let the caller call it unknown.
+    if name.is_empty() || name.starts_with('@') || KNOWN.contains(&name) || ACCEPTED.contains(&name) {
+        return Ok(name.to_string());
+    }
+    let pick = |hits: Vec<&&str>| -> Option<Result<String, String>> {
+        match hits.len() {
+            0 => None,
+            1 => Some(Ok(hits[0].to_string())),
+            _ => {
+                // Enough to see what went wrong, not a wall of text.
+                let names: Vec<&str> = hits.into_iter().copied().collect();
+                let shown = names.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+                let rest = names.len().saturating_sub(4);
+                let tail = if rest > 0 { format!(" and {rest} more") } else { String::new() };
+                Some(Err(format!("ambiguous option: {name} (could be {shown}{tail})")))
+            }
+        }
+    };
+    // A prefix of the whole name (`sync`, `rem`), then a prefix of each
+    // dash-separated word, which is how these names are read aloud
+    // (`mon-act`, `w-s-f`). Options that do something are matched first, so
+    // the compatibility names never shadow them.
+    let words = |o: &str| o.split('-').map(str::to_string).collect::<Vec<_>>();
+    let want = words(name);
+    let by_words = !want.iter().any(String::is_empty);
+    let by_word = |o: &&&str| {
+        let parts = words(o);
+        parts.len() == want.len() && parts.iter().zip(&want).all(|(p, w)| p.starts_with(w))
+    };
+    for table in [KNOWN, ACCEPTED] {
+        if let Some(r) = pick(table.iter().filter(|o| o.starts_with(name)).collect()) {
+            return r;
+        }
+        if by_words && let Some(r) = pick(table.iter().filter(by_word).collect()) {
+            return r;
+        }
+    }
+    Ok(name.to_string())
+}
+
 impl Options {
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
-        match name {
+        let name = &resolve_name(name)?;
+        // No value at all flips an on/off option, which is what makes
+        // `set mouse` and `set -w sync` worth typing.
+        let flipped;
+        let value = if value.is_empty() && BOOLEAN.contains(&name.as_str()) {
+            flipped = if self.get(name).as_deref() == Some("on") { "off" } else { "on" };
+            flipped
+        } else {
+            value
+        };
+        match name.as_str() {
             "prefix" => self.prefix = Key::parse(value).ok_or_else(|| format!("bad key '{value}'"))?,
             "default-shell" => self.default_shell = value.to_string(),
             "default-command" => self.default_command = crate::command::tokenize(value)?,
@@ -310,11 +442,14 @@ impl Options {
         Ok(())
     }
 
-    /// Current value of an option as `show-options` prints it.
+    /// Current value of an option as `show-options` prints it. Takes the
+    /// same abbreviations `set` does.
     pub fn get(&self, name: &str) -> Option<String> {
         if name.starts_with('@') {
             return self.user.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone());
         }
+        let full = resolve_name(name).ok()?;
+        let name = full.as_str();
         let onoff = |b: bool| if b { "on" } else { "off" }.to_string();
         Some(match name {
             "prefix" => self.prefix.to_string(),
@@ -432,6 +567,48 @@ pub fn which(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The abbreviation table has to agree with what `set` actually accepts,
+    /// or a short name would expand to something the setter then rejects.
+    #[test]
+    fn known_option_names_line_up_with_the_setter() {
+        for n in SHOWABLE {
+            assert!(KNOWN.contains(n), "{n} is showable but cannot be abbreviated");
+        }
+        for n in BOOLEAN {
+            assert!(KNOWN.contains(n), "{n} flips but is not a known name");
+        }
+        for n in ACCEPTED {
+            assert!(!KNOWN.contains(n), "{n} is in both tables");
+            assert_eq!(resolve_name(n).unwrap(), *n, "{n} must still be settable in full");
+        }
+        // A name that does something wins over a compatibility name.
+        assert_eq!(resolve_name("hist").unwrap(), "history-limit");
+        assert_eq!(resolve_name("esc").unwrap(), "escape-time", "a compatibility name still expands on its own");
+        let mut o = Options::default();
+        for n in KNOWN {
+            // A full name always resolves to itself, whatever else starts
+            // with it (`status` must never become `status-style`).
+            assert_eq!(resolve_name(n).unwrap(), *n, "{n} does not resolve to itself");
+            // And the setter knows it: it may reject the value, but never
+            // the name. (synchronize-panes is the server's, not the table's.)
+            if *n == "synchronize-panes" {
+                continue;
+            }
+            for v in ["on", "1", "x"] {
+                if let Err(e) = o.set(n, v) {
+                    assert!(!e.contains("unknown option"), "{n}: {e}");
+                }
+            }
+            assert!(o.get(n).is_some() || !SHOWABLE.contains(n), "{n} is showable but reads back as nothing");
+        }
+        for n in BOOLEAN {
+            if *n == "synchronize-panes" {
+                continue;
+            }
+            assert!(matches!(o.get(n).as_deref(), Some("on" | "off")), "{n} should read back on or off");
+        }
+    }
+
     #[test]
     fn set_options() {
         let mut o = Options::default();
@@ -464,6 +641,44 @@ mod tests {
         for name in SHOWABLE {
             assert!(o.get(name).is_some(), "{name} is listed but not showable");
         }
+        // Option names take an unambiguous prefix, like command names do.
+        assert_eq!(resolve_name("sync").unwrap(), "synchronize-panes");
+        assert_eq!(resolve_name("rem").unwrap(), "remain-on-exit");
+        assert_eq!(resolve_name("mouse").unwrap(), "mouse", "an exact name wins over any prefix");
+        assert_eq!(resolve_name("status").unwrap(), "status");
+        assert_eq!(resolve_name("@theme").unwrap(), "@theme", "user options are never expanded");
+        assert_eq!(resolve_name("nonsense").unwrap(), "nonsense", "unknown names pass through to the caller");
+        let amb = resolve_name("mon").unwrap_err();
+        assert!(amb.contains("ambiguous") && amb.contains("monitor-silence"), "{amb}");
+        // A name that is a prefix of everything is not an abbreviation, and
+        // a long list of candidates is cut short.
+        assert_eq!(resolve_name("").unwrap(), "");
+        assert_eq!(resolve_name("-").unwrap(), "-");
+        assert_eq!(resolve_name("s-").unwrap(), "s-");
+        let many = resolve_name("s").unwrap_err();
+        assert!(many.contains("and 9 more"), "{many}");
+        assert!(many.matches(", ").count() <= 4, "{many}");
+        assert!(resolve_name("vis").is_err(), "visual-bell and visual-activity are both there");
+        // Each dash-separated word may be abbreviated too.
+        assert_eq!(resolve_name("mon-act").unwrap(), "monitor-activity");
+        assert_eq!(resolve_name("w-s-f").unwrap(), "window-status-format");
+        assert_eq!(resolve_name("s-r").unwrap(), "status-right", "status-right-length has one word more");
+        assert_eq!(resolve_name("m-b").unwrap(), "monitor-bell");
+        let amb2 = resolve_name("s-p").unwrap_err();
+        assert!(amb2.contains("status-position") && amb2.contains("synchronize-panes"), "{amb2}");
+        o.set("mon-sil", "30").unwrap();
+        assert_eq!(o.monitor_silence, 30);
+        assert_eq!(o.get("mon-sil").as_deref(), Some("30"), "show takes the same abbreviation");
+
+        // No value flips an on/off option, and only an on/off option.
+        let before = o.mouse;
+        o.set("mouse", "").unwrap();
+        assert_eq!(o.mouse, !before);
+        o.set("mou", "").unwrap();
+        assert_eq!(o.mouse, before, "twice is back where it started");
+        o.set("monitor-activity", "").unwrap();
+        assert!(o.monitor_activity, "off by default, so one flip turns it on");
+        assert!(o.set("history-limit", "").is_err(), "a number still needs a value");
         assert!(o.set("nonsense", "1").is_err());
         assert!(o.set("mouse", "maybe").is_err());
         assert!(o.set("history-limit", "x").is_err());

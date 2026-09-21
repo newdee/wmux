@@ -2068,6 +2068,58 @@ async fn degenerate_targets_for_the_new_commands() {
     h.cli(&["kill-server"]).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn option_names_take_abbreviations_and_flip() {
+    let h = Harness::start("optnames").await;
+    h.cli(&["new", "-d", "-s", "o"]).await;
+    h.wait_capture("o:0", "shell prompt", |t| t.contains("wmux>")).await;
+
+    // `set sync` is `set synchronize-panes`, and no value flips it.
+    assert_eq!(h.cli(&["show", "-gv", "sync"]).await.1.trim(), "off");
+    let (code, _, err) = h.cli(&["set", "sync"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "sync"]).await.1.trim(), "on");
+    let (_, out, _) = h.cli(&["list-windows", "-t", "o"]).await;
+    assert!(out.contains("*S"), "the status flag follows: {out}");
+    h.cli(&["set", "sync", "off"]).await;
+    assert_eq!(h.cli(&["show", "-gv", "sync"]).await.1.trim(), "off");
+
+    // Each dash-separated word may be shortened too.
+    let (code, _, err) = h.cli(&["set", "mon-act", "on"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "monitor-activity"]).await.1.trim(), "on");
+    assert_eq!(h.cli(&["show", "-gv", "mon-act"]).await.1.trim(), "on", "show takes them as well");
+
+    // Flipping works for any on/off option, and a number still needs a value.
+    let before = h.cli(&["show", "-gv", "mouse"]).await.1.trim().to_string();
+    h.cli(&["set", "mouse"]).await;
+    assert_ne!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), before);
+    h.cli(&["set", "mou"]).await;
+    assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), before);
+    let (code, _, err) = h.cli(&["set", "history-limit"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("bad number"), "{err}");
+
+    // An abbreviation that could mean several things says which.
+    let (code, _, err) = h.cli(&["set", "mon", "on"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("ambiguous option: mon") && err.contains("monitor-bell"), "{err}");
+    // And one that means nothing is still an unknown option.
+    let (code, _, err) = h.cli(&["set", "frobnicate", "on"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown option"), "{err}");
+
+    // Inside a session the `:` prompt takes the same short names.
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "o"]).await;
+    c.wait_for("attached", |s| s.contents().contains("wmux>")).await;
+    c.prefix(':').await;
+    c.type_str("set sync").await;
+    c.enter().await;
+    c.wait_for("sync on from the prompt", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("*S")).await;
+    h.cli(&["kill-server"]).await;
+}
+
 // Keep the unused-import lint quiet for helper traits used through split().
 #[allow(dead_code)]
 fn _assert_traits<T: AsyncRead + AsyncWrite>() {}
