@@ -71,7 +71,7 @@ wmux kill-server
 | `x` | 关掉当前 pane |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
 | `q` | 每块显示自己的编号，按数字直接跳过去 |
-| `Space` / `M-1`…`M-5` | 轮换布局 / 直接选一种（左右平分、上下平分、主窗在上、主窗在左、平铺） |
+| `Space` / `M-1`…`M-5` / `E` | 轮换布局 / 直接选一种（左右平分、上下平分、主窗在上、主窗在左、平铺）/ 把旁边这一排 pane 拉成等宽等高 |
 | `C-o` / `M-o` | 让所有 pane 在布局里轮转一格 |
 | `!` | 把当前 pane 拆成一个独立窗口 |
 | `m` / `M` | 标记这个 pane / 取消标记（`join-pane` 默认搬走被标记的那个） |
@@ -87,8 +87,11 @@ wmux kill-server
 | `?` | 列出所有按键 |
 | `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消 |
 | `(` / `)` | 切到上一个 / 下一个 session |
+| `D` | 列出连着的客户端，挑一个踢下线 |
+| `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
+| `M-n` / `M-p` | 跳到下一个 / 上一个有提醒的窗口（见 `monitor-activity`） |
 
-copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转，前面加数字就重复（`3j`），`Space` 或 `v` 开始选，`C-v` 切成矩形选择，`Enter` 或 `y` 复制（同时进粘贴缓冲区和 Windows 剪贴板），`/` `?` 搜索、`n` `N` 找下一个，`q` 退出。
+copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转，前面加数字就重复（`3j`），`Space` 或 `v` 开始选，`C-v` 切成矩形选择，`Enter` 或 `y` 复制（同时进粘贴缓冲区和 Windows 剪贴板），`/` 往新的方向搜、`?` 往回翻历史搜、`n` `N` 找下一个，`q` 退出。脚本想干同样的事就用 `send-keys -X <命令名>`，命令名和 tmux 一样。
 
 鼠标也管用：点一下选 pane，拖边框调大小，点状态栏上的窗口名切窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了。
 
@@ -144,6 +147,13 @@ set -g base-index 1               # 窗口和 pane 都从 1 开始编号
 set -g pane-base-index 1
 set -g repeat-time 500            # `bind -r` 的键在多久之内还能接着按；0 就是关掉
 
+set -g remain-on-exit on          # 程序退出后 pane 留着，告诉你它是怎么没的
+set -g save-history 500           # 每个 pane 存多少行给 `resume` 用；0 就是不存
+set -g monitor-activity on        # 后台窗口有输出就在状态栏标 `#`
+set -g monitor-bell on            # 响铃标 `!`；默认就是开的
+set -g monitor-silence 60         # 60 秒没动静标 `~`；0 是关掉
+set -g visual-bell on             # 用状态栏提示代替真的响铃
+
 bind | split-window -h
 bind - split-window -v
 bind -r C-h resize-pane -L 5      # -r：按一次前缀之后可以连着按
@@ -197,6 +207,15 @@ set -g status-interval 5
 bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
 ```
 
+脚本和按键绑定里常用、但不那么显眼的几个命令（`wmux list-commands` 会列出全部 85 个，命令名写前缀就行）：
+
+- `pipe-pane [-o] [-t 目标] [命令]`：把 pane 打印的所有东西灌进一个命令的标准输入；不给命令就是停。`wmux pipe-pane "$input | Add-Content build.log"` 就能一边编译一边留日志。
+- `wait-for [-L|-U|-S] 通道`：挂在那儿等别人发信号（或者解锁），两个脚本可以互相等：一边 `wmux wait-for ready`，另一边 `wmux wait-for -S ready` 放行。
+- `display-menu [-T 标题] 名字 键 命令 ...`：在窗口上弹个菜单，名字给空字符串就是一条分隔线。`display-popup [-E] [-w 宽] [-h 高] [-d 目录] [命令]` 是在窗口上开个小框跑程序（`-E` 程序退出就关，`-C` 从外面关掉）。
+- `choose-client`：列出连着的客户端，选一个踢下线。
+- `send-keys -X <copy 命令>`：用脚本开 copy mode 干活（`search-backward`、`begin-selection`、`copy-selection` ……名字和 tmux 一样）。
+- `capture-pane -p [-e]`：把 pane 的内容打出来，`-e` 连颜色一起。
+
 窗口和 pane 相关的命令都接受 `-t 目标`，写法和 tmux 一样：`session`、`session:窗口`、`:窗口`、`session:窗口.pane`，窗口那段可以是编号、名字，也可以是 `+`、`-`、`!`。只有 `select-pane` 例外，它的 `-t` 跟的是要跳到哪个 pane（`next`、`last` 或编号），和 `-L` `-R` `-U` `-D` 是一类。
 
 ## 它是怎么工作的
@@ -220,4 +239,6 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口）；钩子只有上面列的那几个；`swap-window` 和 `move-window` 只在同一个 session 内生效；没有命名的粘贴缓冲区（只有 Windows 剪贴板）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；`select-layout` 只有那五种命名布局，不支持 tmux 的布局字符串；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口。
+和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`swap-window` 只在同一个 session 内生效（`move-window` 可以跨 session）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；`select-layout` 只有那五种命名布局加 `-E`，不支持 tmux 的布局字符串；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口；`pipe-pane` 只能把 pane 的输出灌给命令，没有反方向的 `-I`；`display-popup` 永远居中（没有 `-x` / `-y`），而且前缀键还是 wmux 的，不会进到弹窗里的程序。
+
+命令和按键逐条对照见 `docs/tmux-parity.md`。

@@ -6,7 +6,7 @@ pub mod layout;
 pub mod pane;
 pub mod render;
 
-use crate::command::{Cmd, Dir, PaneSel, Target};
+use crate::command::{Cmd, Dir, MenuItem, PaneSel, Target};
 use crate::config::{Options, resolve_shell};
 use crate::ipc::{ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, read_frame, write_frame};
 use crate::keys::{Key, KeyCode, key_from_record};
@@ -105,13 +105,37 @@ enum ChooserItem {
     Tree(SessionId, Option<WindowId>),
     /// A paste buffer, by position in the buffer list.
     Buffer(usize),
+    /// An attached client.
+    Client(ClientId),
+    /// An entry of a `display-menu`, by position.
+    Menu(usize),
+    /// A title or separator line: shown, never selected.
+    Separator,
+}
+
+/// Where a picker's lines come from.
+enum ChooserKind {
+    /// The live session tree; `expand` shows each session's windows.
+    Tree { expand: bool },
+    /// The paste buffers.
+    Buffers,
+    /// The attached clients.
+    Clients,
+    /// A fixed list of windows (the `find-window` hits).
+    Found,
+    /// A `display-menu` and the commands its entries run.
+    Menu(Vec<MenuItem>),
+}
+
+impl ChooserKind {
+    /// Whether the list is rebuilt from the server state at every render.
+    fn live(&self) -> bool {
+        matches!(self, ChooserKind::Tree { .. } | ChooserKind::Buffers | ChooserKind::Clients)
+    }
 }
 
 struct Chooser {
-    /// Sessions expanded to their windows (`choose-tree -w`).
-    expand: bool,
-    /// Buffers instead of the session tree (`choose-buffer`).
-    buffers: bool,
+    kind: ChooserKind,
     items: Vec<ChooserItem>,
     lines: Vec<String>,
     sel: usize,
@@ -121,8 +145,44 @@ struct Chooser {
 impl Chooser {
     fn step(&mut self, delta: i64) {
         let last = self.items.len().saturating_sub(1) as i64;
+        let from = self.sel;
         self.sel = (self.sel as i64 + delta).clamp(0, last) as usize;
+        if !self.settle(if delta < 0 { -1 } else { 1 }) {
+            self.sel = from; // nothing selectable anywhere: do not move at all
+        }
     }
+
+    /// Move off a title or separator line, preferring direction `dir` and
+    /// falling back to the other one. False when the list has nothing that
+    /// can be selected.
+    fn settle(&mut self, dir: i64) -> bool {
+        let last = self.items.len().saturating_sub(1) as i64;
+        for d in [dir, -dir] {
+            let mut i = self.sel as i64;
+            while (0..=last).contains(&i) {
+                if !matches!(self.items.get(i as usize), Some(ChooserItem::Separator)) {
+                    self.sel = i as usize;
+                    return true;
+                }
+                i += d;
+            }
+        }
+        false
+    }
+}
+
+/// A `display-popup`: its own pane, drawn in a box over the client's window
+/// and fed every key until it closes. The size is kept as it was asked for so
+/// the box follows the terminal when it is resized.
+struct Popup {
+    pane: Pane,
+    rect: Rect,
+    width: Option<String>,
+    height: Option<String>,
+    /// `-E`: go away as soon as the command finishes.
+    close_on_exit: bool,
+    /// The command has finished and the next key closes the box.
+    finished: bool,
 }
 
 struct Client {
@@ -149,10 +209,14 @@ struct Client {
     /// (tmux "view mode"), e.g. `list-keys`.
     overlay: Option<Vec<String>>,
     chooser: Option<Chooser>,
+    /// `display-popup`: a program in a box over the window, taking the keys.
+    popup: Option<Popup>,
     mouse_buttons: u32,
     drag: Option<Drag>,
     /// Virtual keys whose key-down we consumed; drop the matching key-up.
     swallow_up: HashSet<u16>,
+    /// A bell from a background window, to ring at the next render.
+    pending_bell: bool,
     /// Control messages that did not fit in the output queue yet.
     pending: std::collections::VecDeque<ServerMsg>,
     /// Status-line column ranges of the window labels last drawn (clicks).
@@ -207,9 +271,44 @@ struct Window {
     /// `synchronize-panes`: input goes to every pane of the window.
     synchronized: bool,
     rects: Vec<(PaneId, Rect)>,
+    /// Alerts waiting to be seen (tmux `#F`): a background window printed
+    /// something, rang the bell, or went quiet. Cleared when the window is
+    /// drawn, which is when the alert has done its job.
+    alert_activity: bool,
+    alert_bell: bool,
+    alert_silence: bool,
+    /// When this window last printed anything (`monitor-silence`).
+    last_output: Instant,
 }
 
 impl Window {
+    /// The `#F` flags: where the window sits, what it is waiting to tell you,
+    /// and how it is laid out — in tmux's order.
+    fn flags(&self, current: bool, last: bool) -> String {
+        let mut s = String::new();
+        if current {
+            s.push('*');
+        } else if last {
+            s.push('-');
+        }
+        if self.alert_activity {
+            s.push('#');
+        }
+        if self.alert_bell {
+            s.push('!');
+        }
+        if self.alert_silence {
+            s.push('~');
+        }
+        if self.zoomed {
+            s.push('Z');
+        }
+        if self.synchronized {
+            s.push('S');
+        }
+        s
+    }
+
     fn pane(&self, id: PaneId) -> Option<&Pane> {
         self.panes.iter().find(|p| p.id == id)
     }
@@ -300,6 +399,27 @@ impl From<Result<(), String>> for Outcome {
     }
 }
 
+/// One `wait-for` channel: a lock with its queue, and the wait/signal pair.
+/// A client that is waiting has had no reply sent yet, so its `wmux wait-for`
+/// is still sitting there; waking it means answering that command.
+#[derive(Default)]
+struct WaitChannel {
+    locked: bool,
+    /// Clients blocked in `wait-for -L`, in arrival order.
+    lockers: std::collections::VecDeque<ClientId>,
+    /// Clients blocked in a plain `wait-for`.
+    waiters: Vec<ClientId>,
+    /// A signal arrived with nobody waiting: the next wait returns at once
+    /// (tmux keeps the same one-shot flag).
+    woken: bool,
+}
+
+impl WaitChannel {
+    fn idle(&self) -> bool {
+        !self.locked && !self.woken && self.lockers.is_empty() && self.waiters.is_empty()
+    }
+}
+
 pub struct Server {
     opts: Options,
     prefix_binds: HashMap<Key, Binding>,
@@ -330,8 +450,12 @@ pub struct Server {
     next_buffer: usize,
     /// Pane marked with `select-pane -m`, the default source for `join-pane`.
     marked: Option<PaneId>,
+    /// When the saved files last had their pane output refreshed.
+    last_history_save: Option<Instant>,
     /// Extra environment for new panes (`set-environment`).
     env: Vec<(String, String)>,
+    /// `wait-for` channels, by name.
+    waits: HashMap<String, WaitChannel>,
     events: mpsc::UnboundedSender<Event>,
     /// JSON of every session as last autosaved, to detect structural change.
     last_saved: HashMap<String, String>,
@@ -508,6 +632,8 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("M-Right", "resize-pane -R 5"),
         ("n", "next-window"),
         ("p", "previous-window"),
+        ("M-n", "next-window -a"),
+        ("M-p", "previous-window -a"),
         ("Tab", "last-window"),
         ("z", "resize-pane -Z"),
         ("[", "copy-mode"),
@@ -519,6 +645,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("}", "swap-pane -D"),
         ("!", "break-pane"),
         ("Space", "select-layout -n"),
+        ("E", "select-layout -E"),
         ("q", "display-panes"),
         ("r", "refresh-client"),
         ("~", "show-messages"),
@@ -543,6 +670,23 @@ fn default_bindings() -> HashMap<Key, Binding> {
         (")", "switch-client -n"),
         ("w", "choose-tree -Zw"),
         ("s", "choose-tree -Zs"),
+        ("D", "choose-client"),
+        (
+            ">",
+            "display-menu -T \"pane #P\" \"Split horizontally\" h \"split-window -h\" \
+             \"Split vertically\" v \"split-window -v\" \"\" \
+             \"Swap up\" u \"swap-pane -U\" \"Swap down\" d \"swap-pane -D\" \
+             \"Break out\" b break-pane \"\" \
+             Zoom z \"resize-pane -Z\" Respawn r \"respawn-pane -k\" \
+             Kill x kill-pane",
+        ),
+        (
+            "<",
+            "display-menu -T \"window #W\" \"New window\" c new-window Rename r \
+             \"command-prompt -p (rename-window) -I \\\"#W\\\" \\\"rename-window -- %%\\\"\" \
+             \"\" Previous p previous-window Next n next-window \"\" \
+             Kill x kill-window",
+        ),
         ("i", "display-message \"#S:#W.#P #T\""),
         ("C-s", "save-session"),
         ("C-r", "restore-session"),
@@ -589,7 +733,9 @@ impl Server {
             buffers: Vec::new(),
             next_buffer: 0,
             marked: None,
+            last_history_save: None,
             env: Vec::new(),
+            waits: HashMap::new(),
             events,
             last_saved: HashMap::new(),
         }
@@ -605,8 +751,9 @@ impl Server {
         }
     }
 
-    /// Describe one live session.
-    fn snapshot(&self, s: &Session) -> crate::resurrect::SavedSession {
+    /// Describe one live session. `history` holds what each pane had on
+    /// screen, collected beforehand because reading it needs `&mut`.
+    fn snapshot(&self, s: &Session, history: &HashMap<PaneId, Vec<String>>) -> crate::resurrect::SavedSession {
         use crate::resurrect::*;
         SavedSession {
             name: s.name.clone(),
@@ -615,13 +762,19 @@ impl Server {
                 .windows
                 .iter()
                 .map(|w| {
-                    let lookup =
-                        |id: PaneId| w.pane(id).map(|p| SavedPane { argv: p.argv.clone(), cwd: p.cwd.clone() });
+                    let lookup = |id: PaneId| {
+                        w.pane(id).map(|p| SavedPane {
+                            argv: p.argv.clone(),
+                            cwd: p.cwd.clone(),
+                            history: history.get(&id).cloned().unwrap_or_default(),
+                        })
+                    };
                     let order = w.layout.panes();
                     SavedWindow {
                         name: w.name.clone(),
-                        layout: SavedNode::from_layout(&w.layout, &lookup)
-                            .unwrap_or(SavedNode::Pane { pane: SavedPane { argv: Vec::new(), cwd: None } }),
+                        layout: SavedNode::from_layout(&w.layout, &lookup).unwrap_or(SavedNode::Pane {
+                            pane: SavedPane { argv: Vec::new(), cwd: None, history: Vec::new() },
+                        }),
                         active: order.iter().position(|p| *p == w.active).unwrap_or(0),
                         zoomed: w.zoomed,
                     }
@@ -630,11 +783,40 @@ impl Server {
         }
     }
 
+    /// The last `save-history` lines of every pane in a session.
+    fn pane_histories(&mut self, sid: SessionId) -> HashMap<PaneId, Vec<String>> {
+        let want = self.opts.save_history;
+        let mut out = HashMap::new();
+        if want == 0 {
+            return out;
+        }
+        let ids: Vec<PaneId> = match self.session(sid) {
+            Some(s) => s.windows.iter().flat_map(|w| w.panes.iter().map(|p| p.id)).collect(),
+            None => return out,
+        };
+        for id in ids {
+            let Some(p) = self.find_pane_mut(id) else { continue };
+            let total = p.scrollback_len() + p.rows as usize;
+            let start = total.saturating_sub(want);
+            let mut lines: Vec<String> = (start..total).map(|abs| p.line_text(abs).0.trim_end().to_string()).collect();
+            while lines.last().is_some_and(|l| l.is_empty()) {
+                lines.pop();
+            }
+            if !lines.is_empty() {
+                out.insert(id, lines);
+            }
+        }
+        out
+    }
+
     /// Save one session to its file; returns the path.
     fn save_session_file(&mut self, sid: SessionId) -> Result<PathBuf, String> {
+        let history = self.pane_histories(sid);
         let s = self.session(sid).ok_or("no such session")?;
-        let saved = self.snapshot(s);
-        let key = serde_json::to_string(&saved).unwrap_or_default();
+        let saved = self.snapshot(s, &history);
+        // The change key covers the structure only: pane output changes every
+        // second and must not make the file be rewritten every second.
+        let key = serde_json::to_string(&self.snapshot(s, &HashMap::new())).unwrap_or_default();
         let path = crate::resurrect::file_for(&self.sessions_dir(), &saved.name);
         crate::resurrect::SavedFile::new(saved).save(&path)?;
         self.last_saved.insert(path.to_string_lossy().into_owned(), key);
@@ -649,12 +831,19 @@ impl Server {
         }
         let dir = self.sessions_dir();
         let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
+        // Pane output is saved too, but refreshing it means writing files, so
+        // that happens on a slow beat rather than whenever something printed.
+        let refresh_history =
+            self.opts.save_history > 0 && self.last_history_save.is_none_or(|t| t.elapsed() > Duration::from_secs(30));
+        if refresh_history {
+            self.last_history_save = Some(Instant::now());
+        }
         for sid in ids {
             let Some(s) = self.session(sid) else { continue };
-            let saved = self.snapshot(s);
+            let saved = self.snapshot(s, &HashMap::new());
             let key = serde_json::to_string(&saved).unwrap_or_default();
             let path = crate::resurrect::file_for(&dir, &saved.name).to_string_lossy().into_owned();
-            if self.last_saved.get(&path) == Some(&key) {
+            if !refresh_history && self.last_saved.get(&path) == Some(&key) {
                 continue;
             }
             match self.save_session_file(sid) {
@@ -740,7 +929,15 @@ impl Server {
             let argv: Vec<String> = saved.argv.clone();
             let cwd = saved.cwd.as_deref().filter(|d| std::path::Path::new(d).is_dir());
             // Sizes are refitted by relayout; spawn at the window size.
-            panes.push(self.spawn_pane(&argv, cwd, area.w, area.h)?);
+            let mut pane = self.spawn_pane(&argv, cwd, area.w, area.h)?;
+            // Put the saved output back on the screen before the new shell
+            // starts printing, so a resumed pane looks like it did.
+            if !saved.history.is_empty() {
+                let mut text = saved.history.join("\r\n");
+                text.push_str("\r\n");
+                pane.process_output(text.as_bytes());
+            }
+            panes.push(pane);
         }
         let mut ids = panes.iter().map(|p| p.id);
         let layout = sw.layout.to_layout(&mut ids).ok_or("layout/pane count mismatch")?;
@@ -936,14 +1133,49 @@ impl Server {
                 if let Some(p) = self.find_pane_mut(id)
                     && p.generation == generation
                 {
+                    // pipe-pane sees what the program wrote, not the screen.
+                    let slow = p.pipe_write(&bytes);
                     p.process_output(&bytes);
+                    if let Some(command) = slow {
+                        // Say it once per pipe: a command that cannot keep up
+                        // loses output, and silence about that is worse.
+                        log::warn!("pipe-pane %{id}: {command} is not keeping up; output is being dropped");
+                        self.note_message(&format!("pipe-pane %{id}: {command} is not keeping up; output dropped"));
+                    }
+                    self.note_output(id);
                 }
             }
             Event::Pane(PaneEvent::Exit(id, generation, code)) => {
                 if self.find_pane_mut(id).is_some_and(|p| p.generation != generation) {
                     return; // the previous process of a respawned pane
                 }
-                log::info!("pane %{id} exited with {code}");
+                let command = self.find_pane_mut(id).map(|p| p.command.clone()).unwrap_or_default();
+                log::info!("pane %{id} ({command}) exited with {code}");
+                // A popup is not part of any window: it either goes away now
+                // (`-E`) or waits for a key, showing what the command left.
+                if let Some(cid) = self.popup_of_pane(id) {
+                    let c = self.clients.get_mut(&cid).unwrap();
+                    let p = c.popup.as_mut().unwrap();
+                    if p.close_on_exit {
+                        c.popup = None;
+                    } else {
+                        p.finished = true;
+                    }
+                    c.last_grid = None;
+                    return;
+                }
+                if self.opts.remain_on_exit {
+                    // Keep the pane and what it printed; say why it stopped.
+                    // `respawn-pane` starts it again, `kill-pane` closes it.
+                    if let Some(p) = self.find_pane_mut(id) {
+                        p.exit_code = Some(code);
+                        let note =
+                            format!("\r\n\x1b[7m[{command} exited with {code}; respawn-pane or kill-pane]\x1b[0m\r\n");
+                        p.process_output(note.as_bytes());
+                    }
+                    self.note_message(&format!("pane %{id} ({command}) exited with {code}"));
+                    return;
+                }
                 self.remove_pane(id, Some(code));
             }
             Event::Connected(id, tx) => {
@@ -968,9 +1200,11 @@ impl Server {
                         message: None,
                         overlay: None,
                         chooser: None,
+                        popup: None,
                         mouse_buttons: 0,
                         drag: None,
                         swallow_up: HashSet::new(),
+                        pending_bell: false,
                         pending: std::collections::VecDeque::new(),
                         window_hits: Vec::new(),
                     },
@@ -978,6 +1212,19 @@ impl Server {
             }
             Event::Gone(id) => {
                 self.clients.remove(&id);
+                // A client that went away while waiting must not hold a
+                // `wait-for` lock, or nothing could ever take it again.
+                let mut freed: Vec<String> = Vec::new();
+                for (name, w) in self.waits.iter_mut() {
+                    w.waiters.retain(|c| *c != id);
+                    w.lockers.retain(|c| *c != id);
+                    if w.idle() {
+                        freed.push(name.clone());
+                    }
+                }
+                for name in freed {
+                    self.waits.remove(&name);
+                }
             }
             Event::Msg(id, msg) => self.handle_msg(id, msg),
             Event::ShellDone { cid, output, code } => {
@@ -1107,6 +1354,7 @@ impl Server {
                 c.prompt = None;
                 c.overlay = config_errors;
                 c.chooser = None;
+                c.popup = None;
                 c.message = None;
                 c.drag = None;
                 c.mouse_buttons = 0;
@@ -1125,12 +1373,7 @@ impl Server {
     /// One-line text goes to the status line for `display-time`; multi-line
     /// text becomes an overlay that stays until a key is pressed.
     fn show(&mut self, cid: ClientId, text: &str) {
-        // Keep a short log for `show-messages`, as tmux does.
-        let stamp = chrono::Local::now().format("%H:%M:%S");
-        self.messages.push_back(format!("{stamp} {}", text.replace('\n', " ")));
-        while self.messages.len() > 100 {
-            self.messages.pop_front();
-        }
+        self.note_message(&text.replace('\n', " "));
         if let Some(c) = self.clients.get_mut(&cid) {
             if text.contains('\n') {
                 c.overlay = Some(text.lines().map(str::to_string).collect());
@@ -1144,11 +1387,102 @@ impl Server {
         self.show(cid, text);
     }
 
+    /// Add a line to the `show-messages` log, keeping the last 100 as tmux
+    /// does. Every place that has something to report goes through here, so
+    /// the log can never grow without bound.
+    fn note_message(&mut self, text: &str) {
+        let stamp = chrono::Local::now().format("%H:%M:%S");
+        self.messages.push_back(format!("{stamp} {text}"));
+        while self.messages.len() > 100 {
+            self.messages.pop_front();
+        }
+    }
+
+    /// A pane printed something: keep the window's silence timer fresh and,
+    /// when it is not the window being looked at, raise the alerts the
+    /// `monitor-*` options ask for.
+    fn note_output(&mut self, pid: PaneId) {
+        let Some((sid, widx)) = self.window_of_pane(pid) else { return };
+        let (activity_on, bell_on) = (self.opts.monitor_activity, self.opts.monitor_bell);
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) else { return };
+        let current = s.cur == widx;
+        let Some(w) = s.windows.get_mut(widx) else { return };
+        w.last_output = Instant::now();
+        w.alert_silence = false;
+        if current {
+            return; // the bell of the window in view is rung by the renderer
+        }
+        // Nothing consumes a background pane's bell otherwise, so take it here.
+        let rang = w.panes.iter().any(|p| p.bell);
+        if rang {
+            for p in &mut w.panes {
+                p.bell = false;
+            }
+        }
+        let (name, index) = (w.name.clone(), widx + self.opts.base_index);
+        let mut fresh = Vec::new();
+        if activity_on && !w.alert_activity {
+            w.alert_activity = true;
+            fresh.push(("Activity", false));
+        }
+        if bell_on && rang && !w.alert_bell {
+            w.alert_bell = true;
+            fresh.push(("Bell", true));
+        }
+        for (what, is_bell) in fresh {
+            self.alert(sid, &format!("{what} in window {index} ({name})"), is_bell);
+        }
+    }
+
+    /// Tell the clients of a session about an alert: a status-line message
+    /// when `visual-bell`/`visual-activity` is on, the terminal bell otherwise.
+    fn alert(&mut self, sid: SessionId, text: &str, is_bell: bool) {
+        let visual = if is_bell { self.opts.visual_bell } else { self.opts.visual_activity };
+        let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
+        for cid in ids {
+            if visual {
+                self.show(cid, text);
+            } else if is_bell && let Some(c) = self.clients.get_mut(&cid) {
+                c.pending_bell = true;
+            }
+        }
+    }
+
+    /// Run from the render tick: the current window of a session never holds
+    /// an alert (that is the one invariant of the flags, enforced here so no
+    /// path that changes the current window has to remember it), and
+    /// `monitor-silence` flags a background window that has gone quiet.
+    fn sweep_alerts(&mut self) {
+        let quiet = Duration::from_secs(self.opts.monitor_silence.max(1));
+        let watch_silence = self.opts.monitor_silence > 0;
+        let base = self.opts.base_index;
+        let mut alerts: Vec<(SessionId, String)> = Vec::new();
+        for s in &mut self.sessions {
+            let (cur, sid) = (s.cur, s.id);
+            for (i, w) in s.windows.iter_mut().enumerate() {
+                if i == cur {
+                    w.alert_activity = false;
+                    w.alert_bell = false;
+                    w.alert_silence = false;
+                    continue;
+                }
+                if watch_silence && !w.alert_silence && w.last_output.elapsed() >= quiet {
+                    w.alert_silence = true;
+                    alerts.push((sid, format!("Silence in window {} ({})", i + base, w.name)));
+                }
+            }
+        }
+        for (sid, text) in alerts {
+            self.alert(sid, &text, false);
+        }
+    }
+
     fn detach(&mut self, cid: ClientId, reason: &str) {
         if let Some(c) = self.clients.get_mut(&cid)
             && c.session.take().is_some()
         {
             c.last_grid = None;
+            c.popup = None; // its program goes with the client that opened it
             c.send(ServerMsg::Detached { reason: reason.to_string() });
             self.fire_hook("client-detached", None);
         }
@@ -1164,7 +1498,16 @@ impl Server {
     }
 
     fn find_pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
-        self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()).find_map(|w| w.pane_mut(id))
+        if self.sessions.iter().flat_map(|s| s.windows.iter()).any(|w| w.pane(id).is_some()) {
+            return self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()).find_map(|w| w.pane_mut(id));
+        }
+        // A popup's pane belongs to no window, but its output still arrives.
+        self.clients.values_mut().find_map(|c| c.popup.as_mut().filter(|p| p.pane.id == id).map(|p| &mut p.pane))
+    }
+
+    /// The client whose popup owns this pane, if any.
+    fn popup_of_pane(&self, id: PaneId) -> Option<ClientId> {
+        self.clients.values().find(|c| c.popup.as_ref().is_some_and(|p| p.pane.id == id)).map(|c| c.id)
     }
 
     fn session_of_pane(&self, id: PaneId) -> Option<SessionId> {
@@ -1462,6 +1805,10 @@ impl Server {
             layout_preset: None,
             synchronized: false,
             rects: Vec::new(),
+            alert_activity: false,
+            alert_bell: false,
+            alert_silence: false,
+            last_output: Instant::now(),
         };
         w.relayout(area);
         let s = self.session_mut(sid).unwrap();
@@ -1719,13 +2066,7 @@ impl Server {
                             "{}: {}{} ({} panes) [{}x{}]",
                             i + self.opts.base_index,
                             w.name,
-                            if i == s.cur {
-                                "*"
-                            } else if Some(w.id) == s.last {
-                                "-"
-                            } else {
-                                ""
-                            },
+                            w.flags(i == s.cur, Some(w.id) == s.last),
                             w.panes.len(),
                             s.cols,
                             s.rows
@@ -1974,10 +2315,64 @@ impl Server {
                 };
                 let (dsid, di) = match self.resolve(dst.as_ref(), cid) {
                     Ok((s, w, _)) => (s, w),
-                    Err(e) => return Outcome::Error(e),
+                    // `move-window -t :5` may name an index that is still
+                    // free, which tmux takes as "put it there".
+                    Err(e) => {
+                        let free = dst
+                            .as_ref()
+                            .filter(|_| move_it)
+                            .and_then(|t| t.window.as_deref())
+                            .and_then(|w| w.parse::<usize>().ok());
+                        match (free, self.resolve_session(dst.as_ref(), cid)) {
+                            (Some(i), Ok(sid)) => (sid, i.saturating_sub(self.opts.base_index)),
+                            _ => return Outcome::Error(e),
+                        }
+                    }
                 };
                 if ssid != dsid {
-                    return Outcome::Error("swap-window and move-window work inside one session".into());
+                    if !move_it {
+                        return Outcome::Error("swap-window works inside one session".into());
+                    }
+                    // Move a window to another session: take it out, put it in
+                    // at the destination index, and leave no empty session.
+                    let Some(spos) = self.sessions.iter().position(|s| s.id == ssid) else {
+                        return Outcome::Error("no such session".into());
+                    };
+                    let Some(dpos) = self.sessions.iter().position(|s| s.id == dsid) else {
+                        return Outcome::Error("no such session".into());
+                    };
+                    // Both sessions keep looking at the window they were
+                    // looking at, whatever the move does to the indexes.
+                    let src_cur = self.sessions[spos].windows.get(self.sessions[spos].cur).map(|w| w.id);
+                    let dst_cur = self.sessions[dpos].windows.get(self.sessions[dpos].cur).map(|w| w.id);
+                    let w = self.sessions[spos].windows.remove(si);
+                    let wid = w.id;
+                    {
+                        let s = &mut self.sessions[spos];
+                        if s.last == Some(wid) {
+                            s.last = None;
+                        }
+                        s.cur = src_cur
+                            .filter(|id| *id != wid)
+                            .and_then(|id| s.windows.iter().position(|w| w.id == id))
+                            .unwrap_or_else(|| s.cur.min(s.windows.len().saturating_sub(1)));
+                    }
+                    let at = di.min(self.sessions[dpos].windows.len());
+                    self.sessions[dpos].windows.insert(at, w);
+                    {
+                        let s = &mut self.sessions[dpos];
+                        if let Some(i) = dst_cur.and_then(|id| s.windows.iter().position(|w| w.id == id)) {
+                            s.cur = i;
+                        }
+                    }
+                    if self.sessions[spos].windows.is_empty() {
+                        self.kill_session(ssid, "moved away");
+                    } else {
+                        self.relayout_session(ssid);
+                    }
+                    self.relayout_session(dsid);
+                    self.autosave_changed();
+                    return Outcome::Ok;
                 }
                 let cur_id = self.session(ssid).and_then(|s| s.windows.get(s.cur)).map(|w| w.id);
                 let s = self.session_mut(ssid).unwrap();
@@ -1999,7 +2394,32 @@ impl Server {
                 self.autosave_changed();
                 Outcome::Ok
             }
-            Cmd::NextWindow { ref target } | Cmd::PreviousWindow { ref target } | Cmd::LastWindow { ref target } => {
+            Cmd::NextWindow { ref target, alert: true } | Cmd::PreviousWindow { ref target, alert: true } => {
+                let forward = matches!(cmd, Cmd::NextWindow { .. });
+                let sid = match self.resolve_session(target.as_ref(), cid) {
+                    Ok(s) => s,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some(s) = self.session(sid) else { return Outcome::Error("no such session".into()) };
+                let n = s.windows.len();
+                // Walk the ring from where we are and stop at the first window
+                // waiting to say something.
+                let hit = (1..=n)
+                    .map(|d| if forward { (s.cur + d) % n } else { (s.cur + n - d % n) % n })
+                    .find(|i| s.windows[*i].alert_activity || s.windows[*i].alert_bell || s.windows[*i].alert_silence);
+                match hit {
+                    Some(i) => {
+                        self.sessions.iter_mut().find(|s| s.id == sid).unwrap().select_window(i);
+                        self.autosave_changed();
+                        self.fire_hook("after-select-window", cid);
+                        Outcome::Ok
+                    }
+                    None => Outcome::Error("no window with an alert".into()),
+                }
+            }
+            Cmd::NextWindow { ref target, .. }
+            | Cmd::PreviousWindow { ref target, .. }
+            | Cmd::LastWindow { ref target } => {
                 let w = match cmd {
                     Cmd::NextWindow { .. } => "+",
                     Cmd::PreviousWindow { .. } => "-",
@@ -2189,11 +2609,23 @@ impl Server {
                 }
                 Outcome::Ok
             }
-            Cmd::SelectLayout { name, next, prev: _, target } => {
-                let (sid, widx, _) = match self.resolve(target.as_ref(), cid) {
+            Cmd::SelectLayout { name, next, prev: _, spread, target } => {
+                let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
+                // `-E` evens out the panes next to this one and leaves the
+                // rest of the layout as it is.
+                if spread && name.is_none() {
+                    let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                    if !w.layout.spread(pid) {
+                        return Outcome::Error("pane has no panes beside it".into());
+                    }
+                    w.zoomed = false;
+                    self.relayout_session(sid);
+                    self.autosave_changed();
+                    return Outcome::Ok;
+                }
                 let w = &self.session(sid).unwrap().windows[widx];
                 let current = w.layout_preset;
                 let preset = match name {
@@ -2267,6 +2699,10 @@ impl Server {
                     layout_preset: None,
                     synchronized: false,
                     rects: Vec::new(),
+                    alert_activity: false,
+                    alert_bell: false,
+                    alert_silence: false,
+                    last_output: Instant::now(),
                 });
                 let idx = s.windows.len() - 1;
                 s.select_window(idx);
@@ -2361,7 +2797,7 @@ impl Server {
                         if let Some(c) = self.clients.get_mut(&cid) {
                             c.prompt = None;
                             c.overlay = None;
-                            c.chooser = Some(Chooser { expand: true, buffers: false, items, lines, sel: 0, top: 0 });
+                            c.chooser = Some(Chooser { kind: ChooserKind::Found, items, lines, sel: 0, top: 0 });
                         }
                         Outcome::Ok
                     }
@@ -2468,6 +2904,71 @@ impl Server {
                     return Outcome::Text("no clients attached".into());
                 }
                 Outcome::Text(lines.join("\n"))
+            }
+            Cmd::CopyCommand { target, name, arg } => {
+                let Some(cid) = cid else { return Outcome::Error("send-keys -X: no client".into()) };
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid.into()) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                // tmux's copy-mode commands, mapped onto the keys that already
+                // do the work, so there is one implementation of each motion.
+                let key = match name.as_str() {
+                    "cursor-up" => Key::ch('k'),
+                    "cursor-down" => Key::ch('j'),
+                    "cursor-left" => Key::ch('h'),
+                    "cursor-right" => Key::ch('l'),
+                    "next-word" | "next-space" => Key::ch('w'),
+                    "next-word-end" | "next-space-end" => Key::ch('e'),
+                    "previous-word" | "previous-space" => Key::ch('b'),
+                    "start-of-line" => Key::ch('0'),
+                    "back-to-indentation" => Key::ch('^'),
+                    "end-of-line" => Key::ch('$'),
+                    "top-line" => Key::ch('H'),
+                    "middle-line" => Key::ch('M'),
+                    "bottom-line" => Key::ch('L'),
+                    "previous-paragraph" => Key::ch('{'),
+                    "next-paragraph" => Key::ch('}'),
+                    "history-top" => Key::ch('g'),
+                    "history-bottom" => Key::ch('G'),
+                    "page-up" => Key::ctrl('b'),
+                    "page-down" => Key::ctrl('f'),
+                    "halfpage-up" => Key::ctrl('u'),
+                    "halfpage-down" => Key::ctrl('d'),
+                    "begin-selection" => Key::ch(' '),
+                    "rectangle-toggle" | "rectangle-on" => Key::ctrl('v'),
+                    "copy-selection" | "copy-selection-and-cancel" | "copy-pipe-and-cancel" => Key::ch('y'),
+                    "cancel" | "stop-selection" => Key::ch('q'),
+                    "search-forward" | "search-backward" => {
+                        // With a pattern: search straight away. Without one:
+                        // open the prompt, as the `/` and `?` keys do.
+                        let back = name == "search-backward";
+                        match arg {
+                            Some(p) => {
+                                if let Some(pane) = self.find_pane_mut(pid)
+                                    && pane.copy.is_none()
+                                {
+                                    enter_copy_mode(pane);
+                                }
+                                self.search_in_copy_mode(cid, pid, &p, back, true);
+                                return Outcome::Ok;
+                            }
+                            None => Key::ch(if back { '?' } else { '/' }),
+                        }
+                    }
+                    "search-again" => Key::ch('n'),
+                    "search-reverse" => Key::ch('N'),
+                    other => return Outcome::Error(format!("send-keys -X: unknown command '{other}'")),
+                };
+                // The pane must be in copy mode for any of this to mean
+                // something, which is also what tmux requires.
+                if let Some(p) = self.find_pane_mut(pid)
+                    && p.copy.is_none()
+                {
+                    enter_copy_mode(p);
+                }
+                self.copy_key(cid, pid, key);
+                Outcome::Ok
             }
             Cmd::ClockMode { target } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
@@ -2735,12 +3236,174 @@ impl Server {
                 if self.buffers.is_empty() {
                     return Outcome::Error("no buffers".into());
                 }
-                let (items, lines) = self.chooser_lines(false, true);
+                let (items, lines) = self.chooser_lines(&ChooserKind::Buffers).unwrap_or_default();
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { expand: false, buffers: true, items, lines, sel: 0, top: 0 });
+                c.chooser = Some(Chooser { kind: ChooserKind::Buffers, items, lines, sel: 0, top: 0 });
                 Outcome::Ok
+            }
+            Cmd::ChooseClient => {
+                let Some(cid) = cid else { return Outcome::Error("choose-client: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("choose-client: client not attached".into());
+                }
+                let (items, lines) = self.chooser_lines(&ChooserKind::Clients).unwrap_or_default();
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser { kind: ChooserKind::Clients, items, lines, sel: 0, top: 0 });
+                Outcome::Ok
+            }
+            Cmd::DisplayMenu { title, items: entries } => {
+                let Some(cid) = cid else { return Outcome::Error("display-menu: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("display-menu: client not attached".into());
+                }
+                let (mut items, mut lines) = (Vec::new(), Vec::new());
+                if let Some(t) = &title {
+                    items.push(ChooserItem::Separator);
+                    lines.push(self.expand_format(t, cid));
+                }
+                for (i, e) in entries.iter().enumerate() {
+                    match (&e.key, &e.cmd) {
+                        (Some(k), Some(_)) => {
+                            items.push(ChooserItem::Menu(i));
+                            lines.push(format!("({k}) {}", self.expand_format(&e.name, cid)));
+                        }
+                        // No key or no command: a label nobody can pick.
+                        _ => {
+                            items.push(ChooserItem::Separator);
+                            lines.push(if e.name.is_empty() { "-".repeat(20) } else { e.name.clone() });
+                        }
+                    }
+                }
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                let mut ch = Chooser { kind: ChooserKind::Menu(entries), items, lines, sel: 0, top: 0 };
+                ch.settle(1);
+                c.chooser = Some(ch);
+                Outcome::Ok
+            }
+            Cmd::DisplayPopup { close, close_on_exit, width, height, cwd, argv } => {
+                let Some(cid) = cid else { return Outcome::Error("display-popup: no client".into()) };
+                let Some((cols, rows)) = self.clients.get(&cid).map(|c| (c.cols, c.rows)) else {
+                    return Outcome::Error("display-popup: no client".into());
+                };
+                if close {
+                    // From an attached client, close its own popup; from a
+                    // script or a pane, close the popup of whoever is looking
+                    // at that session, which is the one the user can see.
+                    let mut targets = vec![cid];
+                    if self.clients.get(&cid).is_none_or(|c| c.popup.is_none())
+                        && let Ok(sid) = self.resolve_session(None, Some(cid))
+                    {
+                        targets = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
+                    }
+                    for id in targets {
+                        if let Some(c) = self.clients.get_mut(&id) {
+                            c.popup = None;
+                            c.last_grid = None;
+                        }
+                    }
+                    return Outcome::Ok;
+                }
+                let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else {
+                    return Outcome::Error("display-popup: client not attached".into());
+                };
+                let area = self.window_area(cols, rows);
+                let rect = popup_rect(area, width.as_deref(), height.as_deref());
+                if rect.w < 3 || rect.h < 3 {
+                    return Outcome::Error("display-popup: no room for a popup".into());
+                }
+                let cwd = self.pane_cwd(cwd.as_deref(), sid, Some(cid));
+                let pane = match self.spawn_pane(&argv, cwd.as_deref(), rect.w - 2, rect.h - 2) {
+                    Ok(p) => p,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some(c) = self.clients.get_mut(&cid) else { return Outcome::Error("no client".into()) };
+                // One thing at a time: a popup replaces the picker or an
+                // overlay, whose keys it would otherwise steal.
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = None;
+                c.last_grid = None;
+                c.popup = Some(Popup { pane, rect, width, height, close_on_exit, finished: false });
+                Outcome::Ok
+            }
+            Cmd::PipePane { target, command, toggle } => {
+                let pid = match self.resolve(target.as_ref(), cid) {
+                    Ok((_, _, p)) => p,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let running = self.find_pane_mut(pid).is_some_and(|p| p.pipe.is_some());
+                let command = match command {
+                    // No command at all, or `-o` while one is running: stop.
+                    None => None,
+                    Some(_) if running && toggle => None,
+                    Some(c) => Some(match cid {
+                        Some(cid) => self.expand_format(&c, cid),
+                        None => c,
+                    }),
+                };
+                let env = self.pane_env(pid);
+                let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                match command {
+                    None => {
+                        p.pipe = None;
+                        Outcome::Ok
+                    }
+                    Some(c) => match p.pipe_to(&c, &env) {
+                        Ok(()) => Outcome::Ok,
+                        Err(e) => Outcome::Error(format!("{e:#}")),
+                    },
+                }
+            }
+            Cmd::WaitFor { channel, lock, unlock, signal } => {
+                let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };
+                let mut wake: Vec<ClientId> = Vec::new();
+                let w = self.waits.entry(channel.clone()).or_default();
+                let out = if signal {
+                    if w.waiters.is_empty() {
+                        w.woken = true;
+                    } else {
+                        wake.append(&mut w.waiters);
+                    }
+                    Outcome::Ok
+                } else if lock {
+                    if w.locked {
+                        w.lockers.push_back(cid);
+                        Outcome::Pending
+                    } else {
+                        w.locked = true;
+                        Outcome::Ok
+                    }
+                } else if unlock {
+                    if !w.locked {
+                        Outcome::Error(format!("wait-for: channel {channel} is not locked"))
+                    } else {
+                        // The next in line takes the lock straight over.
+                        match w.lockers.pop_front() {
+                            Some(next) => wake.push(next),
+                            None => w.locked = false,
+                        }
+                        Outcome::Ok
+                    }
+                } else if w.woken {
+                    w.woken = false;
+                    Outcome::Ok
+                } else {
+                    w.waiters.push(cid);
+                    Outcome::Pending
+                };
+                if self.waits.get(&channel).is_some_and(WaitChannel::idle) {
+                    self.waits.remove(&channel);
+                }
+                for id in wake {
+                    self.reply(id, Outcome::Ok);
+                }
+                out
             }
             Cmd::ChooseTree { sessions, windows } => {
                 let Some(cid) = cid else { return Outcome::Error("choose-tree: no client".into()) };
@@ -2748,7 +3411,8 @@ impl Server {
                     return Outcome::Error("choose-tree: client not attached".into());
                 };
                 let expand = windows || !sessions;
-                let (items, lines) = self.chooser_lines(expand, false);
+                let kind = ChooserKind::Tree { expand };
+                let (items, lines) = self.chooser_lines(&kind).unwrap_or_default();
                 // Start on the current window (or session).
                 let cur = self.session(sid).and_then(|s| s.window()).map(|w| w.id).filter(|_| expand);
                 let sel = items.iter().position(|i| *i == ChooserItem::Tree(sid, cur)).unwrap_or(0);
@@ -2757,7 +3421,7 @@ impl Server {
                 // replaces it, or its keys would go to an invisible prompt.
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { expand, buffers: false, items, lines, sel, top: 0 });
+                c.chooser = Some(Chooser { kind, items, lines, sel, top: 0 });
                 Outcome::Ok
             }
             Cmd::ListKeys => {
@@ -2803,7 +3467,7 @@ impl Server {
                     None => Outcome::Error("no such pane".into()),
                 }
             }
-            Cmd::CapturePane { target, history } => {
+            Cmd::CapturePane { target, history, escapes } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
@@ -2814,9 +3478,11 @@ impl Server {
                 let from = total.saturating_sub(history);
                 let mut lines: Vec<String> = Vec::with_capacity(total - from + rows);
                 for abs in from..total + rows {
-                    lines.push(p.line_text(abs).0.trim_end().to_string());
+                    lines.push(if escapes { p.line_escapes(abs) } else { p.line_text(abs).0.trim_end().to_string() });
                 }
-                while lines.last().is_some_and(|l| l.is_empty()) {
+                // Trailing blank lines are noise either way; with -e a line
+                // that is only a reset counts as blank too.
+                while lines.last().is_some_and(|l| l.is_empty() || l == "\x1b[0m") {
                     lines.pop();
                 }
                 Outcome::Text(lines.join("\n"))
@@ -2912,22 +3578,7 @@ impl Server {
             pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
             pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
             host: std::env::var("COMPUTERNAME").unwrap_or_default(),
-            flags: format!(
-                "{}{}",
-                if widx == sess.cur {
-                    "*"
-                } else if Some(w.id) == sess.last {
-                    "-"
-                } else {
-                    ""
-                },
-                match (w.zoomed, w.synchronized) {
-                    (true, true) => "ZS",
-                    (true, false) => "Z",
-                    (false, true) => "S",
-                    (false, false) => "",
-                }
-            ),
+            flags: w.flags(widx == sess.cur, Some(w.id) == sess.last),
         };
         let now = chrono::Local::now();
         let base = render::Style::default();
@@ -3041,6 +3692,18 @@ impl Server {
                 c.swallow_up.insert(rec.vk);
                 return;
             }
+            // A popup takes every key but the prefix, so `prefix d` still
+            // detaches and `prefix :` still reaches the command prompt. The
+            // key-up goes through too (as it does for a pane), except for the
+            // key that closes a finished popup: that one is not for the pane
+            // behind it either.
+            if let Some(p) = c.popup.as_ref() {
+                if p.finished {
+                    c.swallow_up.insert(rec.vk);
+                }
+                self.popup_key(cid, &rec);
+                return;
+            }
             if in_chooser {
                 c.swallow_up.insert(rec.vk);
                 self.chooser_key(cid, k);
@@ -3048,7 +3711,9 @@ impl Server {
             }
             if in_copy {
                 c.swallow_up.insert(rec.vk);
-                self.copy_key(cid, sid, k);
+                if let Some(pid) = self.session(sid).and_then(|s| s.window()).map(|w| w.active) {
+                    self.copy_key(cid, pid, k);
+                }
                 return;
             }
             if let Some(b) = self.root_binds.get(&k).cloned() {
@@ -3064,8 +3729,46 @@ impl Server {
             }
         } else if in_copy || in_chooser {
             return;
+        } else if self.clients.get(&cid).is_some_and(|c| c.popup.is_some()) {
+            self.popup_key(cid, &rec);
+            return;
         }
         self.write_active(sid, &input::encode_key_record(&rec));
+    }
+
+    /// A key while a popup is open: it goes to the popup's program, or closes
+    /// the box when the program has already finished.
+    fn popup_key(&mut self, cid: ClientId, rec: &KeyRecord) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let Some(p) = c.popup.as_mut() else { return };
+        if p.finished {
+            if rec.down {
+                c.popup = None;
+                c.last_grid = None;
+            }
+            return;
+        }
+        p.pane.write_input(&input::encode_key_record(rec));
+    }
+
+    /// Keep a popup centred and sized as it was asked for. Called before
+    /// every frame, so the box follows the window area whatever changed it:
+    /// a resized terminal, or `set -g status off` giving a row back.
+    fn refit_popup(&mut self, cid: ClientId) {
+        let Some(c) = self.clients.get(&cid) else { return };
+        if c.popup.is_none() {
+            return;
+        }
+        let area = self.window_area(c.cols, c.rows);
+        let c = self.clients.get_mut(&cid).unwrap();
+        let p = c.popup.as_mut().unwrap();
+        let rect = popup_rect(area, p.width.as_deref(), p.height.as_deref());
+        if rect.w < 3 || rect.h < 3 {
+            c.popup = None; // nowhere left to draw it
+            return;
+        }
+        p.rect = rect;
+        p.pane.resize(rect.w - 2, rect.h - 2);
     }
 
     /// Input for the current window: the active pane, or every pane when
@@ -3103,7 +3806,16 @@ impl Server {
                 (KeyCode::Enter, _, _) if matches!(p.kind, PromptKind::Search { .. }) => {
                     let prompt = c.prompt.take().unwrap();
                     let PromptKind::Search { back } = prompt.kind else { unreachable!() };
-                    self.search_in_copy_mode(cid, &prompt.input, back, true);
+                    let pid = self
+                        .clients
+                        .get(&cid)
+                        .and_then(|c| c.session)
+                        .and_then(|sid| self.session(sid))
+                        .and_then(|s| s.window())
+                        .map(|w| w.active);
+                    if let Some(pid) = pid {
+                        self.search_in_copy_mode(cid, pid, &prompt.input, back, true);
+                    }
                 }
                 (KeyCode::Enter, _, _) => {
                     let prompt = c.prompt.take().unwrap();
@@ -3171,16 +3883,15 @@ impl Server {
     /// `/` `?` `n` `N` in copy mode: move the cursor to the next line holding
     /// `pattern`, case-insensitively, and remember it for `n`.
     ///
-    /// `back` searches towards older lines (what `/` does in a scrollback,
-    /// like less). `fresh` starts from the cursor line itself so that a new
-    /// search can match what is already on screen.
-    fn search_in_copy_mode(&mut self, cid: ClientId, pattern: &str, back: bool, fresh: bool) {
+    /// `back` searches towards older lines, which is what `?` does (tmux's
+    /// `search-backward`). `fresh` starts from the cursor line itself so that
+    /// a new search can match what is already on screen.
+    fn search_in_copy_mode(&mut self, cid: ClientId, pid: PaneId, pattern: &str, back: bool, fresh: bool) {
         let pattern = pattern.to_string();
         if pattern.is_empty() {
             return;
         }
-        let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
-        let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut()) else {
+        let Some(p) = self.find_pane_mut(pid) else {
             return;
         };
         if p.copy.is_none() {
@@ -3234,17 +3945,33 @@ impl Server {
     /// The picker's lines from the live sessions, tmux `choose-tree` style:
     /// `(n) - name: 2 windows (attached)` and, when expanded,
     /// `(n)   - 0: cmd* (2 panes) "title"` under each session.
-    fn chooser_lines(&self, expand: bool, buffers: bool) -> (Vec<ChooserItem>, Vec<String>) {
+    fn chooser_lines(&self, kind: &ChooserKind) -> Option<(Vec<ChooserItem>, Vec<String>)> {
         let mut items = Vec::new();
         let mut lines = Vec::new();
         let tag = |n: usize| if n < 10 { format!("({n}) ") } else { "    ".to_string() };
-        if buffers {
-            for (i, (name, data)) in self.buffers.iter().enumerate() {
-                items.push(ChooserItem::Buffer(i));
-                lines.push(format!("{}{name}: {} bytes: {}", tag(i), data.len(), one_line(data, 60)));
+        let expand = match kind {
+            ChooserKind::Tree { expand } => *expand,
+            ChooserKind::Buffers => {
+                for (i, (name, data)) in self.buffers.iter().enumerate() {
+                    items.push(ChooserItem::Buffer(i));
+                    lines.push(format!("{}{name}: {} bytes: {}", tag(i), data.len(), one_line(data, 60)));
+                }
+                return Some((items, lines));
             }
-            return (items, lines);
-        }
+            ChooserKind::Clients => {
+                let mut ids: Vec<ClientId> =
+                    self.clients.values().filter(|c| c.session.is_some()).map(|c| c.id).collect();
+                ids.sort_unstable();
+                for id in ids {
+                    let Some(c) = self.clients.get(&id) else { continue };
+                    let session = c.session.and_then(|s| self.session(s)).map(|s| s.name.as_str()).unwrap_or("-");
+                    items.push(ChooserItem::Client(id));
+                    lines.push(format!("{}client-{id}: {session} [{}x{}]", tag(lines.len()), c.cols, c.rows));
+                }
+                return Some((items, lines));
+            }
+            ChooserKind::Found | ChooserKind::Menu(_) => return None,
+        };
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
             items.push(ChooserItem::Tree(s.id, None));
@@ -3280,13 +4007,28 @@ impl Server {
                 ));
             }
         }
-        (items, lines)
+        Some((items, lines))
     }
 
     fn chooser_key(&mut self, cid: ClientId, k: Key) {
         let Some((cols, rows)) = self.clients.get(&cid).map(|c| (c.cols, c.rows)) else { return };
         let page = self.window_area(cols, rows).h.saturating_sub(1).max(1) as i64; // body rows of the picker
         let Some(c) = self.clients.get_mut(&cid) else { return };
+        // A menu entry's own key picks it, ahead of the movement keys, so a
+        // menu is free to use `j` or `q` for something.
+        let menu_hit = match c.chooser.as_ref().map(|ch| &ch.kind) {
+            Some(ChooserKind::Menu(entries)) if k.code != KeyCode::Escape => entries
+                .iter()
+                .find(|e| e.cmd.is_some() && e.key.as_deref().and_then(Key::parse) == Some(k))
+                .and_then(|e| e.cmd.clone()),
+            _ => None,
+        };
+        if let Some(cmd) = menu_hit {
+            c.chooser = None;
+            let out = self.exec(*cmd, Some(cid));
+            self.reply(cid, out);
+            return;
+        }
         let Some(ch) = c.chooser.as_mut() else { return };
         match (k.code, k.ctrl, k.alt) {
             (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
@@ -3294,23 +4036,48 @@ impl Server {
             }
             (KeyCode::Down, _, _) | (KeyCode::Char('j'), false, false) | (KeyCode::Char('n'), true, _) => ch.step(1),
             (KeyCode::Up, _, _) | (KeyCode::Char('k'), false, false) | (KeyCode::Char('p'), true, _) => ch.step(-1),
-            (KeyCode::Home, _, _) | (KeyCode::Char('g'), false, false) => ch.sel = 0,
-            (KeyCode::End, _, _) | (KeyCode::Char('G'), false, false) => ch.sel = ch.items.len().saturating_sub(1),
+            (KeyCode::Home, _, _) | (KeyCode::Char('g'), false, false) => {
+                ch.sel = 0;
+                ch.settle(1);
+            }
+            (KeyCode::End, _, _) | (KeyCode::Char('G'), false, false) => {
+                ch.sel = ch.items.len().saturating_sub(1);
+                ch.settle(-1);
+            }
             (KeyCode::NPage, _, _) | (KeyCode::Char('f'), true, _) => ch.step(page),
             (KeyCode::PPage, _, _) | (KeyCode::Char('b'), true, _) => ch.step(-page),
             (KeyCode::Char('d'), true, _) => ch.step(page / 2),
             (KeyCode::Char('u'), true, _) => ch.step(-(page / 2)),
             (KeyCode::Char(d @ '0'..='9'), false, false) => {
                 let i = d as usize - '0' as usize;
-                if i < ch.items.len() {
+                if i < ch.items.len() && !matches!(ch.items[i], ChooserItem::Separator) {
                     ch.sel = i;
                 }
             }
             (KeyCode::Enter, _, _) => {
                 let target = ch.items.get(ch.sel).copied();
+                let menu = match (&ch.kind, target) {
+                    (ChooserKind::Menu(entries), Some(ChooserItem::Menu(i))) => {
+                        entries.get(i).and_then(|e| e.cmd.clone())
+                    }
+                    _ => None,
+                };
                 c.chooser = None;
+                if let Some(cmd) = menu {
+                    let out = self.exec(*cmd, Some(cid));
+                    self.reply(cid, out);
+                    return;
+                }
                 match target {
                     Some(ChooserItem::Tree(sid, wid)) => self.chooser_go(cid, sid, wid),
+                    Some(ChooserItem::Client(other)) => {
+                        if self.clients.contains_key(&other) {
+                            self.detach(other, "detached");
+                        } else {
+                            self.message(cid, "client is gone");
+                        }
+                    }
+                    Some(ChooserItem::Menu(_)) | Some(ChooserItem::Separator) => {}
                     Some(ChooserItem::Buffer(i)) => {
                         let name = self.buffers.get(i).map(|(n, _)| n.clone());
                         match name {
@@ -3370,8 +4137,8 @@ impl Server {
 
     // ------------------------------------------------------------- copy mode
 
-    fn copy_key(&mut self, cid: ClientId, sid: SessionId, k: Key) {
-        let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut()) else {
+    fn copy_key(&mut self, cid: ClientId, pid: PaneId, k: Key) {
+        let Some(p) = self.find_pane_mut(pid) else {
             return;
         };
         let rows = p.rows as i64;
@@ -3399,7 +4166,7 @@ impl Server {
             )
         {
             for _ in 0..count {
-                self.copy_key(cid, sid, k);
+                self.copy_key(cid, pid, k);
             }
             return;
         }
@@ -3505,14 +4272,14 @@ impl Server {
                 }
                 copy_goto(p, abs);
             }
-            // Search, like less and vim: / goes back through the scrollback,
-            // ? goes forward, n and N repeat.
+            // Search as tmux does: / looks forward (towards the newest line),
+            // ? looks back through the scrollback, n and N repeat.
             (KeyCode::Char('/'), false, false) | (KeyCode::Char('?'), false, false) => {
-                let back = k.code == KeyCode::Char('/');
+                let back = k.code == KeyCode::Char('?');
                 if let Some(cl) = self.clients.get_mut(&cid) {
                     cl.prompt = Some(Prompt {
                         kind: PromptKind::Search { back },
-                        label: if back { "/".into() } else { "?".into() },
+                        label: if back { "?".into() } else { "/".into() },
                         input: String::new(),
                         cursor: 0,
                     });
@@ -3524,7 +4291,7 @@ impl Server {
                     return;
                 };
                 let back = if k.code == KeyCode::Char('N') { !back } else { back };
-                self.search_in_copy_mode(cid, &pattern, back, false);
+                self.search_in_copy_mode(cid, pid, &pattern, back, false);
             }
             (KeyCode::Enter, _, _) | (KeyCode::Char('y'), false, false) | (KeyCode::Char('w'), true, _) => {
                 if c.anchor.is_some() {
@@ -3538,7 +4305,7 @@ impl Server {
                         Err(e) => self.message(cid, &e),
                     }
                 }
-                if let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut()) {
+                if let Some(p) = self.find_pane_mut(pid) {
                     exit_copy_mode(p);
                 }
             }
@@ -3551,7 +4318,9 @@ impl Server {
     fn handle_mouse(&mut self, cid: ClientId, m: MouseRecord) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(sid) = c.session else { return };
-        if c.prompt.is_some() || c.overlay.is_some() {
+        // A popup owns the keyboard but not the mouse: the click would land
+        // on a pane it covers, so drop it instead.
+        if c.prompt.is_some() || c.overlay.is_some() || c.popup.is_some() {
             return;
         }
         let x = m.x.max(0) as u16;
@@ -3792,6 +4561,7 @@ impl Server {
 
     fn render_all(&mut self) {
         let now = Instant::now();
+        self.sweep_alerts();
         // display-time 0 means "until the next key press" (see handle_key).
         if self.opts.display_time_ms > 0 {
             let ttl = Duration::from_millis(self.opts.display_time_ms);
@@ -3811,14 +4581,21 @@ impl Server {
     }
 
     fn render_client(&mut self, cid: ClientId) {
+        self.refit_popup(cid);
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
         let (cols, rows) = (c.cols, c.rows);
-        // The picker shows the live tree; keep the selection on the same item.
-        if let Some((expand, buffers, want, sel)) =
-            c.chooser.as_ref().map(|ch| (ch.expand, ch.buffers, ch.items.get(ch.sel).copied(), ch.sel))
-        {
-            let (items, lines) = self.chooser_lines(expand, buffers);
+        // A picker of live things (the tree, buffers, clients) is rebuilt every
+        // render; the selection follows the item's identity, so things
+        // appearing or vanishing meanwhile do not move it. A fixed list (the
+        // find-window hits, a menu) is left alone.
+        let fresh = match c.chooser.as_ref() {
+            Some(ch) if ch.kind.live() => {
+                self.chooser_lines(&ch.kind).map(|(i, l)| (i, l, ch.items.get(ch.sel).copied(), ch.sel))
+            }
+            _ => None,
+        };
+        if let Some((items, lines, want, sel)) = fresh {
             let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
             ch.sel =
                 want.and_then(|w| items.iter().position(|i| *i == w)).unwrap_or(sel.min(items.len().saturating_sub(1)));
@@ -3841,7 +4618,9 @@ impl Server {
                 c.prompt.as_ref().map(|p| (p.label.clone(), p.input.clone(), p.cursor)),
             )
         };
-        let mut bell = false;
+        // (The alerts of the window being drawn were cleared by the sweep at
+        // the top of render_all.)
+        let mut bell = self.clients.get_mut(&cid).is_some_and(|c| std::mem::take(&mut c.pending_bell));
         let status_line = if opts_status {
             let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
             let now = chrono::Local::now();
@@ -3860,22 +4639,7 @@ impl Server {
                     pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
                     pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
                     host: host.clone(),
-                    flags: format!(
-                        "{}{}",
-                        if widx == s.cur {
-                            "*"
-                        } else if Some(w.id) == s.last {
-                            "-"
-                        } else {
-                            ""
-                        },
-                        match (w.zoomed, w.synchronized) {
-                            (true, true) => "ZS",
-                            (true, false) => "Z",
-                            (false, true) => "S",
-                            (false, false) => "",
-                        }
-                    ),
+                    flags: w.flags(widx == s.cur, Some(w.id) == s.last),
                 }
             };
             let cache = &mut self.shell_cache;
@@ -3980,6 +4744,11 @@ impl Server {
         if let Some(lines) = &c.overlay {
             render::draw_overlay(&mut grid, area, lines);
             cursor = None;
+        }
+        // The popup is the thing with the keyboard, so it draws last.
+        if let Some(p) = c.popup.as_ref() {
+            let hint = p.finished.then_some("press any key");
+            cursor = render::draw_popup(&mut grid, p.rect, p.pane.screen(), active_fg, hint);
         }
         let changed = c.last_grid.as_ref() != Some(&grid) || c.last_cursor != cursor;
         if !changed && !bell {
@@ -4257,6 +5026,17 @@ fn copy_word_motion(p: &mut Pane, key: char) {
 }
 
 /// A `-x`/`-y` size: cells, or a percentage of the window.
+/// Where a `display-popup` box goes: the asked-for size (`80`, `50%`),
+/// defaulting to four fifths of the window, centred in it.
+fn popup_rect(area: Rect, width: Option<&str>, height: Option<&str>) -> Rect {
+    let size = |spec: Option<&str>, full: u16| -> u16 {
+        spec.and_then(|s| parse_size(s, full)).unwrap_or((full as u32 * 4 / 5) as u16).clamp(1, full)
+    };
+    let w = size(width, area.w);
+    let h = size(height, area.h);
+    Rect { x: area.x + (area.w - w) / 2, y: area.y + (area.h - h) / 2, w, h }
+}
+
 fn parse_size(spec: &str, full: u16) -> Option<u16> {
     let spec = spec.trim();
     if let Some(p) = spec.strip_suffix('%') {
@@ -4389,9 +5169,11 @@ mod tests {
             message: None,
             overlay: None,
             chooser: None,
+            popup: None,
             mouse_buttons: 0,
             drag: None,
             swallow_up: HashSet::new(),
+            pending_bell: false,
             pending: std::collections::VecDeque::new(),
             window_hits: Vec::new(),
         };
@@ -4408,6 +5190,87 @@ mod tests {
             let back = crate::command::parse(&words).unwrap_or_else(|e| panic!("{key}: {printed}: {e}"));
             assert_eq!(back.to_string(), printed, "{key} does not round-trip");
         }
+    }
+
+    /// Every menu the default bindings open must be usable: unique keys, a
+    /// command behind each entry, and separators that cannot be selected.
+    #[test]
+    fn default_menus_have_unique_keys() {
+        let mut menus = 0;
+        for (key, b) in default_bindings() {
+            let Cmd::DisplayMenu { items, .. } = &b.cmd else { continue };
+            menus += 1;
+            let keys: Vec<&str> = items.iter().filter_map(|i| i.cmd.as_ref().and(i.key.as_deref())).collect();
+            let mut seen = std::collections::HashSet::new();
+            for k in &keys {
+                assert!(crate::keys::Key::parse(k).is_some(), "{key}: menu key {k} is not a key");
+                assert!(seen.insert(*k), "{key}: menu key {k} is used twice");
+            }
+            assert!(keys.len() >= 3, "{key}: a menu worth opening");
+            assert!(items.iter().any(|i| i.cmd.is_none()), "{key}: menus are grouped by separators");
+        }
+        assert_eq!(menus, 2, "the pane menu and the window menu");
+    }
+
+    #[test]
+    fn menu_selection_skips_the_separators() {
+        let items = vec![
+            ChooserItem::Separator, // title
+            ChooserItem::Menu(0),
+            ChooserItem::Separator,
+            ChooserItem::Menu(1),
+        ];
+        let mut ch = Chooser {
+            kind: ChooserKind::Menu(Vec::new()),
+            lines: vec!["t".into(), "a".into(), "-".into(), "b".into()],
+            items,
+            sel: 0,
+            top: 0,
+        };
+        ch.settle(1);
+        assert_eq!(ch.sel, 1, "opening a menu lands on the first real entry");
+        ch.step(1);
+        assert_eq!(ch.sel, 3, "j jumps over the separator");
+        ch.step(1);
+        assert_eq!(ch.sel, 3, "and stops at the end");
+        ch.sel = ch.items.len() - 1;
+        ch.settle(-1);
+        assert_eq!(ch.sel, 3, "G lands on a real entry");
+        ch.step(-1);
+        assert_eq!(ch.sel, 1, "k jumps back over it");
+        ch.step(-1);
+        assert_eq!(ch.sel, 1, "and never onto the title");
+
+        // A list of nothing but separators leaves the selection alone.
+        let mut empty = Chooser {
+            kind: ChooserKind::Menu(Vec::new()),
+            items: vec![ChooserItem::Separator; 3],
+            lines: vec!["-".into(); 3],
+            sel: 1,
+            top: 0,
+        };
+        empty.step(1);
+        assert_eq!(empty.sel, 1);
+    }
+
+    #[test]
+    fn popups_are_centred_and_sized_as_asked() {
+        let area = Rect { x: 0, y: 0, w: 80, h: 23 };
+        // Default: four fifths of the window, centred.
+        let r = popup_rect(area, None, None);
+        assert_eq!((r.w, r.h), (64, 18));
+        assert_eq!((r.x, r.y), ((80 - 64) / 2, (23 - 18) / 2));
+        // Cells and percentages, and never bigger than the window.
+        assert_eq!(popup_rect(area, Some("40"), Some("10")).w, 40);
+        assert_eq!(popup_rect(area, Some("50%"), Some("50%")).h, 11);
+        let big = popup_rect(area, Some("500"), Some("500"));
+        assert_eq!((big.w, big.h, big.x, big.y), (80, 23, 0, 0));
+        // Nonsense falls back to the default instead of vanishing.
+        assert_eq!(popup_rect(area, Some("wide"), None).w, 64);
+        // A window with no room gives a box too small to draw, which the
+        // caller refuses rather than drawing a broken border.
+        let tiny = popup_rect(Rect { x: 0, y: 0, w: 2, h: 2 }, None, None);
+        assert!(tiny.w < 3 || tiny.h < 3, "{tiny:?}");
     }
 
     #[test]

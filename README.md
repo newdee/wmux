@@ -90,7 +90,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `x` | kill the current pane |
 | `{` / `}` | swap pane with previous / next |
 | `q` | show the pane numbers; press one to go there |
-| `Space` / `M-1`…`M-5` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) |
+| `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
 | `C-o` / `M-o` | rotate the panes through the layout |
 | `!` | break the pane out into its own window |
 | `m` / `M` | mark this pane / clear the mark (`join-pane` takes the marked one) |
@@ -104,12 +104,17 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `?` | list key bindings |
 | `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels) |
 | `(` / `)` | switch the client to the previous / next session |
+| `D` | pick a client from a list and detach it |
+| `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
+| `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
 In copy mode: `h` `j` `k` `l` and the arrows move, `w` `b` `e` walk words,
 `0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, a count repeats
 (`3j`), `Space` or `v` starts a selection, `C-v` makes it a rectangle,
-`Enter` or `y` copies (to a paste buffer and the Windows clipboard), `/` and
-`?` search with `n` / `N` to repeat, `q` leaves.
+`Enter` or `y` copies (to a paste buffer and the Windows clipboard), `/`
+searches forward and `?` back through the scrollback with `n` / `N` to
+repeat, `q` leaves. A script can drive all of it with
+`send-keys -X <command>`, the same command names tmux uses.
 
 Mouse: click selects a pane, drag a border to resize, click a window name on
 the status line to select it, wheel scrolls (enters copy mode on the normal
@@ -174,6 +179,13 @@ set -g base-index 1               # windows and panes counted from 1
 set -g pane-base-index 1
 
 set -g repeat-time 500            # how long a `bind -r` key keeps working; 0 disables
+
+set -g remain-on-exit on          # keep a pane whose program exited, showing why
+set -g save-history 500           # lines of each pane saved for `resume`; 0 saves none
+set -g monitor-activity on        # flag a background window that prints (`#` on the status line)
+set -g monitor-bell on            # and one that rings the bell (`!`); on by default
+set -g monitor-silence 60         # flag one that has said nothing for 60s (`~`); 0 disables
+set -g visual-bell on             # say it on the status line instead of ringing
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D
@@ -257,6 +269,25 @@ set -g status-interval 5
 bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
 ```
 
+Commands a script or a binding reaches for, beyond the obvious ones
+(`wmux list-commands` prints all 85, and any unambiguous prefix works):
+
+- `pipe-pane [-o] [-t target] [command]` copies everything a pane prints into
+  a command's standard input; with no command it stops. `wmux pipe-pane
+  "$input | Add-Content build.log"` keeps a build log without touching the
+  build.
+- `wait-for [-L|-U|-S] channel` blocks until another client signals the
+  channel (or unlocks it), so two scripts can take turns: `wmux wait-for
+  ready` waits, `wmux wait-for -S ready` releases it.
+- `display-menu [-T title] name key command ...` opens a menu over the
+  window; an empty name is a separator. `display-popup [-E] [-w W] [-h H]
+  [-d dir] [command]` runs a program in a box over the window (`-E` closes
+  it when the program exits, `-C` closes it from outside).
+- `choose-client` lists the attached clients and detaches the one picked.
+- `send-keys -X <copy-command>` drives copy mode (`search-backward`,
+  `begin-selection`, `copy-selection`, ... — the tmux names).
+- `capture-pane -p [-e]` prints a pane, with the colours if asked.
+
 Every window and pane command accepts `-t target` as in tmux:
 `session`, `session:window`, `:window`, `session:window.pane`, and the window
 part may be an index, a name, `+`, `-` or `!`. The one exception is
@@ -303,12 +334,16 @@ covered without a human at the keyboard.
 ## Not (yet) implemented
 
 Relative to tmux: `synchronize-panes` applies to the current window (no
-`-t`), multiple clients on the same session see the same size
-(last attach wins, no per-client viewport), only the hooks listed above,
-`swap-window` and `move-window` work inside one session, `bind -r` has no
-per-key repeat count, no named paste buffers (the Windows
-clipboard is the only buffer), `choose-tree` without per-session
-collapsing, tagging or a filter, `swap-pane` swaps with the previous or
-next pane (`-U` / `-D`; `-s` and `-t` both name the pane to swap, there is
-no pair form), `select-layout` has the five named layouts but not tmux's
-layout strings, and `list-panes -a`/`-s` always list the target window only.
+`-t`), multiple clients on the same session see the same size (last attach
+wins, no per-client viewport, so `refresh-client -U`/`-D` do nothing), only
+the hooks listed above, `swap-window` works inside one session (`move-window`
+crosses sessions), `bind -r` has no per-key repeat count, `choose-tree`
+without per-session collapsing, tagging or a filter, `swap-pane` swaps with
+the previous or next pane (`-U` / `-D`; `-s` and `-t` both name the pane to
+swap, there is no pair form), `select-layout` has the five named layouts and
+`-E` but not tmux's layout strings, `list-panes -a`/`-s` always list the
+target window only, `pipe-pane` copies pane output into a command but has no
+`-I` the other way, and `display-popup` is always centred (no `-x`/`-y`) and
+gives the prefix key to wmux rather than to the program in the box.
+
+`docs/tmux-parity.md` has the command-by-command and key-by-key list.

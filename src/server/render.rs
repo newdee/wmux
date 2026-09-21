@@ -505,6 +505,48 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
     g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
 }
 
+/// `display-popup`: a box with a program inside it, drawn over everything
+/// else. Returns where the cursor sits, or None when the popup has no room
+/// for one. `hint` replaces the bottom border text once the command is done.
+pub fn draw_popup(
+    g: &mut Grid,
+    rect: Rect,
+    screen: &vt100::Screen,
+    border: Color,
+    hint: Option<&str>,
+) -> Option<(u16, u16)> {
+    if rect.w < 3 || rect.h < 3 {
+        return None;
+    }
+    let style = Style::colors(border, Color::Default);
+    let plain = Style::default();
+    g.fill(rect, plain);
+    let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w - 1, rect.y + rect.h - 1);
+    let line = |s: &str| Cell::new(s, false, style);
+    for x in x0 + 1..x1 {
+        g.set(x, y0, line("─"));
+        g.set(x, y1, line("─"));
+    }
+    for y in y0 + 1..y1 {
+        g.set(x0, y, line("│"));
+        g.set(x1, y, line("│"));
+    }
+    g.set(x0, y0, line("┌"));
+    g.set(x1, y0, line("┐"));
+    g.set(x0, y1, line("└"));
+    g.set(x1, y1, line("┘"));
+    if let Some(h) = hint {
+        g.put_str(x0 + 1, y1, &format!(" {h} "), style, rect.w.saturating_sub(2));
+    }
+    let inner = Rect { x: x0 + 1, y: y0 + 1, w: rect.w - 2, h: rect.h - 2 };
+    g.blit_screen(inner, screen);
+    if screen.hide_cursor() {
+        return None;
+    }
+    let (cy, cx) = screen.cursor_position();
+    if cx < inner.w && cy < inner.h { Some((inner.x + cx, inner.y + cy)) } else { None }
+}
+
 /// `display-panes`: a pane's number, centred in its rectangle, big enough to
 /// read at a glance (the active pane in the active colour).
 pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {

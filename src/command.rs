@@ -46,6 +46,15 @@ pub enum PaneSel {
     Index(usize),
 }
 
+/// One line of a `display-menu`: a label, the key that picks it, and what it
+/// runs. A label with no command is a separator (tmux writes it as `""`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuItem {
+    pub name: String,
+    pub key: Option<String>,
+    pub cmd: Option<Box<Cmd>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     NewSession {
@@ -116,9 +125,12 @@ pub enum Cmd {
     },
     NextWindow {
         target: Option<Target>,
+        /// `-a`: the next window with an alert (activity, bell or silence).
+        alert: bool,
     },
     PreviousWindow {
         target: Option<Target>,
+        alert: bool,
     },
     LastWindow {
         target: Option<Target>,
@@ -171,6 +183,8 @@ pub enum Cmd {
         name: Option<String>,
         next: bool,
         prev: bool,
+        /// `-E`: even out the panes beside the target, keeping the layout.
+        spread: bool,
         target: Option<Target>,
     },
     BreakPane {
@@ -194,6 +208,13 @@ pub enum Cmd {
         keys: Vec<String>,
         /// `-l`: every argument is literal text, never a key name.
         literal: bool,
+    },
+    /// `send-keys -X <name> [arg]`: run a copy-mode command by name, so a
+    /// binding can drive copy mode (tmux's `-X`).
+    CopyCommand {
+        target: Option<Target>,
+        name: String,
+        arg: Option<String>,
     },
     CopyMode {
         page_up: bool,
@@ -262,6 +283,43 @@ pub enum Cmd {
     ListBuffers,
     /// `choose-buffer`: pick a buffer from a list and paste it.
     ChooseBuffer,
+    /// `choose-client`: pick an attached client from a list and detach it
+    /// (tmux binds this to prefix `D`).
+    ChooseClient,
+    /// `display-menu [-T title] name key command ...`: a menu over the window;
+    /// an empty name is a separator, `key` selects the entry directly.
+    DisplayMenu {
+        title: Option<String>,
+        items: Vec<MenuItem>,
+    },
+    /// `display-popup [-C] [-E] [-d dir] [-w width] [-h height] [command]`: a
+    /// program in a box over the window, with its own terminal.
+    DisplayPopup {
+        /// `-C`: close the popup this client has open.
+        close: bool,
+        /// `-E`: close the popup as soon as the command finishes.
+        close_on_exit: bool,
+        width: Option<String>,
+        height: Option<String>,
+        cwd: Option<String>,
+        argv: Vec<String>,
+    },
+    /// `pipe-pane [-o] [-t target] [command]`: copy everything a pane writes
+    /// into the standard input of a shell command. No command stops the pipe.
+    PipePane {
+        target: Option<Target>,
+        command: Option<String>,
+        /// `-o`: stop instead of starting if this pane is already piped.
+        toggle: bool,
+    },
+    /// `wait-for [-L|-S|-U] channel`: block a client until another one signals
+    /// (or unlocks) the channel, so scripts can wait for each other.
+    WaitFor {
+        channel: String,
+        lock: bool,
+        unlock: bool,
+        signal: bool,
+    },
     /// `%%` in `template` is replaced by the prompt input; `#S`/`#W` in
     /// `initial` expand to the session/window name.
     CommandPrompt {
@@ -376,6 +434,8 @@ pub enum Cmd {
     CapturePane {
         target: Option<Target>,
         history: usize,
+        /// `-e`: keep the colours and attributes as escape sequences.
+        escapes: bool,
     },
     /// `set-cwd [-t target] [dir]`: record a pane's working directory (used
     /// by save/resume and `#{pane_current_path}`); no `dir` means the
@@ -530,12 +590,18 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::NextWindow { target } => {
+            Cmd::NextWindow { target, alert } => {
                 f.write_str("next-window")?;
+                if *alert {
+                    f.write_str(" -a")?;
+                }
                 fmt_target(f, target)
             }
-            Cmd::PreviousWindow { target } => {
+            Cmd::PreviousWindow { target, alert } => {
                 f.write_str("previous-window")?;
+                if *alert {
+                    f.write_str(" -a")?;
+                }
                 fmt_target(f, target)
             }
             Cmd::LastWindow { target } => {
@@ -621,13 +687,16 @@ impl fmt::Display for Cmd {
                 write!(f, "swap-pane {}", if *up { "-U" } else { "-D" })?;
                 fmt_target(f, target)
             }
-            Cmd::SelectLayout { name, next, prev, target } => {
+            Cmd::SelectLayout { name, next, prev, spread, target } => {
                 f.write_str("select-layout")?;
                 if *next {
                     f.write_str(" -n")?;
                 }
                 if *prev {
                     f.write_str(" -p")?;
+                }
+                if *spread {
+                    f.write_str(" -E")?;
                 }
                 fmt_target(f, target)?;
                 if let Some(n) = name {
@@ -664,6 +733,15 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)?;
                 for k in keys {
                     write!(f, " {}", quote(k))?;
+                }
+                Ok(())
+            }
+            Cmd::CopyCommand { target, name, arg } => {
+                f.write_str("send-keys -X")?;
+                fmt_target(f, target)?;
+                write!(f, " {}", quote(name))?;
+                if let Some(a) = arg {
+                    write!(f, " {}", quote(a))?;
                 }
                 Ok(())
             }
@@ -748,6 +826,68 @@ impl fmt::Display for Cmd {
             }
             Cmd::ListBuffers => f.write_str("list-buffers"),
             Cmd::ChooseBuffer => f.write_str("choose-buffer"),
+            Cmd::ChooseClient => f.write_str("choose-client"),
+            Cmd::DisplayMenu { title, items } => {
+                f.write_str("display-menu")?;
+                if let Some(t) = title {
+                    write!(f, " -T {}", quote(t))?;
+                }
+                for it in items {
+                    write!(f, " {}", quote(&it.name))?;
+                    match (&it.key, &it.cmd) {
+                        (Some(k), Some(c)) => write!(f, " {} {}", quote(k), quote(&c.to_string()))?,
+                        (Some(k), None) => write!(f, " {} {}", quote(k), quote(""))?,
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+            Cmd::DisplayPopup { close, close_on_exit, width, height, cwd, argv } => {
+                f.write_str("display-popup")?;
+                if *close {
+                    f.write_str(" -C")?;
+                }
+                if *close_on_exit {
+                    f.write_str(" -E")?;
+                }
+                if let Some(w) = width {
+                    write!(f, " -w {}", quote(w))?;
+                }
+                if let Some(h) = height {
+                    write!(f, " -h {}", quote(h))?;
+                }
+                if let Some(d) = cwd {
+                    write!(f, " -d {}", quote(d))?;
+                }
+                for a in argv {
+                    write!(f, " {}", quote(a))?;
+                }
+                Ok(())
+            }
+            Cmd::PipePane { target, command, toggle } => {
+                f.write_str("pipe-pane")?;
+                if *toggle {
+                    f.write_str(" -o")?;
+                }
+                fmt_target(f, target)?;
+                if let Some(c) = command {
+                    write!(f, " {}", quote(c))?;
+                }
+                Ok(())
+            }
+            Cmd::WaitFor { channel, lock, unlock, signal } => {
+                f.write_str("wait-for")?;
+                if *lock {
+                    f.write_str(" -L")?;
+                }
+                if *unlock {
+                    f.write_str(" -U")?;
+                }
+                if *signal {
+                    f.write_str(" -S")?;
+                }
+                write!(f, " {}", quote(channel))
+            }
             Cmd::CommandPrompt { prompt, initial, template } => {
                 f.write_str("command-prompt")?;
                 if let Some(p) = prompt {
@@ -869,8 +1009,11 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::CapturePane { target, history } => {
+            Cmd::CapturePane { target, history, escapes } => {
                 f.write_str("capture-pane -p")?;
+                if *escapes {
+                    f.write_str(" -e")?;
+                }
                 if *history > 0 {
                     write!(f, " -S -{history}")?;
                 }
@@ -1049,6 +1192,7 @@ pub const COMMANDS: &[&str] = &[
     "bind-key",
     "capture-pane",
     "choose-buffer",
+    "choose-client",
     "choose-session",
     "clock-mode",
     "choose-tree",
@@ -1059,7 +1203,9 @@ pub const COMMANDS: &[&str] = &[
     "delete-buffer",
     "delete-saved",
     "detach-client",
+    "display-menu",
     "display-message",
+    "display-popup",
     "display-panes",
     "find-window",
     "has-session",
@@ -1089,6 +1235,7 @@ pub const COMMANDS: &[&str] = &[
     "next-layout",
     "next-window",
     "paste-buffer",
+    "pipe-pane",
     "previous-layout",
     "previous-window",
     "refresh-client",
@@ -1124,6 +1271,7 @@ pub const COMMANDS: &[&str] = &[
     "swap-window",
     "switch-client",
     "version",
+    "wait-for",
 ];
 
 /// tmux lets any unambiguous prefix stand for a command name, so `att` is
@@ -1199,7 +1347,12 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "delete-buffer" | "deleteb" => "delete-buffer",
         "list-buffers" | "lsb" => "list-buffers",
         "choose-buffer" => "choose-buffer",
+        "choose-client" => "choose-client",
         "command-prompt" => "command-prompt",
+        "pipe-pane" | "pipep" => "pipe-pane",
+        "wait-for" | "wait" => "wait-for",
+        "display-menu" | "menu" => "display-menu",
+        "display-popup" | "popup" => "display-popup",
         "display-message" | "display" => "display-message",
         "display-panes" | "displayp" => "display-panes",
         "clock-mode" => "clock-mode",
@@ -1418,18 +1571,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SwapWindow { src, dst, move_it: n == "move-window" }
         }
         "next-window" | "previous-window" | "last-window" => {
-            let mut target = None;
+            let (mut target, mut alert) = (None, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-a" => {} // tmux: next window with an alert; wmux has none
+                    "-a" if n != "last-window" => alert = true,
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
             match n {
-                "next-window" => Cmd::NextWindow { target },
-                "previous-window" => Cmd::PreviousWindow { target },
+                "next-window" => Cmd::NextWindow { target, alert },
+                "previous-window" => Cmd::PreviousWindow { target, alert },
                 _ => Cmd::LastWindow { target },
             }
         }
@@ -1568,7 +1721,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 }
             }
             a.none_left(n)?;
-            Cmd::SelectLayout { name: None, next: n == "next-layout", prev: n == "previous-layout", target }
+            Cmd::SelectLayout {
+                name: None,
+                next: n == "next-layout",
+                prev: n == "previous-layout",
+                spread: false,
+                target,
+            }
         }
         "rotate-window" => {
             let (mut down, mut target) = (false, None);
@@ -1635,22 +1794,23 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SelectPane { sel: PaneSel::Last }
         }
         "select-layout" => {
-            let (mut next, mut prev, mut target) = (false, false, None);
+            let (mut next, mut prev, mut spread, mut target) = (false, false, false, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-n" => next = true,
                     "-p" => prev = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-o" | "-E" => {} // tmux: previous layout / spread out
+                    "-E" => spread = true,
+                    "-o" => {} // tmux: back to the previous layout
                     f => return Err(bad_flag(n, f)),
                 }
             }
             let name = a.next().map(str::to_string);
             a.none_left(n)?;
-            if name.is_none() && !next && !prev {
-                return Err("select-layout: layout name, -n or -p required".into());
+            if name.is_none() && !next && !prev && !spread {
+                return Err("select-layout: layout name, -n, -p or -E required".into());
             }
-            Cmd::SelectLayout { name, next, prev, target }
+            Cmd::SelectLayout { name, next, prev, spread, target }
         }
         "join-pane" => {
             let (mut src, mut dst, mut horizontal, mut before) = (None, None, false, false);
@@ -1697,13 +1857,20 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::BreakPane { target }
         }
         "send-keys" => {
-            let (mut target, mut literal) = (None, false);
+            let (mut target, mut literal, mut copy_cmd) = (None, false, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
                     "-l" => literal = true,
+                    "-X" => copy_cmd = true,
+                    "-R" | "-M" | "-N" => {}
                     f => return Err(bad_flag(n, f)),
                 }
+            }
+            if copy_cmd {
+                let mut rest = a.rest().into_iter();
+                let name = rest.next().ok_or("send-keys -X: command name required")?;
+                return Ok(Cmd::CopyCommand { target, name, arg: rest.next() });
             }
             Cmd::SendKeys { target, keys: a.rest(), literal }
         }
@@ -1787,6 +1954,106 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ChooseBuffer
+        }
+        "choose-client" => {
+            while a.is_flag() {
+                let f = a.next().unwrap();
+                if matches!(f, "-t" | "-F" | "-f" | "-O") {
+                    a.value(f)?;
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ChooseClient
+        }
+        "display-menu" => {
+            let mut title = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-T" => title = Some(a.value("-T")?.to_string()),
+                    // Placement and the client to show it on: wmux draws the
+                    // menu over the window of the client that asked for it.
+                    "-x" | "-y" | "-c" | "-t" => {
+                        a.value("-x")?;
+                    }
+                    "-O" => {}
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let words = a.rest();
+            if words.is_empty() {
+                return Err("display-menu: at least one item required".into());
+            }
+            let mut items = Vec::new();
+            let mut i = 0;
+            while i < words.len() {
+                let name = words[i].clone();
+                if name.is_empty() {
+                    // A separator takes no key and no command.
+                    items.push(MenuItem { name, key: None, cmd: None });
+                    i += 1;
+                    continue;
+                }
+                let key = words.get(i + 1).ok_or("display-menu: item needs a key and a command")?;
+                let raw = words.get(i + 2).ok_or("display-menu: item needs a command")?;
+                let key = if key.is_empty() { None } else { Some(key.clone()) };
+                let cmd = if raw.is_empty() { None } else { Some(Box::new(parse(&tokenize(raw)?)?)) };
+                items.push(MenuItem { name, key, cmd });
+                i += 3;
+            }
+            Cmd::DisplayMenu { title, items }
+        }
+        "display-popup" => {
+            let (mut close, mut close_on_exit) = (false, false);
+            let (mut width, mut height, mut cwd) = (None, None, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-C" => close = true,
+                    "-E" | "-EE" => close_on_exit = true,
+                    "-w" => width = Some(a.value("-w")?.to_string()),
+                    "-h" => height = Some(a.value("-h")?.to_string()),
+                    "-d" => cwd = Some(a.value("-d")?.to_string()),
+                    // Where it sits and whose client it is: wmux centres the
+                    // popup on the client that asked for it.
+                    "-x" | "-y" | "-c" | "-t" | "-T" | "-s" | "-S" | "-b" | "-e" => {
+                        a.value("-x")?;
+                    }
+                    "-B" => {}
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let argv = a.rest();
+            Cmd::DisplayPopup { close, close_on_exit, width, height, cwd, argv }
+        }
+        "pipe-pane" => {
+            let (mut target, mut toggle) = (None, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-o" => toggle = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-O" => {} // pane output into the command: the only direction
+                    "-I" => return Err("pipe-pane: -I (command output into the pane) is not supported".into()),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let command = a.rest().join(" ");
+            Cmd::PipePane { target, command: if command.is_empty() { None } else { Some(command) }, toggle }
+        }
+        "wait-for" => {
+            let (mut lock, mut unlock, mut signal) = (false, false, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-L" => lock = true,
+                    "-U" => unlock = true,
+                    "-S" => signal = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let channel = a.next().ok_or("wait-for: channel required")?.to_string();
+            a.none_left(n)?;
+            if [lock, unlock, signal].iter().filter(|x| **x).count() > 1 {
+                return Err("wait-for: -L, -S and -U are exclusive".into());
+            }
+            Cmd::WaitFor { channel, lock, unlock, signal }
         }
         "clock-mode" => {
             let mut target = None;
@@ -2093,7 +2360,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SetCwd { target, dir }
         }
         "capture-pane" => {
-            let (mut target, mut history) = (None, 0usize);
+            let (mut target, mut history, mut escapes) = (None, 0usize, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
@@ -2106,12 +2373,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                             }
                         };
                     }
-                    "-p" | "-e" | "-J" => {} // always printed, plain text
+                    "-e" => escapes = true,
+                    "-p" | "-J" => {} // always printed; wrapped lines stay split
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::CapturePane { target, history }
+            Cmd::CapturePane { target, history, escapes }
         }
         "source-file" => {
             let path = a.next().ok_or("source-file: path required")?.to_string();
@@ -2371,9 +2639,12 @@ mod tests {
 
     #[test]
     fn window_navigation_takes_a_session_and_rejects_junk() {
-        assert_eq!(p("next-window"), Cmd::NextWindow { target: None });
-        assert_eq!(p("next -t work"), Cmd::NextWindow { target: Some(Target::parse("work")) });
-        assert_eq!(p("prev -t work"), Cmd::PreviousWindow { target: Some(Target::parse("work")) });
+        assert_eq!(p("next-window"), Cmd::NextWindow { target: None, alert: false });
+        assert_eq!(p("next -t work"), Cmd::NextWindow { target: Some(Target::parse("work")), alert: false });
+        assert_eq!(p("prev -t work"), Cmd::PreviousWindow { target: Some(Target::parse("work")), alert: false });
+        assert_eq!(p("next-window -a"), Cmd::NextWindow { target: None, alert: true });
+        assert_eq!(p("previous-window -a").to_string(), "previous-window -a");
+        assert!(parse_line("last-window -a").is_err(), "last-window has no alert search");
         assert_eq!(p("last -t work"), Cmd::LastWindow { target: Some(Target::parse("work")) });
         assert_eq!(p("next-window -t work").to_string(), "next-window -t work");
         // Commands that take nothing say so instead of ignoring the argument.
@@ -2478,12 +2749,82 @@ mod tests {
             "rename-window \"my win\"",
             "copy-mode -u",
             "command-prompt -p (rename-window) -I \"#W\" \"rename-window -- %%\"",
+            "capture-pane -p -e -t w:1",
+            "select-layout -E -t w:1",
+            "choose-client",
+            "pipe-pane -o -t w:1 \"cat > log\"",
+            "pipe-pane",
+            "wait-for -S done",
+            "wait-for -L lock",
+            "wait-for chan",
+            "display-popup -E -w 50% -h 20 -d C:\\src pwsh.exe",
+            "display-popup -C",
+            "display-menu -T pane Split h \"split-window -h\" \"\" Kill x kill-pane",
+            "next-window -a",
+            "previous-window -a",
         ];
         for c in cmds {
             let parsed = p(c);
             let shown = parsed.to_string();
             assert_eq!(p(&shown), parsed, "roundtrip of {c:?} via {shown:?}");
         }
+    }
+
+    #[test]
+    fn parse_menus_pipes_and_waiting() {
+        // A menu is triples of name/key/command; an empty name on its own is
+        // a separator, as in tmux.
+        let Cmd::DisplayMenu { title, items } =
+            p("display-menu -T \"pane #P\" Split h \"split-window -h\" \"\" Kill x kill-pane")
+        else {
+            panic!("not a menu")
+        };
+        assert_eq!(title.as_deref(), Some("pane #P"));
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, "Split");
+        assert_eq!(items[0].key.as_deref(), Some("h"));
+        assert_eq!(
+            items[0].cmd.as_deref(),
+            Some(&Cmd::SplitWindow {
+                horizontal: true,
+                cwd: None,
+                target: None,
+                argv: Vec::new(),
+                detached: false,
+                before: false,
+                full: false,
+            })
+        );
+        assert!(items[1].cmd.is_none() && items[1].name.is_empty(), "the separator: {:?}", items[1]);
+        assert_eq!(items[2].name, "Kill");
+        // A half-written item is an error, not a silently dropped entry.
+        assert!(parse_line("display-menu Split h").is_err());
+        assert!(parse_line("display-menu").is_err());
+        // The nested command is parsed now, not when the key is pressed.
+        assert!(parse_line("display-menu Bad k frobnicate").is_err());
+
+        assert_eq!(
+            p("pipe-pane -o -t x cat"),
+            Cmd::PipePane { target: Some(Target::parse("x")), command: Some("cat".into()), toggle: true }
+        );
+        assert_eq!(p("pipe-pane"), Cmd::PipePane { target: None, command: None, toggle: false });
+        // Writing into a pane is not supported and says so.
+        assert!(parse_line("pipe-pane -I cat").unwrap_err().contains("not supported"));
+
+        assert_eq!(p("wait-for -S x"), Cmd::WaitFor { channel: "x".into(), lock: false, unlock: false, signal: true });
+        assert!(parse_line("wait-for").is_err());
+        assert!(parse_line("wait-for -L -U x").unwrap_err().contains("exclusive"));
+        assert!(parse_line("wait-for a b").is_err());
+
+        // Prefixes and aliases reach the new commands.
+        assert!(matches!(p("menu Kill x kill-pane"), Cmd::DisplayMenu { .. }));
+        assert!(matches!(p("popup -E pwsh.exe"), Cmd::DisplayPopup { close_on_exit: true, .. }));
+        assert!(matches!(p("pipep cat"), Cmd::PipePane { .. }));
+        assert!(matches!(p("wait x"), Cmd::WaitFor { .. }));
+        assert!(matches!(p("choose-c"), Cmd::ChooseClient));
+        // "display" alone is the message command, as in tmux.
+        assert!(matches!(p("display hi"), Cmd::DisplayMessage { .. }));
+        assert!(parse_line("displ hi").unwrap_err().contains("ambiguous"));
     }
 
     #[test]

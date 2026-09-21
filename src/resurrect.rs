@@ -3,8 +3,9 @@
 //! single session can be resumed by name.
 //!
 //! Saved: window names, the pane layout tree with sizes, each pane's start
-//! command and directory, the active window/pane and zoom. Not saved: screen
-//! contents and whatever the shells were doing.
+//! command and directory, the active window/pane and zoom, and the last
+//! `save-history` lines each pane had on screen. Not saved: what the programs
+//! themselves were doing, which no multiplexer can bring back.
 
 use crate::server::layout::Node;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,11 @@ pub const FORMAT_VERSION: u32 = 1;
 pub struct SavedPane {
     pub argv: Vec<String>,
     pub cwd: Option<String>,
+    /// What the pane had on screen and in its scrollback, so `resume` brings
+    /// the output back and not just the command (`save-history` lines).
+    /// Files written before this existed simply have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -176,7 +182,7 @@ mod tests {
     use super::*;
 
     fn sample() -> SavedFile {
-        let pane = |c: &str| SavedPane { argv: vec![c.into()], cwd: Some("C:\\src".into()) };
+        let pane = |c: &str| SavedPane { argv: vec![c.into()], cwd: Some("C:\\src".into()), history: Vec::new() };
         SavedFile::new(SavedSession {
             name: "main".into(),
             current: 1,
@@ -265,7 +271,7 @@ mod tests {
         let n = SavedNode::Split {
             horizontal: true,
             sizes: vec![1],
-            children: vec![SavedNode::Pane { pane: SavedPane { argv: vec![], cwd: None } }; 3],
+            children: vec![SavedNode::Pane { pane: SavedPane { argv: vec![], cwd: None, history: Vec::new() } }; 3],
         };
         match n.to_layout(&mut (1..)).unwrap() {
             Node::Split { sizes, .. } => assert_eq!(sizes, vec![1, 1, 1]),

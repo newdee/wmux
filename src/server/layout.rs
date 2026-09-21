@@ -281,6 +281,28 @@ impl Node {
         }
     }
 
+    /// Give every pane beside `id` the same size, keeping the rest of the
+    /// layout (tmux `select-layout -E`). Returns false if the pane is alone.
+    pub fn spread(&mut self, id: PaneId) -> bool {
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { children, sizes, .. } => {
+                if children.iter().any(|c| matches!(c, Node::Leaf(i) if *i == id)) {
+                    let total: u32 = sizes.iter().map(|s| *s as u32).sum();
+                    let each = (total / sizes.len() as u32).max(1) as u16;
+                    let last = sizes.len() - 1;
+                    for s in sizes.iter_mut() {
+                        *s = each;
+                    }
+                    // Rounding goes to the last pane, so the total is kept.
+                    sizes[last] = (total.saturating_sub(each as u32 * last as u32)).max(1) as u16;
+                    return true;
+                }
+                children.iter_mut().find(|c| c.contains(id)).is_some_and(|c| c.spread(id))
+            }
+        }
+    }
+
     /// Move the edge of `id` in direction `dir` by `amount` cells (tmux
     /// `resize-pane` semantics). Returns false if nothing could change.
     pub fn resize(&mut self, id: PaneId, dir: Dir, amount: u16) -> bool {
@@ -438,6 +460,41 @@ mod tests {
 
     fn rect_of(r: &[(PaneId, Rect)], id: PaneId) -> Rect {
         r.iter().find(|(i, _)| *i == id).unwrap().1
+    }
+
+    #[test]
+    fn spread_evens_out_the_panes_beside_one() {
+        // Three panes side by side, dragged out of shape.
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(2, true, 3, rect_of(&r, 2));
+        let _ = rects(&mut n, 80, 24);
+        assert!(n.resize(1, Dir::Right, 12));
+        let before: Vec<u16> = rects(&mut n, 80, 24).iter().map(|(_, r)| r.w).collect();
+        assert!(before[0] > before[1] + 10, "lopsided to start with: {before:?}");
+        assert!(n.spread(2), "the pane has panes beside it");
+        let after: Vec<u16> = rects(&mut n, 80, 24).iter().map(|(_, r)| r.w).collect();
+        assert!(after.iter().max().unwrap() - after.iter().min().unwrap() <= 1, "evened out: {after:?}");
+        assert_eq!(after.iter().sum::<u16>(), before.iter().sum::<u16>(), "the same total width");
+
+        // Only the split the pane is in changes; the rest of the tree stands.
+        let mut nested = Node::Split {
+            horizontal: true,
+            sizes: vec![60, 19],
+            children: vec![
+                Node::Leaf(1),
+                Node::Split { horizontal: false, sizes: vec![20, 3], children: vec![Node::Leaf(2), Node::Leaf(3)] },
+            ],
+        };
+        assert!(nested.spread(3));
+        let r = rects(&mut nested, 80, 24);
+        assert_eq!(rect_of(&r, 1).w, 60, "the outer split is untouched");
+        assert!(rect_of(&r, 2).h.abs_diff(rect_of(&r, 3).h) <= 1, "{r:?}");
+        // A pane with nothing beside it says so.
+        assert!(!Node::Leaf(1).spread(1));
+        assert!(!nested.spread(99), "a pane that is not there");
     }
 
     #[test]

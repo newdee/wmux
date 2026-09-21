@@ -673,3 +673,83 @@ copy mode 的按键，逐条标注 wmux 是「有 / 部分 / 待做 / 明确不�
 第 3、4、5 轮连续零发现，验收通过。本次新增 27 条命令、34 个默认绑定、copy mode 一整套 vi 动作，
 修复 2 个产品缺陷（respawn 的代次竞态、`select-pane -t` 的目标解析），新增测试 6 项；
 最终 109 项自动化测试。
+
+# 第十二次验收（2026-09-21）— 排队中的 tmux 功能 + 后台任务与持久化
+
+本次做的：把 `docs/tmux-parity.md` 里排队的功能全部做完——`send-keys -X`、
+`display-menu` / `display-popup`、`choose-client`、`pipe-pane`、`wait-for`、
+`select-layout -E`、跨 session 的 `move-window`、`capture-pane -e`、
+告警标记（`monitor-activity` / `monitor-bell` / `monitor-silence` /
+`visual-bell` / `visual-activity`、`#` `!` `~` 三个 `#F` 标记、`M-n` / `M-p`），
+外加用户直接问到的两件事：`remain-on-exit`（程序退出后 pane 留着）和
+`save-history`（每个 pane 的输出随 session 存盘、`resume` 时贴回屏幕）。
+同时把 copy mode 的 `/` 和 `?` 方向改成和 tmux 一致（`/` 往新、`?` 往旧）。
+
+## 第 1 轮（不计数）— 视角：静态一致性
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `Pipe.dropped` / `Pipe.command` 只写不读：pipe-pane 的下游跟不上时会**静默丢输出** | `pipe_write` 在第一次丢字节时返回命令名，服务端写 `server.log` 并进 `show-messages`；缓冲区从 256 降到 64 块（≤4 MiB） |
+| 2 | 两处 `messages.push_back` 没有裁剪，`show-messages` 可无界增长 | 统一走新的 `note_message`，固定保留最近 100 条 |
+
+## 第 2 轮（不计数）— 视角：机制通路（配置项左右都拨一次）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 没有客户端 attach 时，窗口变成当前窗口后**仍留着 `#` 标记**（`0: cmd*#`），因为清除只发生在渲染路径 | 清除挪进每帧都跑的 `sweep_alerts`：不变量「session 的当前窗口永远没有告警标记」只有一处执法；补 e2e（detached session 也验证） |
+
+## 第 3 轮（不计数）— 视角：边界与退化输入
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 脚本里 `wmux display-popup -C` 只关「自己这个 CLI 客户端」的弹窗（等于什么都没干） | 调用方自己没有弹窗时，关掉该 session 上所有客户端的弹窗；新增 e2e |
+
+## 第 4 轮（不计数）— 视角：代码正确性（错误路径 / 资源 / 并发）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 弹窗吞掉了按键的 key-up（`swallow_up`），与普通 pane 的输入路径不一致 | 只有「已结束的弹窗被任意键关掉」那次才吞 key-up；其余 down/up 都照常转发 |
+| 2 | 跨 session 的 `move-window` 用下标记录当前窗口：窗口插到前面时，**目标 session 正在看的窗口被换掉**；源 session 同理 | 两边都按窗口 id 记住「原来在看哪个」，搬完再按 id 找回下标；新增 e2e，并把修复临时撤掉验证过该测试会失败（`b still looks at the same window: 0: travels`） |
+| 3 | 弹窗只在客户端 resize 时重新定位，`set -g status off/on` 改变窗口区域后会画歪 | `refit_popup` 改成每帧渲染前跑一次（`Pane::resize` 本身对尺寸不变是空操作） |
+| 4 | `pipe_to` 启动失败时旧 pipe 还在跑；`self.clients[&cid]` 直接索引会 panic | 先停旧 pipe 再启动新的；索引改成守卫取值 |
+
+## 第 5 轮（不计数）— 视角：静态一致性（文档 claim vs 代码）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 新命令只在 `--help` 和 `list-commands` 里出现，两个 README 都没提 `choose-client` / `display-menu` / `wait-for`；对照表没有 options 一节 | 两个 README 加「脚本常用命令」小节（6 条）；对照表补 Options 一节（29 项逐条对齐 `show-options`） |
+
+## 第 6 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据（`target/release/wmux.exe`，8 项全部符合预期）：
+1. 无任何客户端 attach 时 `send-keys -t one:0 -X search-backward/begin-selection/next-word-end/copy-selection` → `show-buffer` = `alpha`；
+2. `pipe-pane` 把 pane 输出写进文件（含 `piped-line`），空命令停止后文件落盘；
+3. 另一个进程 `wait-for chan` 阻塞，`wait-for -S chan` 后返回 `woken:0`；
+4. `move-window -s one:1 -t two:1` 后 `two = 0: cmd* | 1: mover`（当前窗口未被顶掉）；
+5. `select-layout -E`：`[60x23] / [19x23]` → `[39x23] / [40x23]`；
+6. `capture-pane -p` 不含 ESC，`-e` 含 `ESC[31m`；
+7. `remain-on-exit on` 时 `cmd /c exit 7` 的窗口仍在，`show-messages` 有 `pane %10 (cmd) exited with 7`；
+8. `choose-client` / `display-menu` / `display-popup` 从脚本调用时 exit=1 并说明 `client not attached`。
+同轮 `cargo test`：126 项全绿（lib 86 / console 4 / e2e 36）。
+
+## 第 7 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：连续 3 次 `cargo test`，126 项测试名+状态指纹均为 `6ECB65FD1BC6C558`；
+三个全新 server 的 `list-keys` 各 87 行，指纹均为 `F21C2959A7E1855A`
+（含两条 282 字符的 `display-menu` 绑定，说明菜单定义的 Display→parse 往返稳定）。
+
+## 第 8 轮（计数 3/3，无发现）— 视角：静态一致性
+
+数据：7 个新配置项 set→`show-options -gv` 全部一致，非法值被拒且旧值保留；
+`list-commands` 85 条命令逐条调用，没有一条落到 `unknown command`；
+9 个新功能关键词在 README.md / README.zh-CN.md / docs/tmux-parity.md 三处均有；
+对照表 `todo` 行数 0；`Window::flags` 的 7 个标记字符齐全；
+`show-options` 的 29 个选项名在对照表里全部有条目；clippy 与 `cargo fmt --check` 均无输出。
+
+## 结论（第十二次验收）
+
+第 6、7、8 轮连续零发现，验收通过。本次补齐 tmux 3.5 命令表里最后的空缺
+（`display-popup` 之后对照表已无 `todo` 行），新增 5 个告警类选项和 2 个持久化选项，
+修复 8 个自测中发现的缺陷（其中「跨 session move-window 顶掉当前窗口」「弹窗吞 key-up」
+「pipe-pane 静默丢输出」三个会被用户直接撞上）；测试从 109 项增加到 126 项
+（lib 86 / console 4 / e2e 36）。

@@ -18,9 +18,9 @@ Status: **yes** = works, **part** = works with a documented limit,
 | attach-session | yes | |
 | bind-key | yes | `-n`, `-r`, `-T root/prefix`; no other key tables |
 | break-pane | yes | `-t`; no `-W` |
-| capture-pane | part | `-p`, `-S`; no `-e` escapes, no buffer output |
+| capture-pane | part | `-p`, `-S`, `-e`; no buffer output (`-b`) |
 | choose-buffer | yes | `prefix =`; Enter pastes |
-| choose-client | todo | `list-clients` covers the looking part |
+| choose-client | yes | `prefix D`; Enter detaches the client picked |
 | choose-tree | part | `-s`, `-w`; no tagging, filter or per-session collapse |
 | clear-history | yes | |
 | clear-prompt-history | no | wmux keeps no prompt history |
@@ -31,10 +31,10 @@ Status: **yes** = works, **part** = works with a documented limit,
 | customize-mode | no | a whole options UI; `show-options` covers the need |
 | delete-buffer | yes | `prefix -` |
 | detach-client | yes | `-a`, `-s`, `-t` |
-| display-menu | todo | |
+| display-menu | part | `-T` title, name/key/command triples, `""` separators; always drawn over the window (no `-x`/`-y`) |
 | display-message | yes | `-p`, formats |
 | display-panes | yes | `prefix q`, digit selects |
-| display-popup | todo | |
+| display-popup | part | `-E`, `-C`, `-w`, `-h`, `-d`; always centred, and the prefix key stays wmux's |
 | find-window | yes | `prefix f`; one hit jumps, several open the picker |
 | has-session | yes | |
 | if-shell | yes | `-F` formats and shell exit status; `-b` runs inline |
@@ -50,13 +50,13 @@ Status: **yes** = works, **part** = works with a documented limit,
 | list-sessions / list-windows | yes | |
 | load-buffer / save-buffer | yes | |
 | lock-client / lock-server / lock-session | no | no equivalent of a Unix screen lock here |
-| move-window | part | inside one session |
+| move-window | yes | inside a session and across sessions; a free index is taken as given |
 | new-session | yes | `-s`, `-n`, `-c`, `-d`, `-A` |
 | new-window | yes | `-n`, `-c`, `-d`, `-t` |
 | next-layout / previous-layout | yes | also `select-layout -n` / `-p`, `prefix Space` |
-| next-window / previous-window | yes | `-t`; `-a` (alert) accepted, ignored |
+| next-window / previous-window | yes | `-t`, `-a` (next window with an alert) |
 | paste-buffer | yes | `-b`, `-p`, `-t`; no `-s` separator |
-| pipe-pane | todo | |
+| pipe-pane | part | `-o`, `-t`, a command fed the pane output; no `-I` the other way |
 | refresh-client | part | redraws; no `-U`/`-D` viewport moves, no `-C` size |
 | rename-session / rename-window | yes | |
 | resize-pane | yes | `-L/-R/-U/-D`, `-x`, `-y`, `-Z`, `-t` |
@@ -64,10 +64,10 @@ Status: **yes** = works, **part** = works with a documented limit,
 | respawn-pane / respawn-window | yes | `-k`, `-t`, a command to run |
 | rotate-window | yes | `prefix C-o`, `M-o` |
 | run-shell | yes | `-b`, `-t` |
-| select-layout | part | five named layouts; no layout strings, no `-E` |
+| select-layout | part | five named layouts and `-E`; no layout strings |
 | select-pane | yes | direction, `next`/`last`/index, `-T`, `-m`, `-M` |
 | select-window | yes | index, name, `+`, `-`, `!` |
-| send-keys | part | key names and `-l`; no `-H` (hex), no `-X` (copy commands) |
+| send-keys | part | key names, `-l`, `-X` copy commands; no `-H` (hex) |
 | send-prefix | yes | |
 | server-access | no | single user by design; the pipe is owner-only |
 | set-buffer / show-buffer | yes | `-a`, `-b` |
@@ -84,7 +84,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | swap-window | part | inside one session |
 | switch-client | yes | `-n`, `-p`, `-l`, `-t` |
 | unbind-key | yes | |
-| wait-for | todo | |
+| wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | **wmux only** | | `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
@@ -113,8 +113,8 @@ tmux's table, with what wmux does today.
 | `;` | last-pane | yes |
 | `=` | choose-buffer | yes |
 | `?` | list-keys | yes |
-| `D` | choose-client | todo |
-| `E` | select-layout -E (spread) | todo |
+| `D` | choose-client | yes |
+| `E` | select-layout -E (spread) | yes |
 | `L` | switch-client -l | wmux uses `L` to resize; `:switch-client -l` works |
 | `M` / `m` | select-pane -M / -m | yes |
 | `T` | pane title prompt | yes |
@@ -137,10 +137,10 @@ tmux's table, with what wmux does today.
 | arrows | select-pane (repeat) | yes |
 | `M-1`..`M-5` | select-layout presets | yes |
 | `M-6` / `M-7` | mirrored layouts | no (master only) |
-| `M-n` / `M-p` | next/previous window with alert | no (wmux has no alerts yet) |
+| `M-n` / `M-p` | next/previous window with alert | yes |
 | `C-`/`M-` arrows | resize-pane | yes |
 | `S-`arrows | refresh-client -U/-D/-L/-R | no (no per-client viewport) |
-| `<` / `>` | display-menu | todo |
+| `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 wmux adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
 (save / restore) and `S` (synchronize-panes) on top of that table.
@@ -155,14 +155,58 @@ Selecting and copying: `Space` or `v` starts a selection, `C-v` makes it a
 rectangle, `Enter` or `y` copies to both a new paste buffer and the Windows
 clipboard, `q` or Escape leaves.
 
-Searching: `/` back, `?` forward, `n` and `N` to repeat, case-insensitive.
+Searching: `/` forward (towards the newest line), `?` back through the scrollback, `n` and `N` to repeat, case-insensitive.
 
-Missing: `send-keys -X` (so a binding can drive copy mode), `copy-pipe`,
-and the other tmux copy commands (`next-space`, `jump-to-forward`, ...).
+`send-keys -X <command>` drives all of it from a script or a binding:
+`cursor-up/-down/-left/-right`, `next-word`, `next-word-end`,
+`previous-word` (and the `-space` forms), `start-of-line`,
+`back-to-indentation`, `end-of-line`, `top-line`, `middle-line`,
+`bottom-line`, `previous-paragraph`, `next-paragraph`, `history-top`,
+`history-bottom`, `page-up`, `page-down`, `halfpage-up`, `halfpage-down`,
+`begin-selection`, `rectangle-toggle`, `copy-selection`, `search-forward`,
+`search-backward`, `search-again`, `search-reverse` and `cancel`.
+
+Missing: `copy-pipe` to a command (`copy-pipe-and-cancel` copies as
+`copy-selection` does), and the jump commands (`jump-to-forward`, `f`/`t`).
+
+## Options
+
+`show-options` prints what wmux implements; anything else common in a
+`.tmux.conf` is accepted and ignored so an existing config still loads.
+The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
+`mouse`, `history-limit`, `status`, `status-position`, `status-style`,
+`status-left`, `status-right`, `status-left-length`,
+`status-right-length`, `status-interval`, `window-status-format`,
+`window-status-current-format`, `pane-border-style`,
+`pane-active-border-style`, `base-index`, `pane-base-index`,
+`display-time`, `repeat-time`, `remain-on-exit`, `monitor-activity`,
+`monitor-bell`, `monitor-silence`, `visual-bell`, `visual-activity`.
+Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
+`terminal-overrides`, `focus-events`, `set-clipboard`, `renumber-windows`,
+`allow-rename`, `automatic-rename`, `window-status-current-style`,
+`mode-keys`, `aggressive-resize`, `set-titles`, `set-titles-string`,
+`history-file`. wmux only: `save-history` (lines of each pane written into
+the session file), `autosave`, `restore-on-start`, `sessions-dir`,
+`plugin-path`, and `@user` options.
+
+Not a global here: tmux's per-window and per-pane option scopes. `set -w`
+and `set -p` are accepted and set the option for the server.
+
+## Alerts
+
+`monitor-activity`, `monitor-bell` (on by default) and `monitor-silence`
+flag a window nobody is looking at: `#` for output, `!` for a bell, `~` for
+silence, shown by `#F` in the status line and by `list-windows`. Looking at
+the window clears its flags; `prefix M-n` / `M-p` walk to the next window
+that has one. `visual-bell` / `visual-activity` put the alert on the status
+line instead of ringing the terminal. Not there: `bell-action`,
+`activity-action` and `silence-action` (accepted and ignored), and the
+`alert-*` hooks.
 
 ## Still to do
 
-In rough order of how much they would be missed: `send-keys -X`,
-`display-menu` and `display-popup`, `choose-client`, `pipe-pane`,
-`wait-for`, `select-layout -E`, cross-session `move-window`, `capture-pane
--e`, and the alert flags (`monitor-activity`, `M-n`, `M-p`).
+Nothing from tmux 3.5's command table is outstanding; what is left are the
+limits marked **part** above. The largest of them: no per-client viewport
+(`refresh-client -U`/`-D`, `S-`arrows), no layout strings for
+`select-layout`, `choose-tree` without tagging or a filter, `pipe-pane`
+without `-I`, and `display-popup` without placement flags.

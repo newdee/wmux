@@ -40,8 +40,19 @@ set -g status-left "#[bold][#S] "
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -Command (Get-Date).ToString('HH:mm'))#[default] #H"
 set -g status-interval 15
 
+# tell me about the windows I am not looking at: # output, ! bell, ~ silence
+set -g monitor-activity on
+set -g monitor-bell on
+# set -g monitor-silence 60       # flag a window that has said nothing for 60s
+# set -g visual-bell on           # status-line message instead of a real bell
+# prefix M-n / M-p walk to the next window with a flag.
+
+# keep a pane whose program exited, so a job that died leaves its output
+# set -g remain-on-exit on
+
 # resume after a reboot: sessions autosave; `wmux resume [name]` brings them back
 set -g autosave on
+set -g save-history 500           # lines of each pane restored with the session
 # set -g restore-on-start on      # a fresh server restores everything by itself
 # set -g sessions-dir ~/.wmux/sessions
 

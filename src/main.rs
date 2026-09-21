@@ -18,13 +18,16 @@ Windows / panes (from inside a session, or with -t):
   swap-window -s A -t B   move-window -s A -t B   select-layout [-n|-p] [name]
   split-window (splitw) [-h|-v] [-c dir] [command...]  kill-pane   select-pane -L|-R|-U|-D
   resize-pane -L|-R|-U|-D [n] | -Z   swap-pane -U|-D   break-pane   list-panes
-  send-keys [-t target] keys...   capture-pane -p [-S -N]   copy-mode   list-keys
-  join-pane [-h|-v] -s A -t B   rotate-window   respawn-pane [-k]   display-panes
+  send-keys [-t target] keys... | -X copy-command   capture-pane -p [-e] [-S -N]   copy-mode
+  join-pane [-h|-v] -s A -t B   rotate-window   respawn-pane [-k]   display-panes   list-keys
   choose-tree [-s|-w]  (prefix s / w: pick a session / window with j k g G Enter q)
+  pipe-pane [-o] [-t target] [command]   (no command stops the pipe)
 Paste buffers:  set-buffer   list-buffers   show-buffer   delete-buffer   choose-buffer
   load-buffer file   save-buffer file   paste-buffer [-b name]
 Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   find-window
-  set-environment name value   show-environment   refresh-client   select-layout [-n|-p]
+  set-environment name value   show-environment   refresh-client   select-layout [-n|-p|-E]
+  choose-client (prefix D)   display-menu [-T title] name key command ...   (prefix > / <)
+  display-popup [-E] [-C] [-w W] [-h H] [-d dir] [command...]   wait-for [-L|-U|-S] channel
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)

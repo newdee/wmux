@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use wmux::ipc::{ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame};
-use wmux::keys::{LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_RETURN};
+use wmux::keys::{LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_RETURN};
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -1020,7 +1020,7 @@ async fn copy_mode_vi_motions_and_modes() {
 
     // Search puts the cursor on a known word; w and e then walk from there.
     c.prefix('[').await;
-    c.type_str("/alpha beta").await;
+    c.type_str("?alpha beta").await;
     c.enter().await;
     c.type_str("v").await; // start a selection at the match
     c.type_str("e").await; // to the end of "alpha"
@@ -1030,7 +1030,7 @@ async fn copy_mode_vi_motions_and_modes() {
     assert_eq!(out.trim_end(), "alpha", "e stops at the end of the word: {out:?}");
 
     c.prefix('[').await;
-    c.type_str("/alpha beta").await;
+    c.type_str("?alpha beta").await;
     c.enter().await;
     c.type_str("ww").await; // over "alpha" and "beta" to "gamma"
     c.type_str("v").await;
@@ -1039,7 +1039,7 @@ async fn copy_mode_vi_motions_and_modes() {
     let (_, out, _) = h.cli(&["show-buffer"]).await;
     assert_eq!(out.trim_end(), "gamma", "w moves a word at a time: {out:?}");
     c.prefix('[').await;
-    c.type_str("/gamma").await;
+    c.type_str("?gamma").await;
     c.enter().await;
     c.type_str("b").await; // back one word, to "beta"
     c.type_str("v").await;
@@ -1389,16 +1389,17 @@ async fn copy_mode_search_finds_scrolled_off_lines() {
     c.wait_for("output", |s| s.contents().contains("marker-60")).await;
     assert!(!c.text().contains("marker-3 "), "line 3 has scrolled away: {}", c.text());
 
-    // prefix [ enters copy mode, / searches back through the scrollback.
+    // prefix [ enters copy mode; ? searches back through the scrollback, as
+    // tmux does (/ looks the other way, towards the newest line).
     c.prefix('[').await;
-    c.type_str("/marker-3 ").await;
+    c.type_str("?marker-3 ").await;
     c.enter().await;
     c.wait_for("found", |s| s.contents().contains("marker-3 ")).await;
 
     // n repeats the search further back; N turns around.
     c.type_str("n").await;
     c.wait_for("earlier hit", |s| s.contents().contains("marker-3 ")).await;
-    c.type_str("/nothing-like-this").await;
+    c.type_str("?nothing-like-this").await;
     c.enter().await;
     c.wait_for("miss reported", |s| s.contents().contains("no match: nothing-like-this")).await;
     // Escape leaves copy mode; the pane is still usable.
@@ -1556,6 +1557,515 @@ async fn bad_protocol_version_is_rejected() {
     // Server without sessions keeps running; kill it explicitly.
     let (code, _, _) = h.cli(&["kill-server"]).await;
     assert_eq!(code, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_keys_dash_x_drives_copy_mode() {
+    let h = Harness::start("sendx").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "x"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("x:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["send-keys", "-t", "x:0", "echo alpha beta gamma", "Enter"]).await;
+    h.wait_capture("x:0", "echo output", |t| t.matches("alpha beta gamma").count() >= 2).await;
+
+    // The copy-mode commands work on the pane named by -t, with no client
+    // attached anywhere: search back to the word, select it, copy it.
+    for argv in [
+        vec!["send-keys", "-t", "x:0", "-X", "search-backward", "alpha"],
+        vec!["send-keys", "-t", "x:0", "-X", "begin-selection"],
+        vec!["send-keys", "-t", "x:0", "-X", "next-word-end"],
+        vec!["send-keys", "-t", "x:0", "-X", "copy-selection"],
+    ] {
+        let (code, _, err) = h.cli(&argv).await;
+        assert_eq!(code, 0, "{argv:?}: {err}");
+    }
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert_eq!(out.trim_end(), "alpha", "send-keys -X copied the searched word: {out:?}");
+
+    // An unknown copy command is refused instead of being ignored.
+    let (code, _, err) = h.cli(&["send-keys", "-t", "x:0", "-X", "fly-to-the-moon"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown command 'fly-to-the-moon'"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
+    let h = Harness::start("remain").await;
+    let (code, _, err) = h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
+    assert_eq!(code, 0, "{err}");
+    // A second session keeps the server alive while "r" is killed below.
+    h.cli(&["new", "-d", "-s", "keeper"]).await;
+    h.cli(&["new", "-d", "-s", "r"]).await;
+    h.wait_capture("r:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["send-keys", "-t", "r:0", "echo keepme-42", "Enter"]).await;
+    h.wait_capture("r:0", "output", |t| t.contains("keepme-42")).await;
+
+    // save-history: the pane's text goes into the saved file...
+    let (code, _, err) = h.cli(&["save-session", "-t", "r"]).await;
+    assert_eq!(code, 0, "{err}");
+    let file = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .find(|t| t.contains("\"name\": \"r\""))
+        .expect("a saved file for r");
+    assert!(file.contains("keepme-42"), "the pane output is saved: {file}");
+
+    // ...and comes back on the screen when the session is resumed.
+    h.cli(&["kill-session", "-t", "r"]).await;
+    let (code, _, err) = h.cli(&["resume", "r"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("r:0", "the restored output", |t| t.contains("keepme-42")).await;
+    h.wait_capture("r:0", "the restored shell", |t| t.contains("wmux>")).await;
+
+    // The shell exits; with remain-on-exit the pane, the window and the
+    // session all stay, and the pane says what happened.
+    h.cli(&["send-keys", "-t", "r:0", "exit", "Enter"]).await;
+    let pane = h.wait_capture("r:0", "the exit note", |t| t.contains("exited with")).await;
+    assert!(pane.contains("keepme-42"), "the output is still there: {pane}");
+    let (code, out, _) = h.cli(&["ls"]).await;
+    assert_eq!(code, 0);
+    assert!(out.lines().any(|l| l.starts_with("r: 1 windows")), "the session outlives its shell: {out}");
+    let (_, msgs, _) = h.cli(&["show-messages"]).await;
+    assert!(msgs.contains("exited with"), "the exit is logged: {msgs}");
+
+    // respawn-pane starts the shell again in the same pane.
+    let (code, _, err) = h.cli(&["respawn-pane", "-t", "r:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("r:0", "a fresh prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn move_window_between_sessions() {
+    let h = Harness::start("movew").await;
+    h.cli(&["new", "-d", "-s", "a"]).await;
+    h.cli(&["new", "-d", "-s", "b"]).await;
+    h.cli(&["new-window", "-d", "-t", "a", "-n", "travels"]).await;
+    let (_, out, _) = h.cli(&["list-windows", "-t", "a"]).await;
+    assert_eq!(out.lines().count(), 2, "{out}");
+
+    // b is looking at its only window; the arrival must not steal that.
+    h.cli(&["new-window", "-t", "b", "-n", "watched"]).await;
+    let (_, before, _) = h.cli(&["list-windows", "-t", "b"]).await;
+    assert!(before.lines().any(|l| l.contains("watched*")), "{before}");
+
+    let (code, _, err) = h.cli(&["move-window", "-s", "a:1", "-t", "b:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, a, _) = h.cli(&["list-windows", "-t", "a"]).await;
+    assert_eq!(a.lines().count(), 1, "the window left a: {a}");
+    let (_, b, _) = h.cli(&["list-windows", "-t", "b"]).await;
+    assert_eq!(b.lines().count(), 3, "and arrived in b: {b}");
+    assert!(b.lines().next().unwrap().contains("travels"), "at the index asked for: {b}");
+    assert!(b.lines().any(|l| l.contains("watched*")), "b still looks at the same window: {b}");
+    assert!(!b.lines().next().unwrap().contains('*'), "the newcomer is not made current: {b}");
+    h.cli(&["kill-window", "-t", "b:2"]).await;
+
+    // Moving the last window of a session takes the session with it.
+    let (code, _, err) = h.cli(&["move-window", "-s", "a:0", "-t", "b:2"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["ls"]).await;
+    assert_eq!(out.lines().count(), 1, "only b is left: {out}");
+    assert!(out.starts_with("b: 3 windows"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_client_detaches_the_one_picked() {
+    let h = Harness::start("chooseclient").await;
+    let mut a = h.connect().await;
+    a.attach(&["new", "-s", "c"]).await;
+    a.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    let mut b = h.connect().await;
+    b.attach(&["attach", "-t", "c"]).await;
+    b.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+
+    a.prefix('D').await;
+    a.wait_for("client list", |s| {
+        let t = s.contents();
+        t.contains("[1/2] j/k move") && t.matches("client-").count() == 2
+    })
+    .await;
+    // The first line is this client; j moves to the other one and Enter
+    // detaches it, leaving us attached.
+    a.type_str("j").await;
+    a.wait_for("second client", |s| s.contents().contains("[2/2]")).await;
+    a.enter().await;
+    assert_eq!(b.wait_detached().await, "detached");
+    a.wait_for("picker gone", |s| !s.contents().contains("j/k move")).await;
+    let (_, out, _) = h.cli(&["list-clients"]).await;
+    assert_eq!(out.lines().count(), 1, "one client left: {out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pipe_pane_copies_pane_output_into_a_command() {
+    let h = Harness::start("pipe").await;
+    h.cli(&["new", "-d", "-s", "p"]).await;
+    h.wait_capture("p:0", "shell prompt", |t| t.contains("wmux>")).await;
+    let out_file = std::env::temp_dir().join(format!("wmux-pipe-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&out_file);
+    let cmd = format!("$input | Set-Content -Path '{}'", out_file.display());
+    let (code, _, err) = h.cli(&["pipe-pane", "-t", "p:0", &cmd]).await;
+    assert_eq!(code, 0, "{err}");
+
+    h.cli(&["send-keys", "-t", "p:0", "echo piped-hello", "Enter"]).await;
+    h.wait_capture("p:0", "output", |t| t.contains("piped-hello")).await;
+    // No command stops the pipe, which closes the command's input and makes
+    // it write the file.
+    let (code, _, err) = h.cli(&["pipe-pane", "-t", "p:0"]).await;
+    assert_eq!(code, 0, "{err}");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if std::fs::read_to_string(&out_file).is_ok_and(|t| t.contains("piped-hello")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "pipe-pane never wrote {}", out_file.display());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let _ = std::fs::remove_file(&out_file);
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_for_channels_signal_and_lock() {
+    let h = Harness::start("waitfor").await;
+    // A client waiting on a channel gets its answer when another signals it.
+    let mut w = h.connect().await;
+    w.command(&["wait-for", "chan"], false).await;
+    let (code, _, err) = h.cli(&["wait-for", "-S", "chan"]).await;
+    assert_eq!(code, 0, "{err}");
+    match w.next().await {
+        ServerMsg::Done { code } => assert_eq!(code, 0),
+        other => panic!("waiting client: {other:?}"),
+    }
+
+    // A signal with nobody waiting is remembered for the next waiter.
+    h.cli(&["wait-for", "-S", "later"]).await;
+    let (code, _, err) = h.cli(&["wait-for", "later"]).await;
+    assert_eq!(code, 0, "a remembered signal returns at once: {err}");
+
+    // Lock, queue behind it, hand it over.
+    let (code, _, err) = h.cli(&["wait-for", "-L", "mutex"]).await;
+    assert_eq!(code, 0, "{err}");
+    let mut l = h.connect().await;
+    l.command(&["wait-for", "-L", "mutex"], false).await;
+    let (code, _, err) = h.cli(&["wait-for", "-U", "mutex"]).await;
+    assert_eq!(code, 0, "{err}");
+    match l.next().await {
+        ServerMsg::Done { code } => assert_eq!(code, 0),
+        other => panic!("locker: {other:?}"),
+    }
+    // Unlocking a channel nobody holds says so.
+    let (code, _, err) = h.cli(&["wait-for", "-U", "free"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("not locked"), "{err}");
+    let (code, _, err) = h.cli(&["wait-for", "-L", "-S", "x"]).await;
+    assert_eq!(code, 1, "exclusive flags are refused: {err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn display_menu_runs_an_entry_by_key_and_by_enter() {
+    let h = Harness::start("menu").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "m"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+
+    // prefix > is the pane menu; `h` splits the window horizontally.
+    c.prefix('>').await;
+    c.wait_for("menu", |s| s.contents().contains("(h) Split horizontally")).await;
+    let text = c.text();
+    assert!(text.contains("pane 0"), "the title is shown: {text}");
+    assert!(text.contains("(x) Kill"), "{text}");
+    c.type_str("h").await;
+    c.wait_for("two panes", |s| s.contents().matches("wmux>").count() >= 2).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "m:0"]).await;
+    assert_eq!(out.lines().count(), 2, "{out}");
+
+    // G lands on the last entry that can be picked (the separators are
+    // skipped), and Enter runs it: kill-pane leaves one pane.
+    c.prefix('>').await;
+    c.wait_for("menu again", |s| s.contents().contains("(h) Split horizontally")).await;
+    c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
+    c.enter().await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "m:0"]).await;
+        if out.lines().count() == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Enter on the last entry did not kill a pane: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Escape closes a menu without running anything.
+    c.prefix('>').await;
+    c.wait_for("menu", |s| s.contents().contains("(h) Split horizontally")).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("menu gone", |s| !s.contents().contains("Split horizontally")).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "m:0"]).await;
+    assert_eq!(out.lines().count(), 1, "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn display_popup_takes_the_keys_and_closes_with_its_command() {
+    let h = Harness::start("popup").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "pop"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+
+    c.prefix(':').await;
+    c.type_str("display-popup -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.enter().await;
+    c.wait_for("popup", |s| s.contents().contains("pip>")).await;
+    assert!(c.text().contains('┌'), "the popup has a border: {}", c.text());
+
+    // Keys go to the popup's program, not to the pane behind it.
+    c.type_str("echo inside-popup").await;
+    c.enter().await;
+    c.wait_for("popup output", |s| s.contents().contains("inside-popup")).await;
+    let pane = h.cli(&["capture-pane", "-p", "-t", "pop:0"]).await.1;
+    assert!(!pane.contains("inside-popup"), "the pane behind is untouched: {pane}");
+
+    // -E: the box goes away when the command does.
+    c.type_str("exit").await;
+    c.enter().await;
+    c.wait_for("popup closed", |s| !s.contents().contains("pip>")).await;
+    // The pane behind still takes keys afterwards.
+    c.type_str("echo after-popup").await;
+    c.enter().await;
+    h.wait_capture("pop:0", "the echo after the popup", |t| t.contains("after-popup")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_flag_background_windows() {
+    let h = Harness::start("alerts").await;
+    let (code, _, err) = h.cli(&["set", "-g", "monitor-activity", "on"]).await;
+    assert_eq!(code, 0, "{err}");
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "al"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.prefix('c').await;
+    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    h.wait_capture("al:1", "second shell", |t| t.contains("wmux>")).await;
+
+    // Output in the window nobody is looking at raises the activity flag.
+    h.cli(&["send-keys", "-t", "al:0", "echo background-noise", "Enter"]).await;
+    // The flag shows up in the status line and in list-windows, after the
+    // "last window" mark, as tmux orders them.
+    c.wait_for("activity flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd-#")).await;
+    let (_, out, _) = h.cli(&["list-windows", "-t", "al"]).await;
+    assert!(out.lines().next().is_some_and(|l| l.contains("cmd-#")), "{out}");
+
+    // prefix M-n goes to the window with the alert; looking at it clears it.
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    c.key(b'N' as u16, 'n', LEFT_ALT_PRESSED).await;
+    c.wait_for("switched and cleared", |s| {
+        let status = s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
+        status.contains("0:cmd*") && !status.contains("0:cmd#")
+    })
+    .await;
+    // With no alert left, the key says so instead of moving.
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    c.key(b'N' as u16, 'n', LEFT_ALT_PRESSED).await;
+    c.wait_for("no alert message", |s| s.contents().contains("no window with an alert")).await;
+
+    // The same in a session nobody is attached to: the flag goes up on the
+    // background window and comes down when that window becomes current,
+    // with no client to do the looking.
+    h.cli(&["new", "-d", "-s", "far"]).await;
+    h.cli(&["new-window", "-t", "far"]).await;
+    h.wait_capture("far:1", "second shell", |t| t.contains("wmux>")).await;
+    h.cli(&["send-keys", "-t", "far:0", "echo quiet-noise", "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, out, _) = h.cli(&["list-windows", "-t", "far"]).await;
+        if out.lines().next().is_some_and(|l| l.contains('#')) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no flag in a detached session: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["select-window", "-t", "far:0"]).await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, out, _) = h.cli(&["list-windows", "-t", "far"]).await;
+        if out.lines().next().is_some_and(|l| !l.contains('#')) {
+            assert!(out.lines().next().unwrap().contains("cmd*"), "{out}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the current window kept a stale flag: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spread_layout_and_capture_with_colours() {
+    let h = Harness::start("spread").await;
+    h.cli(&["new", "-d", "-s", "sp"]).await;
+    h.wait_capture("sp:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["split-window", "-h", "-d", "-t", "sp:0"]).await;
+    let (code, _, err) = h.cli(&["resize-pane", "-t", "sp:0.0", "-x", "60"]).await;
+    assert_eq!(code, 0, "{err}");
+    let widths = |out: &str| -> Vec<u16> {
+        out.lines()
+            .filter_map(|l| l.split('[').nth(1).and_then(|s| s.split('x').next()).and_then(|w| w.parse().ok()))
+            .collect()
+    };
+    let (_, out, _) = h.cli(&["list-panes", "-t", "sp:0"]).await;
+    let before = widths(&out);
+    assert_eq!(before.len(), 2, "{out}");
+    assert!(before[0] > before[1] + 5, "the panes are lopsided to start with: {out}");
+
+    let (code, _, err) = h.cli(&["select-layout", "-E", "-t", "sp:0.0"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["list-panes", "-t", "sp:0"]).await;
+    let after = widths(&out);
+    assert!(after[0].abs_diff(after[1]) <= 1, "-E evened them out: {out} (was {before:?})");
+
+    // capture-pane -e keeps the colours; without it the text is plain.
+    h.cli(&["send-keys", "-t", "sp:0.0", "prompt $e[31mRED$e[0m$g", "Enter"]).await;
+    h.wait_capture("sp:0.0", "the coloured prompt", |t| t.contains("RED>")).await;
+    let (_, plain, _) = h.cli(&["capture-pane", "-p", "-t", "sp:0.0"]).await;
+    assert!(!plain.contains('\u{1b}'), "plain capture has no escapes: {plain:?}");
+    let (_, coloured, _) = h.cli(&["capture-pane", "-p", "-e", "-t", "sp:0.0"]).await;
+    assert!(coloured.contains("RED"), "{coloured:?}");
+    assert!(coloured.contains("\u{1b}[31m"), "-e keeps the colour: {coloured:?}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn menus_and_popups_survive_degenerate_sizes() {
+    let h = Harness::start("degenerate").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "d"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+
+    // A menu with nothing that can be picked: Enter does nothing, Escape
+    // closes it, and the pane behind is untouched.
+    c.prefix(':').await;
+    c.type_str("display-menu \"\"").await;
+    c.enter().await;
+    c.wait_for("separator-only menu", |s| s.contents().contains("j/k move")).await;
+    c.enter().await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("menu gone", |s| !s.contents().contains("j/k move")).await;
+
+    // A terminal with no room for a popup says so instead of drawing a
+    // broken box.
+    c.send(ClientMsg::Resize { cols: 8, rows: 3 }).await;
+    c.prefix(':').await;
+    c.type_str("display-popup -E cmd.exe").await;
+    c.enter().await;
+    // Eight columns cannot show the message, so read it out of the log.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, msgs, _) = h.cli(&["show-messages"]).await;
+        if msgs.contains("no room") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no complaint about the size: {msgs}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // A menu at that size draws what fits and still closes.
+    c.prefix('>').await;
+    // Eight columns clip the labels; the picker still works.
+    c.wait_for("tiny menu", |s| s.contents().contains("(h) Spli")).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("tiny menu gone", |s| !s.contents().contains("(h) Spli")).await;
+
+    // Back to a usable size: a popup opens, survives a resize down to
+    // nothing, and closing one that is not there is not an error.
+    c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
+    c.prefix(':').await;
+    c.type_str("display-popup -E cmd.exe /q /k \"prompt tiny$g\"").await;
+    c.enter().await;
+    c.wait_for("popup", |s| s.contents().contains("tiny>")).await;
+    c.send(ClientMsg::Resize { cols: 6, rows: 4 }).await;
+    c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
+    c.type_str("echo still-alive").await;
+    c.enter().await;
+    // Either the popup survived the squeeze (and took the keys) or it was
+    // dropped (and the pane took them); both are fine, a panic is not.
+    h.wait_capture("d:0", "the session still works", |t| t.contains("wmux>")).await;
+
+    // -C from a script closes the popup the user is looking at, and doing it
+    // again with none open is not an error.
+    let (code, _, err) = h.cli(&["display-popup", "-C"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("popup closed from outside", |s| !s.contents().contains("tiny>")).await;
+    let (code, _, err) = h.cli(&["display-popup", "-C"]).await;
+    assert_eq!(code, 0, "closing nothing is fine: {err}");
+    let (code, out, _) = h.cli(&["ls"]).await;
+    assert_eq!(code, 0, "the server is still healthy: {out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn degenerate_targets_for_the_new_commands() {
+    let h = Harness::start("degen2").await;
+    h.cli(&["new", "-d", "-s", "one"]).await;
+    h.wait_capture("one:0", "shell prompt", |t| t.contains("wmux>")).await;
+
+    // select-layout -E needs something beside the pane.
+    let (code, _, err) = h.cli(&["select-layout", "-E", "-t", "one:0"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no panes beside it"), "{err}");
+
+    // Commands that need a client say so instead of doing half the work.
+    for argv in [vec!["display-menu", "x", "k", "kill-pane"], vec!["choose-client"], vec!["display-popup", "cmd.exe"]] {
+        let (code, _, err) = h.cli(&argv).await;
+        assert_eq!(code, 1, "{argv:?}");
+        assert!(err.contains("not attached"), "{argv:?}: {err}");
+    }
+
+    // A pipe whose command is gone ends quietly, and output keeps flowing.
+    let (code, _, err) = h.cli(&["pipe-pane", "-t", "one:0", "exit"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["send-keys", "-t", "one:0", "echo after-dead-pipe", "Enter"]).await;
+    h.wait_capture("one:0", "output after the pipe died", |t| t.contains("after-dead-pipe")).await;
+    // Stopping a pipe that is not running is not an error either.
+    let (code, _, err) = h.cli(&["pipe-pane", "-t", "one:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    // -o with nothing running starts one; -o again stops it.
+    h.cli(&["pipe-pane", "-o", "-t", "one:0", "$input | Out-Null"]).await;
+    let (code, _, err) = h.cli(&["pipe-pane", "-o", "-t", "one:0", "$input | Out-Null"]).await;
+    assert_eq!(code, 0, "{err}");
+
+    // capture-pane -e on a pane that has printed nothing is empty, not junk.
+    h.cli(&["new-window", "-d", "-t", "one", "cmd.exe", "/q", "/k", "prompt $h$h$h"]).await;
+    let (code, out, _) = h.cli(&["capture-pane", "-p", "-e", "-t", "one:1"]).await;
+    assert_eq!(code, 0);
+    assert!(out.trim().is_empty() || !out.contains("\u{1b}[0m\u{1b}[0m"), "{out:?}");
+
+    // move-window onto itself and to a free index.
+    let (code, _, err) = h.cli(&["move-window", "-s", "one:0", "-t", "one:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["move-window", "-s", "one:1", "-t", "one:7"]).await;
+    assert_eq!(code, 0, "a free index is where it goes: {err}");
+    let (_, out, _) = h.cli(&["list-windows", "-t", "one"]).await;
+    assert_eq!(out.lines().count(), 2, "{out}");
+
+    // wait-for on a client that goes away leaves nothing behind: the lock
+    // can still be taken afterwards.
+    {
+        let mut gone = h.connect().await;
+        gone.command(&["wait-for", "-L", "held"], false).await;
+        // Take the lock away from under it, then drop the connection.
+        let _ = gone;
+    }
+    let (code, _, err) = h.cli(&["wait-for", "-L", "held2"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["wait-for", "-U", "held2"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["kill-server"]).await;
 }
 
 // Keep the unused-import lint quiet for helper traits used through split().

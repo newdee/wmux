@@ -18,6 +18,21 @@ pub struct Options {
     pub status_top: bool,
     pub status_fg: Color,
     pub status_bg: Color,
+    /// Keep a pane after its program exits, showing why, so a background job
+    /// that died leaves its output and can be restarted (tmux `remain-on-exit`).
+    pub remain_on_exit: bool,
+    /// Lines of each pane's scrollback written into the session file, so
+    /// `resume` brings the output back too. 0 saves nothing.
+    pub save_history: usize,
+    /// Flag a window in the status line when a background window prints
+    /// anything (`#`), rings the bell (`!`), or goes quiet for
+    /// `monitor-silence` seconds (`~`). 0 seconds turns silence off.
+    pub monitor_activity: bool,
+    pub monitor_bell: bool,
+    pub monitor_silence: u64,
+    /// Say it on the status line instead of ringing the terminal bell.
+    pub visual_bell: bool,
+    pub visual_activity: bool,
     pub base_index: usize,
     /// First pane number shown to the user (tmux pane-base-index).
     pub pane_base_index: usize,
@@ -68,6 +83,13 @@ pub const SHOWABLE: &[&str] = &[
     "window-status-format",
     "window-status-current-format",
     "base-index",
+    "remain-on-exit",
+    "save-history",
+    "monitor-activity",
+    "monitor-bell",
+    "monitor-silence",
+    "visual-bell",
+    "visual-activity",
     "pane-base-index",
     "display-time",
     "repeat-time",
@@ -89,6 +111,13 @@ impl Default for Options {
             status_top: false,
             status_fg: Color::Idx(0),
             status_bg: Color::Idx(2),
+            remain_on_exit: false,
+            save_history: 500,
+            monitor_activity: false,
+            monitor_bell: true,
+            monitor_silence: 0,
+            visual_bell: false,
+            visual_activity: false,
             base_index: 0,
             pane_base_index: 0,
             display_time_ms: 1500,
@@ -227,6 +256,13 @@ impl Options {
                 }
             }
             "base-index" => self.base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "remain-on-exit" => self.remain_on_exit = parse_bool(value)?,
+            "save-history" => self.save_history = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "monitor-activity" => self.monitor_activity = parse_bool(value)?,
+            "monitor-bell" => self.monitor_bell = parse_bool(value)?,
+            "monitor-silence" => self.monitor_silence = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "visual-bell" => self.visual_bell = parse_bool(value)?,
+            "visual-activity" => self.visual_activity = parse_bool(value)?,
             "pane-base-index" => self.pane_base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "display-time" => self.display_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "repeat-time" => self.repeat_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -265,13 +301,9 @@ impl Options {
             | "window-status-current-style"
             | "mode-keys"
             | "aggressive-resize"
-            | "visual-bell"
             | "bell-action"
-            | "monitor-activity"
-            | "visual-activity"
             | "set-titles"
             | "set-titles-string"
-            | "remain-on-exit"
             | "history-file" => {}
             other => return Err(format!("unknown option '{other}'")),
         }
@@ -300,6 +332,13 @@ impl Options {
             "window-status-format" => self.window_status_format.clone(),
             "window-status-current-format" => self.window_status_current_format.clone(),
             "base-index" => self.base_index.to_string(),
+            "remain-on-exit" => onoff(self.remain_on_exit),
+            "save-history" => self.save_history.to_string(),
+            "monitor-activity" => onoff(self.monitor_activity),
+            "monitor-bell" => onoff(self.monitor_bell),
+            "monitor-silence" => self.monitor_silence.to_string(),
+            "visual-bell" => onoff(self.visual_bell),
+            "visual-activity" => onoff(self.visual_activity),
             "pane-base-index" => self.pane_base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
             "repeat-time" => self.repeat_time_ms.to_string(),

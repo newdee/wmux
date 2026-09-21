@@ -173,6 +173,18 @@ pub struct Pane {
     pub bell: bool,
     pub cols: u16,
     pub rows: u16,
+    /// `pipe-pane`: everything this pane writes is copied here as well.
+    pub pipe: Option<Pipe>,
+}
+
+/// A running `pipe-pane` command. The bytes go through a bounded channel to a
+/// writer thread, so a command that stops reading can never wedge the server;
+/// dropping the `Pipe` closes the command's standard input.
+pub struct Pipe {
+    pub command: String,
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    /// Output dropped because the command was not keeping up.
+    pub dropped: u64,
 }
 
 impl Pane {
@@ -286,7 +298,73 @@ impl Pane {
             bell: false,
             cols,
             rows,
+            pipe: None,
         })
+    }
+
+    /// Start a `pipe-pane` command for this pane, replacing any running one.
+    /// The old pipe stops first, so a failed start never leaves the previous
+    /// command quietly running instead of the one that was asked for.
+    pub fn pipe_to(&mut self, command: &str, env: &[(String, String)]) -> Result<()> {
+        use std::process::{Command, Stdio};
+        self.pipe = None;
+        let (exe, args): (&str, Vec<String>) = match crate::config::which("pwsh.exe") {
+            Some(_) => ("pwsh.exe", vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into(), command.into()]),
+            None => match crate::config::which("powershell.exe") {
+                Some(_) => {
+                    ("powershell.exe", vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into(), command.into()])
+                }
+                None => ("cmd.exe", vec!["/d".into(), "/c".into(), command.into()]),
+            },
+        };
+        let mut c = Command::new(exe);
+        c.args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
+        let mut child = c.spawn().with_context(|| format!("pipe-pane: {exe}"))?;
+        let mut stdin = child.stdin.take().context("pipe-pane: no stdin")?;
+        // Bounded: a command that stops reading costs at most this much
+        // memory (each chunk is one read from the pty, up to 64 KiB) before
+        // output starts being dropped, which is reported.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+        let id = self.id;
+        std::thread::Builder::new()
+            .name(format!("pane-{id}-pipe"))
+            .spawn(move || {
+                for b in rx {
+                    if stdin.write_all(&b).is_err() {
+                        break;
+                    }
+                }
+                drop(stdin); // the command sees end of input and can finish
+                let _ = child.wait();
+            })
+            .context("pipe-pane: spawn writer thread")?;
+        self.pipe = Some(Pipe { command: command.to_string(), tx, dropped: 0 });
+        Ok(())
+    }
+
+    /// Copy pane output into the `pipe-pane` command, if one is running.
+    /// A command that has stopped reading loses bytes instead of blocking the
+    /// server, and one that has exited ends the pipe. Returns the command the
+    /// first time output is lost, so the loss is reported rather than silent.
+    pub fn pipe_write(&mut self, bytes: &[u8]) -> Option<String> {
+        let p = self.pipe.as_mut()?;
+        match p.tx.try_send(bytes.to_vec()) {
+            Ok(()) => None,
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                let first = p.dropped == 0;
+                p.dropped += bytes.len() as u64;
+                first.then(|| p.command.clone())
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                self.pipe = None;
+                None
+            }
+        }
     }
 
     /// Start the pane's command again in place, keeping the pane id, its
@@ -408,6 +486,28 @@ impl Pane {
         let wrapped = s.row_wrapped(row as u16);
         s.set_scrollback(cur);
         (text, wrapped)
+    }
+
+    /// Like `line_text`, but keeping the colours and attributes as escape
+    /// sequences (`capture-pane -e`).
+    pub fn line_escapes(&mut self, abs: usize) -> String {
+        let max = self.scrollback_len();
+        let rows = self.rows as usize;
+        let cols = self.cols;
+        let (offset, row) = if abs < max { (max - abs, 0usize) } else { (0, abs - max) };
+        if row >= rows {
+            return String::new();
+        }
+        let s = self.parser.screen_mut();
+        let cur = s.scrollback();
+        s.set_scrollback(offset);
+        let bytes = s.rows_formatted(0, cols).nth(row).unwrap_or_default();
+        s.set_scrollback(cur);
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if text.contains('\x1b') {
+            text.push_str("\x1b[0m"); // never leak a colour into the next line
+        }
+        text
     }
 
     /// Display name for the status line.
