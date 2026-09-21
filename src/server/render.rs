@@ -289,6 +289,9 @@ pub struct CopyView {
     pub cx: u16,
     pub cy: u16,
     pub sel: Option<((u16, u16), (u16, u16))>,
+    /// The selection is a rectangle (`C-v`), so every line takes the same
+    /// columns instead of running to the end.
+    pub rect: bool,
     pub offset: usize,
 }
 
@@ -370,8 +373,11 @@ pub fn compose(f: &Frame) -> Composed {
         if let Some(c) = p.copy {
             if let Some(((sy, sx), (ey, ex))) = c.sel {
                 for y in sy..=ey.min(p.rect.h.saturating_sub(1)) {
-                    let x0 = if y == sy { sx } else { 0 };
-                    let x1 = if y == ey { ex } else { p.rect.w.saturating_sub(1) };
+                    let (x0, x1) = if c.rect {
+                        (sx.min(ex), sx.max(ex))
+                    } else {
+                        (if y == sy { sx } else { 0 }, if y == ey { ex } else { p.rect.w.saturating_sub(1) })
+                    };
                     for x in x0..=x1.min(p.rect.w.saturating_sub(1)) {
                         g.invert(p.rect.x + x, p.rect.y + y);
                     }
@@ -502,7 +508,17 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
 /// `display-panes`: a pane's number, centred in its rectangle, big enough to
 /// read at a glance (the active pane in the active colour).
 pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {
-    // Five rows of 3x5 block digits, so a number reads from across the room.
+    let style = Style::colors(Color::Idx(0), if active { Color::Idx(2) } else { Color::Idx(4) });
+    let text = number.to_string();
+    if !draw_big_text(g, rect, &text, style) && rect.w > 0 && rect.h > 0 {
+        // Too small for the block digits: plain text in the corner.
+        g.put_str(rect.x, rect.y, &text, style, rect.w);
+    }
+}
+
+/// Draw digits and `:` as 3x5 blocks centred in `rect`; false when there is
+/// no room. Used by `display-panes` and `clock-mode`.
+pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool {
     const DIGITS: [[u8; 5]; 10] = [
         [0b111, 0b101, 0b101, 0b101, 0b111], // 0
         [0b010, 0b110, 0b010, 0b010, 0b111], // 1
@@ -515,31 +531,31 @@ pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {
         [0b111, 0b101, 0b111, 0b101, 0b111], // 8
         [0b111, 0b101, 0b111, 0b001, 0b111], // 9
     ];
-    let text = number.to_string();
-    let style = Style::colors(Color::Idx(0), if active { Color::Idx(2) } else { Color::Idx(4) });
+    // A colon is two dots, narrower than a digit.
+    const COLON: [u8; 5] = [0b000, 0b010, 0b000, 0b010, 0b000];
     let digit_w = 4u16; // 3 columns plus a gap
-    let big_w = text.len() as u16 * digit_w;
-    if rect.w >= big_w && rect.h >= 5 {
-        let x0 = rect.x + (rect.w - big_w) / 2;
-        let y0 = rect.y + (rect.h - 5) / 2;
-        for (i, ch) in text.chars().enumerate() {
-            let d = DIGITS[ch.to_digit(10).unwrap_or(0) as usize];
-            for (row, bits) in d.iter().enumerate() {
-                for col in 0..3u16 {
-                    if bits & (1 << (2 - col)) != 0 {
-                        // A solid block rather than a coloured space, so the
-                        // number is visible whatever the pane's background is.
-                        g.set(x0 + i as u16 * digit_w + col, y0 + row as u16, Cell::new("█", false, style));
-                    }
+    let big_w = text.chars().count() as u16 * digit_w;
+    if rect.w < big_w || rect.h < 5 {
+        return false;
+    }
+    let x0 = rect.x + (rect.w - big_w) / 2;
+    let y0 = rect.y + (rect.h - 5) / 2;
+    for (i, ch) in text.chars().enumerate() {
+        let glyph = match ch {
+            ':' => COLON,
+            c => DIGITS[c.to_digit(10).unwrap_or(0) as usize],
+        };
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..3u16 {
+                if bits & (1 << (2 - col)) != 0 {
+                    // A solid block rather than a coloured space, so it shows
+                    // whatever the pane's background is.
+                    g.set(x0 + i as u16 * digit_w + col, y0 + row as u16, Cell::new("█", false, style));
                 }
             }
         }
-        return;
     }
-    // Too small for the block digits: plain text in the corner.
-    if rect.w > 0 && rect.h > 0 {
-        g.put_str(rect.x, rect.y, &text, style, rect.w);
-    }
+    true
 }
 
 /// The `choose-tree` picker: `lines` from `top` fill the area, line `sel` is
@@ -900,7 +916,7 @@ mod tests {
                 rect: Rect { x: 0, y: 0, w: 5, h: 2 },
                 screen: a.screen(),
                 active: true,
-                copy: Some(CopyView { cx: 1, cy: 1, sel: Some(((0, 3), (1, 1))), offset: 0 }),
+                copy: Some(CopyView { cx: 1, cy: 1, sel: Some(((0, 3), (1, 1))), rect: false, offset: 0 }),
             }],
             status: None,
             status_top: false,

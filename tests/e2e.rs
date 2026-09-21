@@ -1009,6 +1009,288 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn copy_mode_vi_motions_and_modes() {
+    let h = Harness::start("motions").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "v"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.type_str("echo alpha beta gamma delta").await;
+    c.enter().await;
+    c.wait_for("output", |s| s.contents().contains("alpha beta gamma delta")).await;
+
+    // Search puts the cursor on a known word; w and e then walk from there.
+    c.prefix('[').await;
+    c.type_str("/alpha beta").await;
+    c.enter().await;
+    c.type_str("v").await; // start a selection at the match
+    c.type_str("e").await; // to the end of "alpha"
+    c.enter().await; // copy
+    c.wait_for("copied", |s| s.contents().contains("copied")).await;
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert_eq!(out.trim_end(), "alpha", "e stops at the end of the word: {out:?}");
+
+    c.prefix('[').await;
+    c.type_str("/alpha beta").await;
+    c.enter().await;
+    c.type_str("ww").await; // over "alpha" and "beta" to "gamma"
+    c.type_str("v").await;
+    c.type_str("e").await;
+    c.enter().await;
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert_eq!(out.trim_end(), "gamma", "w moves a word at a time: {out:?}");
+    c.prefix('[').await;
+    c.type_str("/gamma").await;
+    c.enter().await;
+    c.type_str("b").await; // back one word, to "beta"
+    c.type_str("v").await;
+    c.type_str("e").await;
+    c.enter().await;
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert_eq!(out.trim_end(), "beta", "b goes back a word: {out:?}");
+
+    // A count repeats a motion: 3j moves three lines.
+    c.prefix('[').await;
+    c.type_str("gv").await; // top of the scrollback, start selecting
+    c.type_str("3j").await;
+    c.enter().await;
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert!(out.lines().count() >= 3, "3j selected three lines: {out:?}");
+
+    // C-v makes the selection a rectangle: same columns on every line.
+    c.prefix('[').await;
+    c.key(b'V' as u16, '\x16', LEFT_CTRL_PRESSED).await; // C-v
+    c.type_str("jjll").await;
+    c.enter().await;
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert!(out.lines().all(|l| l.chars().count() <= 3), "a rectangle is narrow: {out:?}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clock_conditionals_and_client_commands() {
+    let h = Harness::start("clock").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "c1"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+
+    // prefix t draws a clock; any key puts it away.
+    c.prefix('t').await;
+    c.wait_for("clock", |s| s.contents().contains("███")).await;
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+
+    // if-shell -F takes the branch the format says.
+    h.cli(&["if-shell", "-F", "#{?session_name,yes,}", "set -g @cond true", "set -g @cond false"]).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "@cond"]).await;
+    assert_eq!(out.trim(), "true");
+    h.cli(&["if-shell", "-F", "", "set -g @cond then", "set -g @cond else"]).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "@cond"]).await;
+    assert_eq!(out.trim(), "else");
+    // Without -F the shell's exit status decides.
+    h.cli(&["if-shell", "cmd /c exit 0", "set -g @sh ok", "set -g @sh bad"]).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "@sh"]).await;
+    assert_eq!(out.trim(), "ok");
+    h.cli(&["if-shell", "cmd /c exit 1", "set -g @sh ok", "set -g @sh bad"]).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "@sh"]).await;
+    assert_eq!(out.trim(), "bad");
+
+    // The attached client shows up, and messages are remembered.
+    let (_, out, _) = h.cli(&["list-clients"]).await;
+    assert!(out.contains("c1") && out.contains("[80x24]"), "{out}");
+    let (_, out, _) = h.cli(&["show-messages"]).await;
+    assert!(out.contains("copied") || out.lines().count() >= 1, "{out}");
+
+    // switch-client acts on the client that runs it, so this goes through the
+    // session's own keyboard: prefix ) to the next session, then -l back.
+    h.cli(&["new", "-d", "-s", "c2"]).await;
+    c.prefix(')').await;
+    c.wait_for("on c2", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("[c2]")).await;
+    c.prefix(':').await;
+    c.type_str("switch-client -l").await;
+    c.enter().await;
+    c.wait_for("back on c1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("[c1]")).await;
+
+    // detach-client -a sends everyone home.
+    let (code, _, err) = h.cli(&["detach-client", "-a"]).await;
+    assert_eq!(code, 0, "{err}");
+    let reason = c.wait_detached().await;
+    assert_eq!(reason, "detached");
+    let (_, out, _) = h.cli(&["list-clients"]).await;
+    assert_eq!(out.trim(), "no clients attached");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_small_tmux_commands() {
+    let h = Harness::start("small").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "a", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["split-window", "-h", "-t", "a"]).await;
+    h.cli(&["split-window", "-v", "-t", "a"]).await;
+
+    // rotate-window moves the panes around the layout, keeping its shape:
+    // the geometry stays, the pane ids in those places move.
+    async fn ids(h: &Harness) -> Vec<String> {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "a"]).await;
+        out.lines().map(|l| l.split_whitespace().nth(2).unwrap().to_string()).collect()
+    }
+    async fn geometry(h: &Harness) -> Vec<String> {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "a"]).await;
+        out.lines().map(|l| l.split_whitespace().nth(1).unwrap().to_string()).collect()
+    }
+    let before = ids(&h).await;
+    let shape = geometry(&h).await;
+    let (code, _, err) = h.cli(&["rotate-window", "-t", "a"]).await;
+    assert_eq!(code, 0, "{err}");
+    let after = ids(&h).await;
+    assert_eq!(after.len(), before.len());
+    assert_ne!(after, before, "the panes moved: {before:?} -> {after:?}");
+    assert_eq!(geometry(&h).await, shape, "the layout itself did not change");
+    h.cli(&["rotate-window", "-D", "-t", "a"]).await;
+    assert_eq!(ids(&h).await, before, "-D undoes -U");
+
+    // next-layout and previous-layout are the names for select-layout -n/-p.
+    let (code, _, err) = h.cli(&["next-layout", "-t", "a"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["previous-layout", "-t", "a"]).await;
+    assert_eq!(code, 0, "{err}");
+
+    // Listing commands and clients.
+    let (_, out, _) = h.cli(&["list-commands"]).await;
+    assert!(out.lines().count() > 50, "every command name: {}", out.lines().count());
+    assert!(out.contains("rotate-window") && out.contains("attach-session"), "{out}");
+    let (_, out, _) = h.cli(&["list-clients"]).await;
+    assert_eq!(out.trim(), "no clients attached", "{out}");
+
+    // The environment new panes get.
+    h.cli(&["set-environment", "WMUX_TEST_VAR", "hello"]).await;
+    let (_, out, _) = h.cli(&["show-environment"]).await;
+    assert!(out.contains("WMUX_TEST_VAR=hello"), "{out}");
+    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "a", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["send-keys", "-t", "a:1", "echo %WMUX_TEST_VAR%", "Enter"]).await;
+    let pane = h.wait_capture("a:1", "the variable", |t| t.contains("hello")).await;
+    assert!(pane.contains("hello"), "{pane}");
+    h.cli(&["set-environment", "-r", "WMUX_TEST_VAR"]).await;
+    let (_, out, _) = h.cli(&["show-environment"]).await;
+    assert!(!out.contains("WMUX_TEST_VAR"), "{out}");
+
+    // respawn-pane restarts a live pane only with -k.
+    let (code, _, err) = h.cli(&["respawn-pane", "-t", "a:1"]).await;
+    assert_eq!(code, 1, "a live pane needs -k");
+    assert!(err.contains("still running"), "{err}");
+    h.cli(&["send-keys", "-t", "a:1", "echo before-respawn", "Enter"]).await;
+    h.wait_capture("a:1", "the marker", |t| t.contains("before-respawn")).await;
+    let (code, _, err) = h.cli(&["respawn-pane", "-k", "-t", "a:1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let pane = h.wait_capture("a:1", "a fresh shell", |t| !t.contains("before-respawn") && t.contains("wmux>")).await;
+    assert!(!pane.contains("before-respawn"), "the pane started over: {pane}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paste_buffers() {
+    let h = Harness::start("buffers").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "b", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    assert_eq!(code, 0, "{err}");
+
+    let (_, out, _) = h.cli(&["list-buffers"]).await;
+    assert_eq!(out.trim(), "no buffers");
+    h.cli(&["set-buffer", "hello from wmux"]).await;
+    h.cli(&["set-buffer", "-b", "named", "second buffer"]).await;
+    let (_, out, _) = h.cli(&["list-buffers"]).await;
+    assert!(out.contains("named: 13 bytes: second buffer"), "{out}");
+    assert!(out.contains("buffer0: 15 bytes: hello from wmux"), "{out}");
+    let (_, out, _) = h.cli(&["show-buffer", "-b", "named"]).await;
+    assert_eq!(out.trim(), "second buffer");
+    // No -b: the newest buffer.
+    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    assert_eq!(out.trim(), "second buffer");
+
+    // -a appends to a named buffer.
+    h.cli(&["set-buffer", "-a", "-b", "named", " and more"]).await;
+    let (_, out, _) = h.cli(&["show-buffer", "-b", "named"]).await;
+    assert_eq!(out.trim(), "second buffer and more");
+
+    // Buffers go to and come from files.
+    let file = std::env::temp_dir().join(format!("wmux-buffer-{}.txt", std::process::id()));
+    let (code, _, err) = h.cli(&["save-buffer", "-b", "named", &file.to_string_lossy()]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "second buffer and more");
+    std::fs::write(&file, "from a file").unwrap();
+    let (code, _, err) = h.cli(&["load-buffer", "-b", "loaded", &file.to_string_lossy()]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["show-buffer", "-b", "loaded"]).await;
+    assert_eq!(out.trim(), "from a file");
+
+    // Pasting a named buffer reaches the pane.
+    let (code, _, err) = h.cli(&["paste-buffer", "-b", "loaded", "-t", "b"]).await;
+    assert_eq!(code, 0, "{err}");
+    let pane = h.wait_capture("b", "the pasted text", |t| t.contains("from a file")).await;
+    assert!(pane.contains("from a file"), "{pane}");
+
+    // delete-buffer drops the newest, then the named one.
+    h.cli(&["delete-buffer"]).await;
+    h.cli(&["delete-buffer", "-b", "named"]).await;
+    let (_, out, _) = h.cli(&["list-buffers"]).await;
+    assert!(!out.contains("named:"), "{out}");
+    let (code, _, err) = h.cli(&["paste-buffer", "-b", "nosuch", "-t", "b"]).await;
+    assert_eq!(code, 1);
+    assert_eq!(err, "no buffer nosuch");
+    let _ = std::fs::remove_file(&file);
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_pane_marks_and_exact_sizes() {
+    let h = Harness::start("join").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "j", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    async fn panes(h: &Harness, w: &str) -> usize {
+        let (_, out, _) = h.cli(&["list-panes", "-t", w]).await;
+        out.lines().count()
+    }
+    assert_eq!(panes(&h, "j:0").await, 1);
+    assert_eq!(panes(&h, "j:1").await, 1);
+
+    // Move the pane of window 1 next to the pane of window 0.
+    let (code, _, err) = h.cli(&["join-pane", "-h", "-s", "j:1", "-t", "j:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(panes(&h, "j:0").await, 2, "the pane moved across");
+    let (_, out, _) = h.cli(&["list-windows", "-t", "j"]).await;
+    assert_eq!(out.lines().count(), 1, "the empty window went away: {out}");
+
+    // A marked pane is what join-pane takes when there is no -s.
+    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let (code, _, err) = h.cli(&["select-pane", "-m", "-t", "j:1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["join-pane", "-v", "-t", "j:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(panes(&h, "j:0").await, 3);
+
+    // Exact sizes.
+    async fn width(h: &Harness) -> u16 {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "j:0"]).await;
+        out.lines().next().unwrap().split(['[', 'x']).nth(1).unwrap().parse::<u16>().unwrap()
+    }
+    let (code, _, err) = h.cli(&["resize-pane", "-t", "j:0.0", "-x", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(width(&h).await, 30);
+    h.cli(&["resize-pane", "-t", "j:0.0", "-x", "50%"]).await;
+    assert_eq!(width(&h).await, 40, "half of 80 columns");
+    let (code, _, err) = h.cli(&["resize-pane", "-t", "j:0.0", "-x", "nonsense"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("bad size"), "{err}");
+
+    // A pane can be given a title, which the format strings pick up.
+    h.cli(&["select-pane", "-t", "j:0.0", "-T", "logs"]).await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "j:0"]).await;
+    assert!(out.lines().next().unwrap().contains("logs"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn window_order_formats_and_short_names() {
     let h = Harness::start("order").await;
     let (code, _, err) = h.cli(&["new", "-d", "-s", "w", "-n", "one"]).await;

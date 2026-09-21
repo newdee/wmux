@@ -55,7 +55,7 @@ wmux capture-pane -p -t work   # 把 pane 上的文字打印出来（-S -200 连
 wmux kill-server
 ```
 
-命令名可以只写不产生歧义的前缀，和 tmux 一样：`wmux att`、`wmux lsp`、`wmux splitw -h`。`wmux kill` 会被拒绝，因为有四个命令以它开头。
+命令名可以只写不产生歧义的前缀，和 tmux 一样：`wmux att`、`wmux lsp`、`wmux splitw -h`。`wmux kill` 会被拒绝，因为有四个命令以它开头。`wmux list-commands` 列出全部；和 tmux 的逐条对照在 [docs/tmux-parity.md](docs/tmux-parity.md)，命令和按键都有。
 
 进了 session 之后，先按前缀键 `Ctrl+b`，再按：
 
@@ -71,10 +71,15 @@ wmux kill-server
 | `x` | 关掉当前 pane |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
 | `q` | 每块显示自己的编号，按数字直接跳过去 |
-| `Space` | 轮换布局（左右平分、上下平分、主窗在上、主窗在左、平铺） |
+| `Space` / `M-1`…`M-5` | 轮换布局 / 直接选一种（左右平分、上下平分、主窗在上、主窗在左、平铺） |
+| `C-o` / `M-o` | 让所有 pane 在布局里轮转一格 |
 | `!` | 把当前 pane 拆成一个独立窗口 |
+| `m` / `M` | 标记这个 pane / 取消标记（`join-pane` 默认搬走被标记的那个） |
+| `T` / `f` | 给这个 pane 起名 / 按名字或标题找窗口 |
+| `#` / `-` / `=` | 列出粘贴缓冲区 / 删掉最新的 / 挑一个粘贴 |
+| `t` / `~` / `r` | 时钟 / 最近的提示消息 / 重画 |
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
-| `[` / `PgUp` | copy mode：翻回滚，`Space` 开始选，`Enter` 复制，`/` `?` 搜索，`n` `N` 找下一个 |
+| `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
 | `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类） |
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
@@ -82,6 +87,8 @@ wmux kill-server
 | `?` | 列出所有按键 |
 | `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消 |
 | `(` / `)` | 切到上一个 / 下一个 session |
+
+copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转，前面加数字就重复（`3j`），`Space` 或 `v` 开始选，`C-v` 切成矩形选择，`Enter` 或 `y` 复制（同时进粘贴缓冲区和 Windows 剪贴板），`/` `?` 搜索、`n` `N` 找下一个，`q` 退出。
 
 鼠标也管用：点一下选 pane，拖边框调大小，点状态栏上的窗口名切窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了。
 

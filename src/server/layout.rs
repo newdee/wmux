@@ -131,6 +131,24 @@ impl Node {
         }
     }
 
+    /// Put `ids` into the leaves, in order, keeping the shape of the tree.
+    /// Used by `rotate-window`, which moves panes but not the layout.
+    pub fn set_panes(&mut self, ids: &[PaneId]) {
+        let mut it = ids.iter().copied();
+        self.assign(&mut it);
+    }
+
+    fn assign(&mut self, it: &mut impl Iterator<Item = PaneId>) {
+        match self {
+            Node::Leaf(id) => {
+                if let Some(next) = it.next() {
+                    *id = next;
+                }
+            }
+            Node::Split { children, .. } => children.iter_mut().for_each(|c| c.assign(it)),
+        }
+    }
+
     pub fn contains(&self, id: PaneId) -> bool {
         match self {
             Node::Leaf(i) => *i == id,

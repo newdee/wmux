@@ -606,3 +606,70 @@ README 的“未实现”里也这么写着。另外在录制演示时发现：p
 
 第 3、4、5 轮连续零发现，验收通过。本次新增 8 项能力，修复 3 项（含一处格式引擎口径不一致），
 新增测试 5 项；最终 103 项自动化测试。
+
+---
+
+# 第十一次验收：照着 tmux 手册逐条补齐
+
+用户要求「仔细读 tmux 官方手册，对着里面的命令和快捷键一条条实现」。
+
+做法：先把 tmux master 的 `tmux.1`、`cmd.c`（命令表）、`key-bindings.c`（默认绑定表）、
+`options-table.c` 抓到本地，据此写出 `docs/tmux-parity.md`——tmux 的每条命令、每个默认前缀键、
+copy mode 的按键，逐条标注 wmux 是「有 / 部分 / 待做 / 明确不做（附理由）」，并排出实现顺序。
+然后按那个顺序实现。
+
+本次新增（命令 27 条，默认绑定从 47 涨到 81）：
+
+- **命令名前缀匹配**（`att`、`lsp`、`splitw`），有歧义时列出候选而不是猜。
+- **小命令**：`rotate-window`（`C-o` / `M-o`）、`next-layout` / `previous-layout`、`refresh-client`（`r`）、
+  `last-pane`、`list-clients`、`list-commands`、`send-prefix`、`show-messages`（`~`）、
+  `set-environment` / `show-environment`、`respawn-pane` / `respawn-window`、`detach-client -a/-s`、
+  `switch-client -l`、`M-1`..`M-5` 直选布局。
+- **粘贴缓冲区**：`set-buffer`、`list-buffers`（`#`）、`show-buffer`、`delete-buffer`（`-`）、
+  `save-buffer`、`load-buffer`、`paste-buffer -b/-p`、`choose-buffer`（`=`）。copy mode 复制时
+  同时进缓冲区和 Windows 剪贴板。
+- **pane / window 搬运**：`join-pane` / `move-pane`（含「标记 pane」`select-pane -m` / `-M`）、
+  `resize-pane -x/-y`（支持百分比）、`select-pane -T`、`find-window`（`f`）。
+- **copy mode**：`w` `b` `e`（及 `W` `B` `E`）、`^`、`H` `M` `L`、`{` `}`、计数（`3j`）、
+  `C-v` 矩形选择。
+- **其他**：`clock-mode`（`t`）、`if-shell`（`-F` 用格式串，否则看 shell 退出码）。
+
+## 第 1 轮（不计数）— 视角：机制通路（自测新命令）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `respawn-pane -k` 之后 pane 一片空白。根因：老进程的退出事件晚到，服务端按 pane id 把**刚起来的**新 pane 删掉了 | pane 加代次号，`PaneEvent` 带上代次，非当前代次的输出和退出一律忽略；e2e 覆盖 |
+| 2 | `select-pane -m -t j:1` 报 `bad target`：`-t` 的值被无条件当成 pane 选择器解析 | 带 `-m`/`-M`/`-T` 时 `-t` 作为目标解析；两种都不匹配才报错，并说明可用写法 |
+| 3 | （测试自身）用 pane 尺寸判断 `rotate-window` 是否生效，但旋转恰恰保持几何不变 | 改为比较各位置上的 pane id，并额外断言几何不变 |
+| 4 | （测试自身）`switch-client -t` 从 CLI 调用时作用在未 attach 的 CLI 客户端上 | 测试改从会话内部驱动（`prefix )` 和 `:switch-client -l`） |
+
+## 第 2 轮（不计数）— 视角：静态一致性
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 默认绑定里有两条的 Display 输出没人验证过能否被解析器读回 | 新增单元测试 `default_bindings_round_trip`：81 条绑定逐条 Display → tokenize → parse → Display 必须完全一致 |
+| 2 | `choose-session`、`choose-window`、`version` 三个命令没出现在对照表里 | 归入「wmux 独有」一行并说明 |
+
+## 第 3 轮（计数 1/3，无发现）— 视角：静态一致性
+
+数据：clippy 零告警；109 项测试通过（lib 81 / console 4 / e2e 24）；
+`list-commands` 的 80 条命令全部能被解析器接受，且全部在对照表里有条目；`list-keys` 81 条。
+
+## 第 4 轮（计数 2/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：`rotate-window`、`next-layout`、`join-pane -s/-t`（跨窗口搬运后 pane 数 1→3）、
+`set-buffer` / `list-buffers` / `show-buffer`、`set-environment` / `show-environment`、
+`if-shell` 两个分支、`resize-pane -x 30`（得到 `[30x23]`）、`clock-mode`、
+`find-window` 未命中的报错，全部符合预期。
+
+## 第 5 轮（计数 3/3，无发现）— 视角：可复现性
+
+数据：连续 3 次 `cargo test --all-targets` 结果逐项相同（81/0/4/0/24）；
+测试名指纹 `3D9A118BF99F31FA`（110 项，含 1 个按需的录制）；
+真实 sessions 目录未被测试污染；测试结束无残留进程。
+
+## 结论（第十一次验收）
+
+第 3、4、5 轮连续零发现，验收通过。本次新增 27 条命令、34 个默认绑定、copy mode 一整套 vi 动作，
+修复 2 个产品缺陷（respawn 的代次竞态、`select-pane -t` 的目标解析），新增测试 6 项；
+最终 109 项自动化测试。

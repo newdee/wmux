@@ -6,10 +6,12 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use std::io::{Read, Write};
 use std::sync::mpsc::Sender;
 
-/// Events a pane reports back to the server loop.
+/// Events a pane reports back to the server loop. The generation tells a
+/// respawned pane's output and exit apart from its predecessor's, whose
+/// threads may still be finishing.
 pub enum PaneEvent {
-    Output(PaneId, Vec<u8>),
-    Exit(PaneId, u32),
+    Output(PaneId, u32, Vec<u8>),
+    Exit(PaneId, u32, u32),
 }
 
 /// vt100 callbacks: collects terminal replies ConPTY expects from a real
@@ -142,10 +144,16 @@ pub struct CopyMode {
     pub search: Option<String>,
     /// Direction of that search: `/` is towards older lines.
     pub search_back: bool,
+    /// Digits typed before a motion (`3j`), vi style.
+    pub count: Option<usize>,
+    /// `C-v`: the selection is a rectangle, not a run of lines.
+    pub rect: bool,
 }
 
 pub struct Pane {
     pub id: PaneId,
+    /// Bumped by `respawn`; events from an older generation are ignored.
+    pub generation: u32,
     pub parser: vt100::Parser<Callbacks>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -159,6 +167,8 @@ pub struct Pane {
     pub argv: Vec<String>,
     pub cwd: Option<String>,
     pub exit_code: Option<u32>,
+    /// `clock-mode`: a clock is drawn over this pane until a key arrives.
+    pub clock: bool,
     pub copy: Option<CopyMode>,
     pub bell: bool,
     pub cols: u16,
@@ -169,6 +179,21 @@ impl Pane {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         id: PaneId,
+        argv: &[String],
+        cwd: Option<&str>,
+        cols: u16,
+        rows: u16,
+        history: usize,
+        env: &[(String, String)],
+        tx: Sender<PaneEvent>,
+    ) -> Result<Pane> {
+        Pane::spawn_gen(id, 0, argv, cwd, cols, rows, history, env, tx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_gen(
+        id: PaneId,
+        generation: u32,
         argv: &[String],
         cwd: Option<&str>,
         cols: u16,
@@ -224,7 +249,7 @@ impl Pane {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            if tx_out.send(PaneEvent::Output(id, buf[..n].to_vec())).is_err() {
+                            if tx_out.send(PaneEvent::Output(id, generation, buf[..n].to_vec())).is_err() {
                                 break;
                             }
                         }
@@ -236,12 +261,13 @@ impl Pane {
             .name(format!("pane-{id}-wait"))
             .spawn(move || {
                 let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
-                let _ = tx.send(PaneEvent::Exit(id, code));
+                let _ = tx.send(PaneEvent::Exit(id, generation, code));
             })
             .context("spawn waiter thread")?;
 
         Ok(Pane {
             id,
+            generation,
             parser: vt100::Parser::new_with_callbacks(rows, cols, history, Callbacks::default()),
             master: pair.master,
             writer,
@@ -255,11 +281,44 @@ impl Pane {
             argv: argv.to_vec(),
             cwd: cwd.map(str::to_string),
             exit_code: None,
+            clock: false,
             copy: None,
             bell: false,
             cols,
             rows,
         })
+    }
+
+    /// Start the pane's command again in place, keeping the pane id, its
+    /// position in the layout and its size (tmux `respawn-pane`). The old
+    /// process and its children are killed first.
+    pub fn respawn(
+        &mut self,
+        argv: Option<&[String]>,
+        history: usize,
+        env: &[(String, String)],
+        tx: Sender<PaneEvent>,
+    ) -> Result<()> {
+        let argv = argv.map(|a| a.to_vec()).unwrap_or_else(|| self.argv.clone());
+        if argv.is_empty() {
+            anyhow::bail!("pane has no command to respawn");
+        }
+        let fresh = Pane::spawn_gen(
+            self.id,
+            self.generation.wrapping_add(1),
+            &argv,
+            self.cwd.as_deref(),
+            self.cols,
+            self.rows,
+            history,
+            env,
+            tx,
+        )?;
+        // Putting the new pane in place drops the old one, whose Drop closes
+        // the job object and takes the old process tree with it.
+        let old = std::mem::replace(self, fresh);
+        drop(old);
+        Ok(())
     }
 
     /// Feed process output into the terminal model; answer any queries.
@@ -386,8 +445,8 @@ mod tests {
                 return true;
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(PaneEvent::Output(_, b)) => pane.process_output(&b),
-                Ok(PaneEvent::Exit(_, c)) => pane.exit_code = Some(c),
+                Ok(PaneEvent::Output(_, _, b)) => pane.process_output(&b),
+                Ok(PaneEvent::Exit(_, _, c)) => pane.exit_code = Some(c),
                 Err(_) => {}
             }
         }

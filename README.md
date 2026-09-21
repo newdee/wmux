@@ -70,7 +70,9 @@ wmux kill-server
 
 Any unambiguous prefix of a command name works, as in tmux: `wmux att`,
 `wmux lsp`, `wmux splitw -h`. `wmux kill` is refused, because four commands
-start that way.
+start that way. `wmux list-commands` prints them all, and
+[docs/tmux-parity.md](docs/tmux-parity.md) tracks them against tmux's own
+list, command by command and key by key.
 
 Inside a session, press the prefix (`Ctrl+b`) and then:
 
@@ -88,15 +90,26 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `x` | kill the current pane |
 | `{` / `}` | swap pane with previous / next |
 | `q` | show the pane numbers; press one to go there |
-| `Space` | cycle the layout (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) |
+| `Space` / `M-1`…`M-5` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) |
+| `C-o` / `M-o` | rotate the panes through the layout |
 | `!` | break the pane out into its own window |
-| `[` / `PgUp` | copy mode (scroll back; `Space` starts a selection, `Enter` copies, `/` `?` search, `n` `N` repeat) |
+| `m` / `M` | mark this pane / clear the mark (`join-pane` takes the marked one) |
+| `T` / `f` | name this pane / find a window by name or title |
+| `[` / `PgUp` | copy mode (see below) |
+| `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
+| `t` / `~` / `r` | clock / recent messages / redraw |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...) |
 | `d` | detach |
 | `?` | list key bindings |
 | `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels) |
 | `(` / `)` | switch the client to the previous / next session |
+
+In copy mode: `h` `j` `k` `l` and the arrows move, `w` `b` `e` walk words,
+`0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, a count repeats
+(`3j`), `Space` or `v` starts a selection, `C-v` makes it a rectangle,
+`Enter` or `y` copies (to a paste buffer and the Windows clipboard), `/` and
+`?` search with `n` / `N` to repeat, `q` leaves.
 
 Mouse: click selects a pane, drag a border to resize, click a window name on
 the status line to select it, wheel scrolls (enters copy mode on the normal

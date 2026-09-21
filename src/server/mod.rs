@@ -98,10 +98,21 @@ struct Drag {
 /// followed by its windows when `expand` is set. `items` and `lines` are
 /// rebuilt from the live sessions at every render; the selection follows the
 /// item's identity, so windows appearing or vanishing meanwhile do not move it.
+/// What one line of the picker stands for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChooserItem {
+    /// A session line, or one of its windows.
+    Tree(SessionId, Option<WindowId>),
+    /// A paste buffer, by position in the buffer list.
+    Buffer(usize),
+}
+
 struct Chooser {
+    /// Sessions expanded to their windows (`choose-tree -w`).
     expand: bool,
-    /// (session, window) behind every line; `None` is the session line itself.
-    items: Vec<(SessionId, Option<WindowId>)>,
+    /// Buffers instead of the session tree (`choose-buffer`).
+    buffers: bool,
+    items: Vec<ChooserItem>,
     lines: Vec<String>,
     sel: usize,
     top: usize,
@@ -123,6 +134,8 @@ struct Client {
     interactive: bool,
     pane_env: Option<u32>,
     session: Option<SessionId>,
+    /// Session this client was in before the current one (switch-client -l).
+    last_session: Option<SessionId>,
     last_grid: Option<Grid>,
     last_cursor: Option<(u16, u16)>,
     prefix: bool,
@@ -310,6 +323,15 @@ pub struct Server {
     shell_last_refresh: Option<Instant>,
     /// Plugin directories loaded so far.
     plugins: Vec<String>,
+    /// Recent status-line messages, newest last (`show-messages`).
+    messages: std::collections::VecDeque<String>,
+    /// Paste buffers, newest first; `buffer0` is the most recent copy.
+    buffers: Vec<(String, String)>,
+    next_buffer: usize,
+    /// Pane marked with `select-pane -m`, the default source for `join-pane`.
+    marked: Option<PaneId>,
+    /// Extra environment for new panes (`set-environment`).
+    env: Vec<(String, String)>,
     events: mpsc::UnboundedSender<Event>,
     /// JSON of every session as last autosaved, to detect structural change.
     last_saved: HashMap<String, String>,
@@ -498,6 +520,25 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("!", "break-pane"),
         ("Space", "select-layout -n"),
         ("q", "display-panes"),
+        ("r", "refresh-client"),
+        ("~", "show-messages"),
+        ("#", "list-buffers"),
+        ("f", "command-prompt -p (find-window) \"find-window -- %%\""),
+        ("m", "select-pane -m"),
+        ("M", "select-pane -M"),
+        ("T", "command-prompt -p (pane-title) -I \"#T\" \"select-pane -T -- %%\""),
+        ("'", "command-prompt -p (index) \"select-window -t :%%\""),
+        (".", "command-prompt -p (move-window-to) \"move-window -t %%\""),
+        ("-", "delete-buffer"),
+        ("=", "choose-buffer"),
+        ("t", "clock-mode"),
+        ("C-o", "rotate-window"),
+        ("M-o", "rotate-window -D"),
+        ("M-1", "select-layout even-horizontal"),
+        ("M-2", "select-layout even-vertical"),
+        ("M-3", "select-layout main-horizontal"),
+        ("M-4", "select-layout main-vertical"),
+        ("M-5", "select-layout tiled"),
         ("(", "switch-client -p"),
         (")", "switch-client -n"),
         ("w", "choose-tree -Zw"),
@@ -544,6 +585,11 @@ impl Server {
             shell_running: HashSet::new(),
             shell_last_refresh: None,
             plugins: Vec::new(),
+            messages: std::collections::VecDeque::new(),
+            buffers: Vec::new(),
+            next_buffer: 0,
+            marked: None,
+            env: Vec::new(),
             events,
             last_saved: HashMap::new(),
         }
@@ -884,12 +930,19 @@ impl Server {
 
     fn handle(&mut self, ev: Event) {
         match ev {
-            Event::Pane(PaneEvent::Output(id, bytes)) => {
-                if let Some(p) = self.find_pane_mut(id) {
+            // A respawned pane keeps its id, so the generation says whether
+            // this came from the process that is running now.
+            Event::Pane(PaneEvent::Output(id, generation, bytes)) => {
+                if let Some(p) = self.find_pane_mut(id)
+                    && p.generation == generation
+                {
                     p.process_output(&bytes);
                 }
             }
-            Event::Pane(PaneEvent::Exit(id, code)) => {
+            Event::Pane(PaneEvent::Exit(id, generation, code)) => {
+                if self.find_pane_mut(id).is_some_and(|p| p.generation != generation) {
+                    return; // the previous process of a respawned pane
+                }
                 log::info!("pane %{id} exited with {code}");
                 self.remove_pane(id, Some(code));
             }
@@ -905,6 +958,7 @@ impl Server {
                         interactive: false,
                         pane_env: None,
                         session: None,
+                        last_session: None,
                         last_grid: None,
                         last_cursor: None,
                         prefix: false,
@@ -1071,6 +1125,12 @@ impl Server {
     /// One-line text goes to the status line for `display-time`; multi-line
     /// text becomes an overlay that stays until a key is pressed.
     fn show(&mut self, cid: ClientId, text: &str) {
+        // Keep a short log for `show-messages`, as tmux does.
+        let stamp = chrono::Local::now().format("%H:%M:%S");
+        self.messages.push_back(format!("{stamp} {}", text.replace('\n', " ")));
+        while self.messages.len() > 100 {
+            self.messages.pop_front();
+        }
         if let Some(c) = self.clients.get_mut(&cid) {
             if text.contains('\n') {
                 c.overlay = Some(text.lines().map(str::to_string).collect());
@@ -1223,12 +1283,49 @@ impl Server {
     /// Environment for panes and `run-shell`: the socket, the pane, and PATH
     /// with this executable's directory first so `wmux` is callable from
     /// scripts and panes even when it was never installed.
+    /// A buffer by name, or the newest one.
+    fn buffer(&self, name: Option<&str>) -> Option<&(String, String)> {
+        match name {
+            Some(n) => self.buffers.iter().find(|(b, _)| b == n),
+            None => self.buffers.first(),
+        }
+    }
+
+    /// Store text as a buffer: named (replacing or appending to it) or a new
+    /// automatic `bufferN` at the front, the way tmux stacks them.
+    fn set_buffer(&mut self, name: Option<&str>, data: &str, append: bool) {
+        if let Some(n) = name {
+            if let Some(slot) = self.buffers.iter_mut().find(|(b, _)| b == n) {
+                if append {
+                    slot.1.push_str(data);
+                } else {
+                    slot.1 = data.to_string();
+                }
+                return;
+            }
+            self.buffers.insert(0, (n.to_string(), data.to_string()));
+        } else {
+            if append && let Some(top) = self.buffers.first_mut() {
+                top.1.push_str(data);
+                return;
+            }
+            let name = format!("buffer{}", self.next_buffer);
+            self.next_buffer += 1;
+            self.buffers.insert(0, (name, data.to_string()));
+        }
+        // 50 is what tmux keeps by default (buffer-limit).
+        self.buffers.truncate(50);
+    }
+
     fn pane_env(&self, pane_id: PaneId) -> Vec<(String, String)> {
-        vec![
+        let mut env = vec![
             ("WMUX".into(), self.socket.clone()),
             ("WMUX_PANE".into(), pane_id.to_string()),
             ("PATH".into(), path_with_self()),
-        ]
+        ];
+        // `set-environment` entries last, so they can override even PATH.
+        env.extend(self.env.iter().cloned());
+        env
     }
 
     fn spawn_pane(&mut self, argv: &[String], cwd: Option<&str>, cols: u16, rows: u16) -> Result<Pane, String> {
@@ -1237,6 +1334,44 @@ impl Server {
         let env = self.pane_env(id);
         Pane::spawn(id, &argv, cwd, cols, rows, self.opts.history_limit, &env, self.pane_tx.clone())
             .map_err(|e| format!("{e:#}"))
+    }
+
+    /// (session, window index) holding a pane.
+    fn window_of_pane(&self, pid: PaneId) -> Option<(SessionId, usize)> {
+        self.sessions.iter().find_map(|s| s.windows.iter().position(|w| w.pane(pid).is_some()).map(|widx| (s.id, widx)))
+    }
+
+    /// Take a live pane out of its window without killing it, collapsing the
+    /// window if it was the last one (`join-pane`).
+    fn take_pane(&mut self, sid: SessionId, widx: usize, pid: PaneId) -> Option<Pane> {
+        let s = self.session_mut(sid)?;
+        let w = s.windows.get_mut(widx)?;
+        let pos = w.panes.iter().position(|p| p.id == pid)?;
+        let pane = w.panes.remove(pos);
+        w.layout.remove(pid);
+        w.layout_preset = None;
+        w.zoomed = false;
+        if w.active == pid {
+            w.active = w.layout.panes().first().copied().unwrap_or(0);
+        }
+        if w.last_pane == Some(pid) {
+            w.last_pane = None;
+        }
+        if w.panes.is_empty() {
+            let wid = w.id;
+            s.windows.remove(widx);
+            if s.last == Some(wid) {
+                s.last = None;
+            }
+            if s.windows.is_empty() {
+                // The session has nothing left; it goes the way it does when
+                // its last pane exits.
+                self.kill_session(sid, "exited");
+            } else if let Some(s) = self.session_mut(sid) {
+                s.cur = s.cur.min(s.windows.len() - 1);
+            }
+        }
+        Some(pane)
     }
 
     /// Remove a pane (dead or killed) and collapse empty windows/sessions.
@@ -1460,6 +1595,7 @@ impl Server {
                         Cmd::SwitchClient {
                             next: false,
                             prev: false,
+                            last: false,
                             target: Some(Target {
                                 session: self.session(sid).map(|s| s.name.clone()),
                                 ..Default::default()
@@ -1470,10 +1606,82 @@ impl Server {
                 }
                 Outcome::Attach(sid)
             }
-            Cmd::DetachClient => {
-                if let Some(cid) = cid {
-                    self.detach(cid, "detached");
+            Cmd::DetachClient { all, target } => {
+                // No -a: just this client. With -a (or -s session): every
+                // client, or every client of that session.
+                let only: Option<SessionId> = match &target {
+                    Some(t) if t.session.is_some() => match self.resolve_session(Some(t), cid) {
+                        Ok(s) => Some(s),
+                        Err(e) => return Outcome::Error(e),
+                    },
+                    _ => None,
+                };
+                let victims: Vec<ClientId> = if all || only.is_some() {
+                    self.clients
+                        .values()
+                        .filter(|c| c.session.is_some() && only.is_none_or(|s| c.session == Some(s)))
+                        .map(|c| c.id)
+                        .collect()
+                } else {
+                    cid.into_iter().collect()
+                };
+                for v in victims {
+                    self.detach(v, "detached");
                 }
+                Outcome::Ok
+            }
+            Cmd::ShowMessages => {
+                if self.messages.is_empty() {
+                    return Outcome::Text("no messages".into());
+                }
+                Outcome::Text(self.messages.iter().cloned().collect::<Vec<String>>().join("\n"))
+            }
+            Cmd::SetEnvironment { name, value, remove } => {
+                self.env.retain(|(k, _)| *k != name);
+                match (remove, value) {
+                    (true, _) | (_, None) => {}
+                    (false, Some(v)) => self.env.push((name, v)),
+                }
+                Outcome::Ok
+            }
+            Cmd::ShowEnvironment { name } => {
+                let lines: Vec<String> = match &name {
+                    Some(n) => match self.env.iter().find(|(k, _)| k == n) {
+                        Some((k, v)) => vec![format!("{k}={v}")],
+                        None => return Outcome::Error(format!("unknown variable: {n}")),
+                    },
+                    None => self.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+                };
+                if lines.is_empty() {
+                    return Outcome::Text("no variables set".into());
+                }
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::RespawnPane { target, kill, argv, window } => {
+                let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let ids: Vec<PaneId> =
+                    if window { self.session(sid).unwrap().windows[widx].layout.panes() } else { vec![pid] };
+                let (history, env, tx) = (self.opts.history_limit, self.env.clone(), self.pane_tx.clone());
+                let mut done = 0;
+                for id in ids {
+                    let Some(p) = self.find_pane_mut(id) else { continue };
+                    if p.exit_code.is_none() && !kill {
+                        continue; // tmux refuses a live pane without -k
+                    }
+                    let cmd = if argv.is_empty() { None } else { Some(argv.as_slice()) };
+                    match p.respawn(cmd, history, &env, tx.clone()) {
+                        Ok(()) => done += 1,
+                        Err(e) => return Outcome::Error(format!("respawn: {e:#}")),
+                    }
+                }
+                if done == 0 {
+                    return Outcome::Error("pane is still running (use -k)".into());
+                }
+                self.relayout_session(sid);
+                self.autosave_changed();
                 Outcome::Ok
             }
             Cmd::ListSessions => {
@@ -1913,11 +2121,13 @@ impl Server {
                     None => Outcome::Error("no such pane".into()),
                 }
             }
-            Cmd::ResizePane { dir, amount, zoom, target } => {
+            Cmd::ResizePane { dir, amount, zoom, target, width, height } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
+                let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
+                let area = self.window_area(scols, srows);
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 if zoom {
                     w.zoomed = !w.zoomed && w.panes.len() > 1;
@@ -1925,7 +2135,58 @@ impl Server {
                     w.zoomed = false;
                     w.layout.resize(pid, d, amount.max(1));
                 }
+                // -x / -y: grow or shrink until the pane has that size.
+                for (spec, horizontal) in [(width, true), (height, false)] {
+                    let Some(spec) = spec else { continue };
+                    let full = if horizontal { area.w } else { area.h };
+                    let want = match parse_size(&spec, full) {
+                        Some(v) => v,
+                        None => return Outcome::Error(format!("resize-pane: bad size '{spec}'")),
+                    };
+                    let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                    w.zoomed = false;
+                    for _ in 0..full {
+                        w.relayout(area);
+                        let Some(rect) = w.rect_of(pid) else { break };
+                        let now = if horizontal { rect.w } else { rect.h };
+                        if now == want {
+                            break;
+                        }
+                        let dir = match (horizontal, now < want) {
+                            (true, true) => Dir::Right,
+                            (true, false) => Dir::Left,
+                            (false, true) => Dir::Down,
+                            (false, false) => Dir::Up,
+                        };
+                        let before = now;
+                        w.layout.resize(pid, dir, 1);
+                        w.relayout(area);
+                        // Wedged against a minimum: stop rather than spin.
+                        let after = w.rect_of(pid).map(|r| if horizontal { r.w } else { r.h }).unwrap_or(before);
+                        if after == before {
+                            break;
+                        }
+                    }
+                }
                 self.relayout_session(sid);
+                Outcome::Ok
+            }
+            Cmd::PaneTitle { target, title, mark, unmark } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                if unmark {
+                    self.marked = None;
+                }
+                if mark {
+                    self.marked = if self.marked == Some(pid) { None } else { Some(pid) };
+                }
+                if let Some(t) = title
+                    && let Some(p) = self.find_pane_mut(pid)
+                {
+                    p.title = t;
+                }
                 Outcome::Ok
             }
             Cmd::SelectLayout { name, next, prev: _, target } => {
@@ -2012,6 +2273,100 @@ impl Server {
                 self.relayout_session(sid);
                 Outcome::Ok
             }
+            Cmd::JoinPane { src, dst, horizontal, before } => {
+                // No -s: the marked pane, as in tmux.
+                let marked = self.marked.filter(|p| self.session_of_pane(*p).is_some());
+                let (ssid, swidx, spid) = match (&src, marked) {
+                    (None, Some(m)) => match self.window_of_pane(m) {
+                        Some((s, w)) => (s, w, m),
+                        None => return Outcome::Error("join-pane: the marked pane is gone".into()),
+                    },
+                    _ => match self.resolve(src.as_ref(), cid) {
+                        Ok(r) => r,
+                        Err(e) => return Outcome::Error(e),
+                    },
+                };
+                let (dsid, dwidx, dpid) = match self.resolve(dst.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                if spid == dpid {
+                    return Outcome::Error("join-pane: source and target are the same pane".into());
+                }
+                if ssid == dsid && swidx == dwidx && self.session(ssid).unwrap().windows[swidx].panes.len() < 2 {
+                    return Outcome::Error("join-pane: the pane is already there".into());
+                }
+                // Make room in the destination before taking the pane out, so
+                // a refused split leaves everything where it was.
+                let (dcols, drows) = self.session(dsid).map(|s| (s.cols, s.rows)).unwrap();
+                let area = self.window_area(dcols, drows);
+                let dw = &mut self.session_mut(dsid).unwrap().windows[dwidx];
+                if dw.zoomed {
+                    dw.zoomed = false;
+                    dw.relayout(area);
+                }
+                let Some(rect) = dw.rect_of(dpid) else { return Outcome::Error("pane has no layout".into()) };
+                if (horizontal && rect.w < 3) || (!horizontal && rect.h < 3) {
+                    return Outcome::Error("pane too small to split".into());
+                }
+                let Some(pane) = self.take_pane(ssid, swidx, spid) else {
+                    return Outcome::Error("join-pane: no such pane".into());
+                };
+                let dw = &mut self.session_mut(dsid).unwrap().windows[dwidx];
+                dw.layout.split_at(dpid, horizontal, spid, rect, before);
+                dw.panes.push(pane);
+                dw.last_pane = Some(dw.active);
+                dw.active = spid;
+                dw.layout_preset = None;
+                self.relayout_session(dsid);
+                if ssid != dsid {
+                    self.relayout_session(ssid);
+                }
+                self.fire_hook("after-split-window", cid);
+                self.marked = None;
+                self.autosave_changed();
+                Outcome::Ok
+            }
+            Cmd::FindWindow { pattern } => {
+                let Some(cid) = cid else { return Outcome::Error("find-window: no client".into()) };
+                let needle = pattern.to_lowercase();
+                let mut hits: Vec<(SessionId, WindowId, String)> = Vec::new();
+                for s in &self.sessions {
+                    for (i, w) in s.windows.iter().enumerate() {
+                        let title = w.active_pane().map(|p| p.display_title().to_string()).unwrap_or_default();
+                        let hay = format!("{} {} {}", w.name, title, i + self.opts.base_index).to_lowercase();
+                        if hay.contains(&needle) {
+                            hits.push((s.id, w.id, format!("{}:{}", s.name, w.name)));
+                        }
+                    }
+                }
+                match hits.len() {
+                    0 => Outcome::Error(format!("no window matching: {pattern}")),
+                    1 => {
+                        let (sid, wid, _) = hits[0].clone();
+                        self.chooser_go(cid, sid, Some(wid));
+                        Outcome::Ok
+                    }
+                    _ => {
+                        // Several: show them in the picker, filtered.
+                        let items: Vec<ChooserItem> =
+                            hits.iter().map(|(s, w, _)| ChooserItem::Tree(*s, Some(*w))).collect();
+                        let lines: Vec<String> = hits
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (_, _, label))| {
+                                format!("{}{label}", if i < 10 { format!("({i}) ") } else { "    ".into() })
+                            })
+                            .collect();
+                        if let Some(c) = self.clients.get_mut(&cid) {
+                            c.prompt = None;
+                            c.overlay = None;
+                            c.chooser = Some(Chooser { expand: true, buffers: false, items, lines, sel: 0, top: 0 });
+                        }
+                        Outcome::Ok
+                    }
+                }
+            }
             Cmd::SendKeys { target, keys, literal } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
@@ -2049,6 +2404,102 @@ impl Server {
                 }
                 Outcome::Ok
             }
+            Cmd::RotateWindow { down, target } => {
+                let (sid, widx, _) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                let mut order = w.layout.panes();
+                if order.len() < 2 {
+                    return Outcome::Ok;
+                }
+                // -U moves every pane one place towards the front.
+                if down {
+                    order.rotate_right(1);
+                } else {
+                    order.rotate_left(1);
+                }
+                w.layout.set_panes(&order);
+                w.zoomed = false;
+                self.relayout_session(sid);
+                self.autosave_changed();
+                Outcome::Ok
+            }
+            Cmd::RefreshClient => {
+                if let Some(cid) = cid
+                    && let Some(c) = self.clients.get_mut(&cid)
+                {
+                    c.last_grid = None;
+                    c.last_cursor = None;
+                }
+                Outcome::Ok
+            }
+            Cmd::SendPrefix { target } => {
+                let (sid, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let key = self.opts.prefix;
+                let bytes = input::encode_key(key, false);
+                let _ = sid;
+                if let Some(p) = self.find_pane_mut(pid) {
+                    p.write_input(&bytes);
+                }
+                Outcome::Ok
+            }
+            Cmd::ListCommands => {
+                let mut names: Vec<&str> = crate::command::COMMANDS.to_vec();
+                names.sort_unstable();
+                Outcome::Text(names.join("\n"))
+            }
+            Cmd::ListClients => {
+                let mut lines: Vec<String> = self
+                    .clients
+                    .values()
+                    .filter(|c| c.session.is_some())
+                    .map(|c| {
+                        let name = c.session.and_then(|s| self.session(s)).map(|s| s.name.clone()).unwrap_or_default();
+                        format!("client-{}: {} [{}x{}]", c.id, name, c.cols, c.rows)
+                    })
+                    .collect();
+                lines.sort();
+                if lines.is_empty() {
+                    return Outcome::Text("no clients attached".into());
+                }
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::ClockMode { target } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                if let Some(p) = self.find_pane_mut(pid) {
+                    p.clock = true;
+                }
+                Outcome::Ok
+            }
+            Cmd::IfShell { format, condition, then_cmd, else_cmd } => {
+                let truth = if format {
+                    let v = match cid {
+                        Some(c) => self.expand_format(&condition, c),
+                        None => condition.clone(),
+                    };
+                    let v = v.trim();
+                    !v.is_empty() && v != "0"
+                } else {
+                    // A shell command: success means the "then" branch, as in
+                    // tmux. Same environment panes get, same 30s watchdog.
+                    let env = self.pane_env(0);
+                    let (_, code) = run_shell_blocking(&condition, &env, Some(Duration::from_secs(30)));
+                    code == 0
+                };
+                match (truth, else_cmd) {
+                    (true, _) => self.exec(*then_cmd, cid),
+                    (false, Some(e)) => self.exec(*e, cid),
+                    (false, None) => Outcome::Ok,
+                }
+            }
             Cmd::DisplayPanes => {
                 let Some(cid) = cid else { return Outcome::Error("display-panes: no client".into()) };
                 // tmux waits a second by default; `display-time` is ours.
@@ -2071,22 +2522,89 @@ impl Server {
                 }
                 Outcome::Ok
             }
-            Cmd::PasteBuffer => {
-                let (_, _, pid) = match self.resolve(None, cid) {
+            Cmd::PasteBuffer { name, target, bracketed } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
-                let text = match crate::clipboard::get_text() {
-                    Ok(t) => t,
-                    Err(e) => return Outcome::Error(format!("clipboard: {e}")),
+                // No -b: the Windows clipboard, which is also where copy mode
+                // puts what it copies. With -b: that named buffer.
+                let text = match &name {
+                    Some(n) => match self.buffer(Some(n)) {
+                        Some((_, data)) => data.clone(),
+                        None => return Outcome::Error(format!("no buffer {n}")),
+                    },
+                    None => match crate::clipboard::get_text() {
+                        Ok(t) => t,
+                        Err(e) => return Outcome::Error(format!("clipboard: {e}")),
+                    },
                 };
                 if text.is_empty() {
-                    return Outcome::Error("clipboard is empty".into());
+                    return Outcome::Error(
+                        if name.is_some() { "buffer is empty" } else { "clipboard is empty" }.into(),
+                    );
                 }
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
-                let b = p.screen().bracketed_paste();
+                let b = bracketed && p.screen().bracketed_paste();
                 p.write_input(&input::encode_paste(&text, b));
                 Outcome::Ok
+            }
+            Cmd::SetBuffer { name, data, append } => {
+                self.set_buffer(name.as_deref(), &data, append);
+                Outcome::Ok
+            }
+            Cmd::LoadBuffer { name, path } => match std::fs::read_to_string(expand_home(&path)) {
+                Ok(data) => {
+                    self.set_buffer(name.as_deref(), &data, false);
+                    Outcome::Ok
+                }
+                Err(e) => Outcome::Error(format!("{path}: {e}")),
+            },
+            Cmd::SaveBuffer { name, path, append } => {
+                let Some((_, data)) = self.buffer(name.as_deref()) else {
+                    return Outcome::Error("no buffer".into());
+                };
+                let data = data.clone();
+                let path = expand_home(&path);
+                let r = if append {
+                    use std::io::Write;
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut f| f.write_all(data.as_bytes()))
+                } else {
+                    std::fs::write(&path, data.as_bytes())
+                };
+                match r {
+                    Ok(()) => Outcome::Ok,
+                    Err(e) => Outcome::Error(format!("{path}: {e}")),
+                }
+            }
+            Cmd::ShowBuffer { name } => match self.buffer(name.as_deref()) {
+                Some((_, data)) => Outcome::Text(data.clone()),
+                None => Outcome::Error("no buffer".into()),
+            },
+            Cmd::DeleteBuffer { name } => {
+                let idx = match &name {
+                    Some(n) => self.buffers.iter().position(|(b, _)| b == n),
+                    None => (!self.buffers.is_empty()).then_some(0),
+                };
+                match idx {
+                    Some(i) => {
+                        self.buffers.remove(i);
+                        Outcome::Ok
+                    }
+                    None => Outcome::Error("no buffer".into()),
+                }
+            }
+            Cmd::ListBuffers => {
+                if self.buffers.is_empty() {
+                    return Outcome::Text("no buffers".into());
+                }
+                let lines: Vec<String> =
+                    self.buffers.iter().map(|(n, d)| format!("{n}: {} bytes: {}", d.len(), one_line(d, 60))).collect();
+                Outcome::Text(lines.join("\n"))
             }
             Cmd::CommandPrompt { prompt, initial, template } => {
                 let Some(cid) = cid else { return Outcome::Error("command-prompt: no client".into()) };
@@ -2172,7 +2690,7 @@ impl Server {
                 }
                 r.into()
             }
-            Cmd::SwitchClient { next, prev, target } => {
+            Cmd::SwitchClient { next, prev, last, target } => {
                 let Some(cid) = cid else { return Outcome::Error("switch-client: no client".into()) };
                 let cur = self.clients.get(&cid).and_then(|c| c.session);
                 let Some(cur) = cur else { return Outcome::Error("client not attached".into()) };
@@ -2182,6 +2700,13 @@ impl Server {
                     self.sessions[(pos + 1) % n].id
                 } else if prev {
                     self.sessions[(pos + n - 1) % n].id
+                } else if last {
+                    let prev_session =
+                        self.clients.get(&cid).and_then(|c| c.last_session).filter(|s| self.session(*s).is_some());
+                    match prev_session {
+                        Some(s) => s,
+                        None => return Outcome::Error("no last session".into()),
+                    }
                 } else {
                     match self.resolve_session(target.as_ref(), None) {
                         Ok(s) => s,
@@ -2193,6 +2718,7 @@ impl Server {
                 }
                 let c = self.clients.get_mut(&cid).unwrap();
                 let (cols, rows) = (c.cols, c.rows);
+                c.last_session = Some(cur);
                 c.session = Some(sid);
                 c.last_grid = None;
                 self.resize_session(sid, cols, rows);
@@ -2201,22 +2727,37 @@ impl Server {
                 }
                 Outcome::Ok
             }
+            Cmd::ChooseBuffer => {
+                let Some(cid) = cid else { return Outcome::Error("choose-buffer: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("choose-buffer: client not attached".into());
+                }
+                if self.buffers.is_empty() {
+                    return Outcome::Error("no buffers".into());
+                }
+                let (items, lines) = self.chooser_lines(false, true);
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser { expand: false, buffers: true, items, lines, sel: 0, top: 0 });
+                Outcome::Ok
+            }
             Cmd::ChooseTree { sessions, windows } => {
                 let Some(cid) = cid else { return Outcome::Error("choose-tree: no client".into()) };
                 let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else {
                     return Outcome::Error("choose-tree: client not attached".into());
                 };
                 let expand = windows || !sessions;
-                let (items, lines) = self.chooser_lines(expand);
+                let (items, lines) = self.chooser_lines(expand, false);
                 // Start on the current window (or session).
                 let cur = self.session(sid).and_then(|s| s.window()).map(|w| w.id).filter(|_| expand);
-                let sel = items.iter().position(|i| *i == (sid, cur)).unwrap_or(0);
+                let sel = items.iter().position(|i| *i == ChooserItem::Tree(sid, cur)).unwrap_or(0);
                 let c = self.clients.get_mut(&cid).unwrap();
                 // One modal at a time: a picker opened from the `:` prompt
                 // replaces it, or its keys would go to an invisible prompt.
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { expand, items, lines, sel, top: 0 });
+                c.chooser = Some(Chooser { expand, buffers: false, items, lines, sel, top: 0 });
                 Outcome::Ok
             }
             Cmd::ListKeys => {
@@ -2435,6 +2976,18 @@ impl Server {
             return;
         }
 
+        // A clock swallows the next key and goes away, as tmux does.
+        if key.is_some()
+            && let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut())
+            && p.clock
+        {
+            p.clock = false;
+            if let Some(c) = self.clients.get_mut(&cid) {
+                c.swallow_up.insert(rec.vk);
+                c.last_grid = None;
+            }
+            return;
+        }
         let in_copy =
             self.session(sid).and_then(|s| s.window()).and_then(|w| w.active_pane()).is_some_and(|p| p.copy.is_some());
         // The picker is a mode, like copy mode: the prefix still works (so
@@ -2681,13 +3234,20 @@ impl Server {
     /// The picker's lines from the live sessions, tmux `choose-tree` style:
     /// `(n) - name: 2 windows (attached)` and, when expanded,
     /// `(n)   - 0: cmd* (2 panes) "title"` under each session.
-    fn chooser_lines(&self, expand: bool) -> (Vec<(SessionId, Option<WindowId>)>, Vec<String>) {
+    fn chooser_lines(&self, expand: bool, buffers: bool) -> (Vec<ChooserItem>, Vec<String>) {
         let mut items = Vec::new();
         let mut lines = Vec::new();
         let tag = |n: usize| if n < 10 { format!("({n}) ") } else { "    ".to_string() };
+        if buffers {
+            for (i, (name, data)) in self.buffers.iter().enumerate() {
+                items.push(ChooserItem::Buffer(i));
+                lines.push(format!("{}{name}: {} bytes: {}", tag(i), data.len(), one_line(data, 60)));
+            }
+            return (items, lines);
+        }
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
-            items.push((s.id, None));
+            items.push(ChooserItem::Tree(s.id, None));
             lines.push(format!(
                 "{}{} {}: {} windows{}",
                 tag(lines.len()),
@@ -2708,7 +3268,7 @@ impl Server {
                     ""
                 };
                 let title = w.active_pane().map(|p| p.title.as_str()).unwrap_or("");
-                items.push((s.id, Some(w.id)));
+                items.push(ChooserItem::Tree(s.id, Some(w.id)));
                 lines.push(format!(
                     "{}  - {}: {}{} ({} panes) \"{}\"",
                     tag(lines.len()),
@@ -2749,8 +3309,20 @@ impl Server {
             (KeyCode::Enter, _, _) => {
                 let target = ch.items.get(ch.sel).copied();
                 c.chooser = None;
-                if let Some((sid, wid)) = target {
-                    self.chooser_go(cid, sid, wid);
+                match target {
+                    Some(ChooserItem::Tree(sid, wid)) => self.chooser_go(cid, sid, wid),
+                    Some(ChooserItem::Buffer(i)) => {
+                        let name = self.buffers.get(i).map(|(n, _)| n.clone());
+                        match name {
+                            Some(n) => {
+                                let out = self
+                                    .exec(Cmd::PasteBuffer { name: Some(n), target: None, bracketed: true }, Some(cid));
+                                self.reply(cid, out);
+                            }
+                            None => self.message(cid, "buffer is gone"),
+                        }
+                    }
+                    None => {}
                 }
             }
             _ => {}
@@ -2778,6 +3350,7 @@ impl Server {
             Cmd::SwitchClient {
                 next: false,
                 prev: false,
+                last: false,
                 target: Some(Target { session: Some(name), ..Default::default() }),
             },
             Some(cid),
@@ -2803,6 +3376,33 @@ impl Server {
         };
         let rows = p.rows as i64;
         let cols = p.cols;
+        // vi counts: digits before a motion repeat it ("3j"), except a 0 with
+        // no count yet, which is "start of line".
+        let has_count = p.copy.as_ref().and_then(|c| c.count).is_some();
+        if let KeyCode::Char(d @ '0'..='9') = k.code
+            && !k.ctrl
+            && !k.alt
+            && (d != '0' || has_count)
+            && let Some(c) = p.copy.as_mut()
+        {
+            let n = c.count.unwrap_or(0).saturating_mul(10) + (d as usize - '0' as usize);
+            c.count = Some(n.min(10_000));
+            return;
+        }
+        let count = p.copy.as_mut().and_then(|c| c.count.take()).unwrap_or(1).max(1);
+        // Motions that repeat with a count do so here, once each.
+        if count > 1
+            && matches!(
+                (k.code, k.ctrl),
+                (KeyCode::Char('j' | 'k' | 'h' | 'l' | 'w' | 'b' | 'e' | 'W' | 'B' | 'E'), false)
+                    | (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right, _)
+            )
+        {
+            for _ in 0..count {
+                self.copy_key(cid, sid, k);
+            }
+            return;
+        }
         let Some(c) = p.copy.as_mut() else { return };
         match (k.code, k.ctrl, k.alt) {
             (KeyCode::Escape, _, _) => {
@@ -2856,6 +3456,55 @@ impl Server {
                 let c = p.copy.as_mut().unwrap();
                 c.anchor = Some((abs, c.cx));
             }
+            // A rectangle instead of whole lines, as vi's C-v does.
+            (KeyCode::Char('v'), true, _) => {
+                let abs = copy_abs(p);
+                let c = p.copy.as_mut().unwrap();
+                c.rect = !c.rect;
+                if c.anchor.is_none() {
+                    c.anchor = Some((abs, c.cx));
+                }
+            }
+            // Word motions.
+            (KeyCode::Char(w @ ('w' | 'W' | 'b' | 'B' | 'e' | 'E')), false, false) => {
+                copy_word_motion(p, w);
+            }
+            // First non-blank of the line.
+            (KeyCode::Char('^'), false, false) => {
+                let abs = copy_abs(p);
+                let (line, _) = p.line_text(abs);
+                let col = line.chars().take_while(|ch| ch.is_whitespace()).count() as u16;
+                let c = p.copy.as_mut().unwrap();
+                c.cx = col.min(cols.saturating_sub(1));
+            }
+            // Top, middle and bottom of what is on screen.
+            (KeyCode::Char('H'), false, false) => c.cy = 0,
+            (KeyCode::Char('M'), false, false) => c.cy = (rows / 2) as u16,
+            (KeyCode::Char('L'), false, false) => c.cy = (rows - 1).max(0) as u16,
+            // Paragraphs: the next or previous blank line.
+            (KeyCode::Char(dir @ ('{' | '}')), false, false) => {
+                let back = dir == '{';
+                let from = copy_abs(p);
+                let last = p.scrollback_len() + p.rows as usize - 1;
+                let mut abs = from;
+                loop {
+                    if back {
+                        if abs == 0 {
+                            break;
+                        }
+                        abs -= 1;
+                    } else {
+                        if abs >= last {
+                            break;
+                        }
+                        abs += 1;
+                    }
+                    if p.line_text(abs).0.trim().is_empty() && abs != from {
+                        break;
+                    }
+                }
+                copy_goto(p, abs);
+            }
             // Search, like less and vim: / goes back through the scrollback,
             // ? goes forward, n and N repeat.
             (KeyCode::Char('/'), false, false) | (KeyCode::Char('?'), false, false) => {
@@ -2880,7 +3529,12 @@ impl Server {
             (KeyCode::Enter, _, _) | (KeyCode::Char('y'), false, false) | (KeyCode::Char('w'), true, _) => {
                 if c.anchor.is_some() {
                     match copy_selection(p) {
-                        Ok(n) => self.message(cid, &format!("copied {n} characters")),
+                        Ok((n, text)) => {
+                            // Both places, as tmux with set-clipboard does:
+                            // a new paste buffer and the Windows clipboard.
+                            self.set_buffer(None, &text, false);
+                            self.message(cid, &format!("copied {n} characters"));
+                        }
                         Err(e) => self.message(cid, &e),
                     }
                 }
@@ -3109,7 +3763,10 @@ impl Server {
                     exit_copy_mode(pane);
                 } else {
                     match copy_selection(pane) {
-                        Ok(n) => self.message(cid, &format!("copied {n} characters")),
+                        Ok((n, text)) => {
+                            self.set_buffer(None, &text, false);
+                            self.message(cid, &format!("copied {n} characters"));
+                        }
                         Err(e) => self.message(cid, &e),
                     }
                     if let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.pane_mut(pid)) {
@@ -3158,10 +3815,10 @@ impl Server {
         let Some(sid) = c.session else { return };
         let (cols, rows) = (c.cols, c.rows);
         // The picker shows the live tree; keep the selection on the same item.
-        if let Some((expand, want, sel)) =
-            c.chooser.as_ref().map(|ch| (ch.expand, ch.items.get(ch.sel).copied(), ch.sel))
+        if let Some((expand, buffers, want, sel)) =
+            c.chooser.as_ref().map(|ch| (ch.expand, ch.buffers, ch.items.get(ch.sel).copied(), ch.sel))
         {
-            let (items, lines) = self.chooser_lines(expand);
+            let (items, lines) = self.chooser_lines(expand, buffers);
             let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
             ch.sel =
                 want.and_then(|w| items.iter().position(|i| *i == w)).unwrap_or(sel.min(items.len().saturating_sub(1)));
@@ -3257,7 +3914,7 @@ impl Server {
                 let cur_abs = copy_abs(p);
                 let cm = p.copy.as_ref().unwrap();
                 let sel = copy_sel_view(p.rows, p.cols, cm, cur_abs);
-                copy_views.insert(p.id, CopyView { cx: cm.cx, cy: cm.cy, sel, offset: cm.offset });
+                copy_views.insert(p.id, CopyView { cx: cm.cx, cy: cm.cy, sel, rect: cm.rect, offset: cm.offset });
                 let off = cm.offset;
                 p.parser.screen_mut().set_scrollback(off);
             }
@@ -3278,6 +3935,21 @@ impl Server {
         for p in &mut w.panes {
             if p.copy.is_some() {
                 p.parser.screen_mut().set_scrollback(0);
+            }
+        }
+        // `clock-mode`: a big clock over the panes that asked for one.
+        {
+            let now = chrono::Local::now().format("%H:%M").to_string();
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            let clocks: Vec<Rect> =
+                w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)).map(|(_, r)| *r).collect();
+            for rect in clocks {
+                let style = render::Style::colors(self.opts.pane_border_active_fg, vt100::Color::Default);
+                grid.fill(rect, render::Style::default());
+                if !render::draw_big_text(&mut grid, rect, &now, style) && rect.w > 0 && rect.h > 0 {
+                    grid.put_str(rect.x, rect.y, &now, style, rect.w);
+                }
+                cursor = None;
             }
         }
         // `display-panes`: each pane wears its number until the timer runs out.
@@ -3483,8 +4155,122 @@ fn enter_copy_mode(p: &mut Pane) {
             dragging: false,
             search: None,
             search_back: true,
+            count: None,
+            rect: false,
         });
     }
+}
+
+/// Move the copy cursor to an absolute line, scrolling if it is off screen.
+fn copy_goto(p: &mut Pane, abs: usize) {
+    let max = p.scrollback_len();
+    let rows = p.rows as usize;
+    let Some(c) = p.copy.as_ref() else { return };
+    let top = max - c.offset; // absolute line at the top of the view
+    let (offset, cy) = if abs < top {
+        (max - abs, 0)
+    } else if abs >= top + rows {
+        ((max + rows - 1).saturating_sub(abs), rows - 1)
+    } else {
+        (c.offset, abs - top)
+    };
+    if let Some(c) = p.copy.as_mut() {
+        c.offset = offset.min(max);
+        c.cy = cy.min(rows.saturating_sub(1)) as u16;
+    }
+}
+
+/// vi's `w`, `b` and `e` (and their WORD variants) on the copy cursor.
+fn copy_word_motion(p: &mut Pane, key: char) {
+    let cols = p.cols as usize;
+    let big = key.is_uppercase();
+    let class = |ch: char| -> u8 {
+        if ch.is_whitespace() {
+            0
+        } else if big || ch.is_alphanumeric() || ch == '_' {
+            1
+        } else {
+            2
+        }
+    };
+    let abs = copy_abs(p);
+    let last = p.scrollback_len() + p.rows as usize - 1;
+    let mut line: Vec<char> = p.line_text(abs).0.chars().collect();
+    line.resize(cols.max(1), ' ');
+    let mut x = p.copy.as_ref().map(|c| c.cx as usize).unwrap_or(0).min(cols.saturating_sub(1));
+    let mut cur = abs;
+    let forward = key != 'b' && key != 'B';
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        if steps > 4096 {
+            break;
+        }
+        let moved = if forward {
+            if x + 1 < line.len() {
+                x += 1;
+                true
+            } else if cur < last {
+                cur += 1;
+                line = p.line_text(cur).0.chars().collect();
+                line.resize(cols.max(1), ' ');
+                x = 0;
+                true
+            } else {
+                false
+            }
+        } else if x > 0 {
+            x -= 1;
+            true
+        } else if cur > 0 {
+            cur -= 1;
+            line = p.line_text(cur).0.chars().collect();
+            line.resize(cols.max(1), ' ');
+            x = line.len().saturating_sub(1);
+            true
+        } else {
+            false
+        };
+        if !moved {
+            break;
+        }
+        let here = class(line[x]);
+        if here == 0 {
+            continue;
+        }
+        // `w`/`b` stop at the start of a word, `e` at its end.
+        let neighbour = match key {
+            'e' | 'E' => line.get(x + 1).copied().map(class).unwrap_or(0),
+            _ if x == 0 => 0,
+            _ => class(line[x - 1]),
+        };
+        if neighbour != here {
+            break;
+        }
+    }
+    if cur != abs {
+        copy_goto(p, cur);
+    }
+    if let Some(c) = p.copy.as_mut() {
+        c.cx = x.min(cols.saturating_sub(1)) as u16;
+    }
+}
+
+/// A `-x`/`-y` size: cells, or a percentage of the window.
+fn parse_size(spec: &str, full: u16) -> Option<u16> {
+    let spec = spec.trim();
+    if let Some(p) = spec.strip_suffix('%') {
+        let pct: u32 = p.trim().parse().ok()?;
+        return Some(((full as u32 * pct.min(100)) / 100).max(1) as u16);
+    }
+    spec.parse::<u16>().ok().map(|v| v.max(1))
+}
+
+/// One line of a buffer for a listing, clipped to `max` characters.
+fn one_line(s: &str, max: usize) -> String {
+    let flat: String = s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).collect();
+    let flat = flat.trim().to_string();
+    if flat.chars().count() <= max { flat } else { format!("{}…", flat.chars().take(max).collect::<String>()) }
 }
 
 fn exit_copy_mode(p: &mut Pane) {
@@ -3531,7 +4317,9 @@ fn copy_sel_view(rows: u16, cols: u16, cm: &CopyMode, cursor_abs: usize) -> Opti
 }
 
 /// Copy the selected text to the clipboard; returns the character count.
-fn copy_selection(p: &mut Pane) -> Result<usize, String> {
+/// Returns the number of characters copied and the text, which the caller
+/// also stores as a paste buffer.
+fn copy_selection(p: &mut Pane) -> Result<(usize, String), String> {
     let cur_abs = copy_abs(p);
     let c = p.copy.as_ref().unwrap();
     let Some((abs_a, col_a)) = c.anchor else { return Err("no selection".into()) };
@@ -3540,12 +4328,27 @@ fn copy_selection(p: &mut Pane) -> Result<usize, String> {
     if a > b {
         std::mem::swap(&mut a, &mut b);
     }
+    let rect = p.copy.as_ref().is_some_and(|c| c.rect);
+    let (rx0, rx1) = (a.1.min(b.1) as usize, a.1.max(b.1) as usize);
     let mut text = String::new();
     for abs in a.0..=b.0 {
         let (line, wrapped) = p.line_text(abs);
         let chars: Vec<char> = line.chars().collect();
-        let start = if abs == a.0 { a.1 as usize } else { 0 };
-        let end = if abs == b.0 { (b.1 as usize + 1).min(chars.len()) } else { chars.len() };
+        // A rectangle takes the same columns from every line.
+        let start = if rect {
+            rx0
+        } else if abs == a.0 {
+            a.1 as usize
+        } else {
+            0
+        };
+        let end = if rect {
+            (rx1 + 1).min(chars.len())
+        } else if abs == b.0 {
+            (b.1 as usize + 1).min(chars.len())
+        } else {
+            chars.len()
+        };
         let seg: String = if start < end { chars[start..end].iter().collect() } else { String::new() };
         if abs == b.0 {
             text.push_str(seg.trim_end());
@@ -3558,7 +4361,7 @@ fn copy_selection(p: &mut Pane) -> Result<usize, String> {
     }
     let n = text.chars().count();
     crate::clipboard::set_text(&text).map_err(|e| format!("clipboard: {e}"))?;
-    Ok(n)
+    Ok((n, text))
 }
 
 #[cfg(test)]
@@ -3576,6 +4379,7 @@ mod tests {
             interactive: true,
             pane_env: None,
             session: Some(1),
+            last_session: None,
             last_grid: Some(Grid::new(10, 2)),
             last_cursor: Some((0, 0)),
             prefix: false,
@@ -3592,6 +4396,18 @@ mod tests {
             window_hits: Vec::new(),
         };
         (c, rx)
+    }
+
+    /// Every default binding must survive the trip through `list-keys`:
+    /// printed as a command line and parsed back into the same command.
+    #[test]
+    fn default_bindings_round_trip() {
+        for (key, b) in default_bindings() {
+            let printed = b.cmd.to_string();
+            let words = crate::command::tokenize(&printed).unwrap_or_else(|e| panic!("{key}: {printed}: {e}"));
+            let back = crate::command::parse(&words).unwrap_or_else(|e| panic!("{key}: {printed}: {e}"));
+            assert_eq!(back.to_string(), printed, "{key} does not round-trip");
+        }
     }
 
     #[test]
