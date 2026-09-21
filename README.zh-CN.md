@@ -7,7 +7,7 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 
 <p align="center">
   <img src="docs/img/wmux-demo.gif" width="880"
-       alt="把一个 shell 切成几块、用 h/j/k/l 移动、全屏、窗口选择器、脱离后再接回来">
+       alt="把一个 shell 切成几块、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
 </p>
 
 用过 tmux 的人换到 Windows，最想念的大概就是它：关掉终端窗口，里面跑的东西还在；一个窗口切成几块，各干各的；`prefix d` 走人，回来 `attach` 接着干。wmux 把这套搬到了 Windows 上，而且不是靠 Cygwin 或 MSYS 模拟出来的，是直接用 ConPTY 和 Win32 控制台 API 写的，PowerShell、WSL、cmd 都能在里面正常跑。
@@ -16,8 +16,14 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 
 - **按键原样送达。** wmux 把键盘事件按 Windows 原生的格式（Windows Terminal 用的那套 win32-input-mode）转给每个 pane，所以 PSReadLine 的组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法、WSL 里的 vim 和 htop，表现和不用 wmux 时一模一样。
 - **tmux 的肌肉记忆直接用。** `Ctrl+b` 前缀，`%` 和 `"` 分屏，`c` 开窗口，`d` 脱离，`[` 进 copy mode，`:` 敲命令。命令行也是那些名字：`new-session`、`attach`、`ls`、`send-keys`……配置文件是 `.tmux.conf` 的语法。
-- **重启电脑也不怕。** 每个 session 的布局会自动存盘，开机后 `wmux resume` 就回来了。
+- **重启电脑也不怕。** 每个 session 的布局会自动存盘，开机后 `wmux resume` 就回来了，连每个 pane 屏幕上的输出一起（`save-history`，默认 500 行）。
+- **后台的事会主动告诉你。** 没在看的窗口有输出就在状态栏标 `#`，响铃 `!`，太久没动静 `~`（`monitor-activity`），`prefix M-n` 直接跳过去；程序挂了 pane 也能留着写明退出码（`remain-on-exit`），不会无声无息地消失。
 - **能装插件。** 和 tmux 一样，插件就是一个目录加几个脚本，用 `run-shell`、hook 和状态栏格式串往里挂东西。
+
+<p align="center">
+  <img src="docs/img/wmux-alerts.gif" width="880"
+       alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
+</p>
 
 ## 安装
 

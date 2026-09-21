@@ -53,9 +53,9 @@
         <p class="meta" data-i18n="hero.meta">MIT · Windows 10 1809 or newer · one 3 MB exe</p>
 
         <figure class="stage">
-          <img src="img/wmux-demo.gif" width="880" alt="A wmux session: splitting panes, zooming, the window picker, detaching and attaching again" />
+          <img src="img/wmux-demo.gif" width="880" alt="A wmux session: splitting panes, zooming, the pane menu, the window picker, detaching and attaching again" />
           <figcaption data-i18n="hero.caption">
-            One session, recorded end to end: split, move, zoom, switch windows, detach, attach again.
+            One session, recorded end to end: split, move, zoom, the pane menu, switch windows, detach, attach again.
           </figcaption>
         </figure>
       </section>
@@ -63,7 +63,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>94</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>126</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -91,21 +91,27 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">02</span>
-          <h2 data-i18n="c2.title">One pane full screen, or pick from a list</h2>
+          <h2 data-i18n="c2.title">Full screen, a list, or a menu</h2>
           <p data-i18n="c2.sub">
             <kbd>C-b z</kbd> blows the current pane up to the whole window and back. <kbd>C-b w</kbd> opens the
             tree of sessions and windows: <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>g</kbd> <kbd>G</kbd> for top
-            and bottom, digits to jump, <kbd>Enter</kbd> to go.
+            and bottom, digits to jump, <kbd>Enter</kbd> to go. <kbd>C-b &gt;</kbd> puts the pane commands in a
+            menu, so nothing has to be remembered.
           </p>
         </header>
         <div class="pair">
           <figure class="shot"><img src="img/zoom.png" alt="A zoomed pane filling the window, Z on the status line" loading="lazy" /></figure>
           <figure class="shot"><img src="img/picker.png" alt="The choose-tree picker listing a session and its windows" loading="lazy" /></figure>
         </div>
+        <div class="pair">
+          <figure class="shot"><img src="img/menu.png" alt="The pane menu: split, swap, break out, zoom, respawn, kill, each with a letter" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
+        </div>
         <ul class="points">
-          <li data-i18n="c2.p1"><b>Rearrange in one key.</b> <kbd>C-b Space</kbd> cycles the five layouts: even columns, even rows, one main pane beside or above the rest, and a tiled grid.</li>
+          <li data-i18n="c2.p1"><b>Rearrange in one key.</b> <kbd>C-b Space</kbd> cycles the five layouts: even columns, even rows, one main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to this one.</li>
           <li data-i18n="c2.p2"><b>Find the pane.</b> <kbd>C-b q</kbd> writes a number across every pane; press it to go there.</li>
-          <li data-i18n="c2.p3"><b>Search the scrollback.</b> In copy mode <kbd>/</kbd> and <kbd>?</kbd> search, <kbd>n</kbd> and <kbd>N</kbd> repeat, and the hit lands in the middle of the screen.</li>
+          <li data-i18n="c2.p3"><b>Search the scrollback.</b> In copy mode <kbd>/</kbd> searches forward and <kbd>?</kbd> back, <kbd>n</kbd> and <kbd>N</kbd> repeat, and the hit lands in the middle of the screen.</li>
+          <li data-i18n="c2.p4"><b>A box over the window.</b> <code>display-popup</code> runs a program in a box and takes it away when it finishes — a quick <code>git log</code> without disturbing the layout.</li>
         </ul>
       </section>
 
@@ -124,13 +130,38 @@
         </div>
         <ul class="points">
           <li data-i18n="c3.p1"><b>Reboots too.</b> Each session is saved to its own file whenever its shape changes, so <code>wmux resume</code> brings back the windows, the pane layout, each pane's command and its directory.</li>
-          <li data-i18n="c3.p2"><b>Per session.</b> <code>wmux list-saved</code> shows what can come back; <code>wmux resume work</code> restores one of them.</li>
+          <li data-i18n="c3.p2"><b>And what it printed.</b> <code>save-history</code> (500 lines by default) goes into that file too, so a resumed pane comes back with its output on screen, not just its prompt.</li>
+          <li data-i18n="c3.p3"><b>Per session.</b> <code>wmux list-saved</code> shows what can come back; <code>wmux resume work</code> restores one of them.</li>
         </ul>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">04</span>
+          <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
+          <p data-i18n="c35.sub">
+            A window you are not looking at can say so: <code>monitor-activity</code> marks it with
+            <b>#</b> when it prints, <b>!</b> on a bell, <b>~</b> when it has been silent too long.
+            <kbd>C-b M-n</kbd> jumps to the next window that has something to report.
+          </p>
+        </header>
+        <figure class="stage">
+          <img src="img/wmux-alerts.gif" width="880" loading="lazy" alt="A background job finishes in another window, the status line marks it, C-b M-n jumps there, a failing command leaves its pane in place, and a popup shows the window list" />
+          <figcaption data-i18n="c35.caption">
+            A deploy finishes in window 1 while window 0 carries on; the flag appears in the status line and in
+            <code>list-windows</code>; a command that fails leaves its pane and its exit code behind.
+          </figcaption>
+        </figure>
+        <ul class="points">
+          <li data-i18n="c35.p1"><b>A dead job leaves evidence.</b> With <code>remain-on-exit</code> the pane stays when its program exits, showing <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts it again in place.</li>
+          <li data-i18n="c35.p2"><b>Keep the whole log.</b> <code>pipe-pane "$input | Add-Content build.log"</code> copies everything a pane prints into a command, and says so if that command cannot keep up.</li>
+          <li data-i18n="c35.p3"><b>Scripts can wait for each other.</b> <code>wmux wait-for ready</code> blocks until another client runs <code>wmux wait-for -S ready</code>; <code>-L</code> and <code>-U</code> are a lock.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">05</span>
           <h2 data-i18n="c4.title">Your .tmux.conf, more or less</h2>
           <p data-i18n="c4.sub">
             The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
@@ -142,19 +173,22 @@ set -g default-shell wsl          <span class="c"># pwsh (default), powershell, 
 set -g mouse on
 set -g repeat-time 500            <span class="c"># how long a `bind -r` key keeps working</span>
 
+set -g monitor-activity on        <span class="c"># mark a background window that prints</span>
+set -g remain-on-exit on          <span class="c"># keep a pane whose program died</span>
+
 bind -r h select-pane -L          <span class="c"># -r: press h h h after one prefix</span>
 bind | split-window -h
 bind -n M-Right next-window       <span class="c"># -n: no prefix at all</span>
 set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         <ul class="points">
-          <li data-i18n="c4.p1"><b>Scriptable.</b> <code>wmux send-keys</code>, <code>wmux capture-pane -p</code> and <code>wmux split-window</code> drive a session from outside; inside a pane they need no socket name.</li>
+          <li data-i18n="c4.p1"><b>Scriptable.</b> <code>wmux send-keys</code> (including tmux's <code>-X</code> copy-mode commands), <code>wmux capture-pane -p -e</code> and <code>wmux split-window</code> drive a session from outside; inside a pane they need no socket name.</li>
           <li data-i18n="c4.p2"><b>Plugins.</b> A directory with a <code>&lt;name&gt;.wmux</code> file of commands, plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
         </ul>
       </section>
 
       <section class="chapter install">
         <header class="chapter-head">
-          <span class="num">05</span>
+          <span class="num">06</span>
           <h2 data-i18n="c5.title">Install</h2>
         </header>
         <div class="cards">

@@ -11,7 +11,7 @@ run inside panes with full key fidelity.
 
 <p align="center">
   <img src="docs/img/wmux-demo.gif" width="880"
-       alt="Splitting a shell into panes, moving with h/j/k/l, zooming, the window picker, detaching and attaching again">
+       alt="Splitting a shell into panes, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
 </p>
 
 - **Native**: built on ConPTY and the Win32 console API. No Cygwin, no MSYS,
@@ -26,6 +26,16 @@ run inside panes with full key fidelity.
   window, `d` to detach, `[` for copy mode, `:` for a command prompt, the same
   command names on the CLI (`new-session`, `attach`, `ls`, `send-keys`, ...),
   and a `.tmux.conf`-style config file.
+- **Background jobs that report back**: a window you are not looking at is
+  marked when it prints, rings or goes quiet (`monitor-activity`,
+  `C-b M-n` jumps to it), a pane whose program dies can keep its output and
+  exit code (`remain-on-exit`), and a resumed session comes back with what
+  each pane had on screen (`save-history`).
+
+<p align="center">
+  <img src="docs/img/wmux-alerts.gif" width="880"
+       alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
+</p>
 
 ## Install
 

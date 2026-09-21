@@ -29,72 +29,8 @@ const FRAME_MS: u64 = 200;
 #[ignore = "recording, not an assertion; run with --ignored"]
 fn record_demo() {
     let out_dir = std::env::var("WMUX_DEMO_OUT").unwrap_or_else(|_| "target/demo-frames".into());
-    let exe = env!("CARGO_BIN_EXE_wmux").to_string();
-    std::fs::create_dir_all(&out_dir).expect("create out dir");
-
-    let socket = "demo".to_string();
-    let tmp = std::env::temp_dir().join(format!("wmux-demo-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).expect("temp dir");
-    let sessions = tmp.join("sessions");
-
-    // A short prompt, so the recording shows wmux rather than path names.
-    let prompt = tmp.join("prompt.ps1");
-    // No prediction and no shared history: a recording must show wmux, never
-    // whatever this machine's shell history happens to hold.
-    std::fs::write(
-        &prompt,
-        "function global:prompt { 'PS> ' }\n\
-         $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
-         try { Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing } catch {}\n\
-         Clear-Host\n",
-    )
-    .expect("prompt script");
-    let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
-    let conf = tmp.join("wmux.conf");
-    // A clock on the right instead of the pane title: the recording should
-    // show wmux, not this machine's paths.
-    std::fs::write(&conf, format!("set -g default-command \"{shell}\"\nset -g status-right \"%H:%M\"\n"))
-        .expect("config");
-
-    let pty = native_pty_system();
-    let pair = pty.openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 }).expect("openpty");
-    // The recording starts in a plain shell: wmux is started from it, and
-    // detaching comes back to it.
-    let mut cmd = CommandBuilder::new("pwsh.exe");
-    cmd.args(["-NoLogo", "-NoProfile", "-NoExit", "-File", &prompt.to_string_lossy()]);
-    let exe_dir = std::path::Path::new(&exe).parent().unwrap().to_string_lossy().into_owned();
-    cmd.env("PATH", format!("{exe_dir};{}", std::env::var("PATH").unwrap_or_default()));
-    cmd.env("WMUX_SESSIONS_DIR", sessions.to_string_lossy().to_string());
-    cmd.env("WMUX_CONFIG", conf.to_string_lossy().to_string());
-    cmd.env_remove("WMUX");
-    cmd.env_remove("WMUX_PANE");
-    let child = pair.slave.spawn_command(cmd).expect("spawn wmux");
-    drop(pair.slave);
-
-    let mut reader = pair.master.try_clone_reader().expect("reader");
-    let mut writer = pair.master.take_writer().expect("writer");
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                break;
-            }
-        }
-    });
-    // Never drop the master on this thread: ClosePseudoConsole waits for
-    // conhost, which may be blocked writing to us.
-    std::mem::forget(pair.master);
-
-    let mut rec = Recorder {
-        parser: vt100::Parser::new(ROWS, COLS, 200),
-        rx,
-        writer: &mut writer,
-        out_dir: out_dir.clone(),
-        frame: 0,
-        raw: Vec::new(),
-        child,
-    };
+    let mut d = Demo::start("demo", &out_dir, "");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
 
     rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
     rec.hold(3);
@@ -132,6 +68,12 @@ fn record_demo() {
     rec.key("\x02z");
     rec.hold(3);
 
+    // The pane menu: every pane command behind one key, no cheat sheet.
+    rec.key("\x02>");
+    rec.hold(5);
+    rec.key("\x1b");
+    rec.hold(2);
+
     // A second window, and the picker that switches between them.
     rec.key("\x02c");
     rec.hold(3);
@@ -154,27 +96,179 @@ fn record_demo() {
     rec.key("\x020");
     rec.hold(8);
 
-    // Tidy up: kill the server and the temp directory.
-    let _ = std::process::Command::new(&exe)
-        .args(["-L", &socket, "kill-server"])
-        .env("WMUX_SESSIONS_DIR", sessions.to_string_lossy().to_string())
-        .status();
-    let _ = rec.child.kill();
-    let _ = std::fs::remove_dir_all(&tmp);
-    println!("wrote {} frames to {}", rec.frame, out_dir);
+    d.finish();
 }
 
-struct Recorder<'a> {
+/// The second recording: what a background job looks like when it finishes
+/// somewhere you are not looking, and the two windows over the window.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_alerts() {
+    let out_dir = std::env::var("WMUX_DEMO_OUT2").unwrap_or_else(|_| "target/demo-frames-2".into());
+    // The alert flags are off by default, as in tmux; this is the recording
+    // of what turning them on looks like.
+    let mut d = Demo::start("demo2", &out_dir, "set -g monitor-activity on\nset -g remain-on-exit on\n");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("wmux -L {socket} new -s ops"));
+    rec.wait_for("session", |s| s.contents().contains("[ops]"), 30);
+    rec.hold(3);
+
+    // A second window with a job in it that takes a while.
+    rec.key("\x02c");
+    rec.wait_for("window 1", |s| s.contents().contains("1:pwsh*"), 20);
+    rec.hold(2);
+    rec.type_line("Start-Sleep -Seconds 6; 'deploy finished'");
+    rec.hold(2);
+
+    // Walk away from it: back to window 0, carry on working.
+    rec.key("\x020");
+    rec.hold(3);
+    rec.type_line("wmux list-windows");
+    rec.hold(4);
+
+    // The job finishes over there: the status line grows a # on window 1,
+    // and so does the listing.
+    rec.wait_for("activity flag", |s| s.contents().contains("1:pwsh-#"), 30);
+    rec.hold(4);
+    rec.type_line("wmux list-windows");
+    rec.hold(6);
+
+    // C-b M-n goes straight to the window that has something to say.
+    rec.key("\x02\x1bn");
+    rec.wait_for("the finished job", |s| s.contents().contains("deploy finished"), 20);
+    rec.hold(6);
+
+    // A job in a pane of its own that falls over: remain-on-exit keeps the
+    // pane, what it printed, and the code it died with.
+    rec.type_line("wmux split-window -v cmd.exe /c \"echo tests failed & exit 3\"");
+    rec.wait_for("the exit note", |s| s.contents().contains("exited with 3"), 20);
+    rec.hold(7);
+
+    // A popup: a program in a box over the window, gone when it is done.
+    rec.key("\x02:");
+    rec.hold(2);
+    rec.type_line("display-popup -w 60% -h 40% cmd.exe /c wmux list-windows");
+    rec.wait_for("the popup", |s| s.contents().contains("press any key"), 20);
+    rec.hold(7);
+    rec.key(" ");
+    rec.hold(3);
+
+    d.finish();
+}
+
+/// Everything a recording needs: a pty running a plain shell with wmux on
+/// the PATH, a scratch directory, and the frame recorder itself.
+struct Demo {
+    rec: Recorder,
+    tmp: std::path::PathBuf,
+    exe: String,
+    socket: String,
+}
+
+impl Demo {
+    fn start(socket: &str, out_dir: &str, extra_conf: &str) -> Demo {
+        let exe = env!("CARGO_BIN_EXE_wmux").to_string();
+        std::fs::create_dir_all(out_dir).expect("create out dir");
+        // A recording that failed half way leaves its server behind; start
+        // from nothing so the take is the same every time.
+        let _ = std::process::Command::new(&exe).args(["-L", socket, "kill-server"]).status();
+        let tmp = std::env::temp_dir().join(format!("wmux-{socket}-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("temp dir");
+        let sessions = tmp.join("sessions");
+
+        // A short prompt, so the recording shows wmux rather than path names.
+        let prompt = tmp.join("prompt.ps1");
+        // No prediction and no shared history: a recording must show wmux,
+        // never whatever this machine's shell history happens to hold.
+        std::fs::write(
+            &prompt,
+            // C:\ so that `list-panes` (which prints each pane's directory)
+            // shows a path that is the same on every machine.
+            "function global:prompt { 'PS> ' }\n\
+             $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
+             try { Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing } catch {}\n\
+             Set-Location C:\\\n\
+             Clear-Host\n",
+        )
+        .expect("prompt script");
+        let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
+        let conf = tmp.join("wmux.conf");
+        // A clock on the right instead of the pane title: the recording should
+        // show wmux, not this machine's paths.
+        std::fs::write(
+            &conf,
+            format!("set -g default-command \"{shell}\"\nset -g status-right \"%H:%M\"\n{extra_conf}"),
+        )
+        .expect("config");
+
+        let pty = native_pty_system();
+        let pair = pty.openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 }).expect("openpty");
+        // The recording starts in a plain shell: wmux is started from it, and
+        // detaching comes back to it.
+        let mut cmd = CommandBuilder::new("pwsh.exe");
+        cmd.args(["-NoLogo", "-NoProfile", "-NoExit", "-File", &prompt.to_string_lossy()]);
+        let exe_dir = std::path::Path::new(&exe).parent().unwrap().to_string_lossy().into_owned();
+        cmd.env("PATH", format!("{exe_dir};{}", std::env::var("PATH").unwrap_or_default()));
+        cmd.env("WMUX_SESSIONS_DIR", sessions.to_string_lossy().to_string());
+        cmd.env("WMUX_CONFIG", conf.to_string_lossy().to_string());
+        cmd.env_remove("WMUX");
+        cmd.env_remove("WMUX_PANE");
+        let child = pair.slave.spawn_command(cmd).expect("spawn wmux");
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader().expect("reader");
+        let writer = pair.master.take_writer().expect("writer");
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        // Never drop the master on this thread: ClosePseudoConsole waits for
+        // conhost, which may be blocked writing to us.
+        std::mem::forget(pair.master);
+
+        let rec = Recorder {
+            parser: vt100::Parser::new(ROWS, COLS, 200),
+            rx,
+            writer,
+            out_dir: out_dir.to_string(),
+            frame: 0,
+            raw: Vec::new(),
+            child,
+        };
+        Demo { rec, tmp, exe, socket: socket.to_string() }
+    }
+
+    /// Kill the server (and with it every pane) and the scratch directory.
+    fn finish(mut self) {
+        let _ = std::process::Command::new(&self.exe)
+            .args(["-L", &self.socket, "kill-server"])
+            .env("WMUX_SESSIONS_DIR", self.tmp.join("sessions").to_string_lossy().to_string())
+            .status();
+        let _ = self.rec.child.kill();
+        let _ = std::fs::remove_dir_all(&self.tmp);
+        println!("wrote {} frames to {}", self.rec.frame, self.rec.out_dir);
+    }
+}
+
+struct Recorder {
     parser: vt100::Parser,
     rx: mpsc::Receiver<Vec<u8>>,
-    writer: &'a mut Box<dyn Write + Send>,
+    writer: Box<dyn Write + Send>,
     out_dir: String,
     frame: u32,
     raw: Vec<u8>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
-impl Recorder<'_> {
+impl Recorder {
     /// Drain the pty for `d`, answering the cursor-position requests ConPTY
     /// makes before it lets a child run.
     fn pump(&mut self, d: Duration) {
