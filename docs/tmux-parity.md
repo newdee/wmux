@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `record` (a pane's output as an asciinema file), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
@@ -192,7 +192,27 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `window-status-current-format`, `pane-border-style`,
 `pane-active-border-style`, `base-index`, `pane-base-index`,
 `display-time`, `repeat-time`, `remain-on-exit`, `monitor-activity`,
-`monitor-bell`, `monitor-silence`, `visual-bell`, `visual-activity`.
+`monitor-bell`, `monitor-silence`, `visual-bell`, `visual-activity`,
+`pane-border-status`, `pane-border-format`.
+
+## Formats
+
+`#{...}` names: the session (`session_name` `session_id` `session_windows`
+`session_attached` `session_created`), the window (`window_name`
+`window_id` `window_index` `window_panes` `window_active`
+`window_last_flag` `window_zoomed_flag` `window_width` `window_height`
+`window_bell_flag` `window_activity_flag` `window_silence_flag`
+`window_flags`), the pane (`pane_index` `pane_id` `pane_title`
+`pane_current_command` `pane_start_command` `pane_current_path`
+`pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status`
+`pane_synchronized` `pane_in_mode` `pane_pid`), the client
+(`client_width` `client_height`) and the server (`host` `host_short`
+`socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
+#H #F #D #h`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.
+Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`, `#{?name!=value,…}`.
+Not there: tmux's `#{||:…}` / `#{&&:…}`, `#{m:pattern,var}`, `#{e|…}`
+arithmetic, `#{l:…}` literals, `#{a:…}`, `#{C:…}` search, loops
+(`#{S:…}` `#{W:…}` `#{P:…}`), and the client/cursor/mouse variables.
 Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
 `terminal-overrides`, `focus-events`, `set-clipboard`, `renumber-windows`,
 `allow-rename`, `automatic-rename`, `window-status-current-style`,

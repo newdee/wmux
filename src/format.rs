@@ -10,34 +10,149 @@ use crate::server::render::Style;
 use std::collections::HashMap;
 use vt100::Color;
 
-/// Values a format can refer to.
+/// Values a format can refer to: the session, window and pane a format is
+/// being expanded for, and the client it is drawn on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Context {
     pub session: String,
+    pub session_id: u32,
+    pub session_windows: usize,
+    /// Clients attached to the session.
+    pub session_attached: usize,
+    /// Unix time the session was created.
+    pub session_created: i64,
     pub window: String,
+    pub window_id: u32,
     pub window_index: usize,
+    pub window_panes: usize,
+    pub window_active: bool,
+    pub window_last: bool,
+    pub window_zoomed: bool,
+    pub window_width: u16,
+    pub window_height: u16,
+    pub window_bell: bool,
+    pub window_activity: bool,
+    pub window_silence: bool,
+    /// Window flags: `*` current, `-` last, `#` `!` `~` alerts, `Z` zoomed.
+    pub flags: String,
     pub pane_index: usize,
+    pub pane_id: u32,
     pub pane_title: String,
     pub pane_command: String,
+    /// The command line the pane was started with.
+    pub pane_start_command: String,
     /// Last known working directory of the pane (`#{pane_current_path}`).
     pub pane_path: String,
+    pub pane_width: u16,
+    pub pane_height: u16,
+    pub pane_active: bool,
+    /// The pane's program has exited (`remain-on-exit`), with this code.
+    pub pane_dead: bool,
+    pub pane_dead_status: Option<u32>,
+    pub pane_synchronized: bool,
+    /// In copy mode.
+    pub pane_in_mode: bool,
+    pub pane_pid: Option<u32>,
+    pub client_width: u16,
+    pub client_height: u16,
     pub host: String,
-    /// Window flags: `*` current, `-` last, `Z` zoomed.
-    pub flags: String,
+    pub socket: String,
+}
+
+/// `#{=10:var}` (first 10), `#{=-10:var}` (last 10), `#{b:var}` (basename),
+/// `#{d:var}` (dirname), `#{t:var}` (a time as a clock), `#{s/a/b/:var}`
+/// (substitution). Anything else before a colon is not a modifier.
+fn is_modifier(m: &str) -> bool {
+    matches!(m, "b" | "d" | "t")
+        || m.strip_prefix('=').is_some_and(|n| n.strip_prefix('-').unwrap_or(n).parse::<usize>().is_ok())
+        || (m.starts_with("s/") && m.ends_with('/') && m.matches('/').count() >= 3)
+}
+
+fn apply_modifier(m: &str, v: String) -> String {
+    if let Some(n) = m.strip_prefix('=') {
+        return match n.strip_prefix('-') {
+            Some(k) => {
+                let k: usize = k.parse().unwrap_or(0);
+                let total = v.chars().count();
+                v.chars().skip(total.saturating_sub(k)).collect()
+            }
+            None => v.chars().take(n.parse().unwrap_or(0)).collect(),
+        };
+    }
+    // A path may end in a separator (`std::env::temp_dir` does); the last
+    // component is still the last component.
+    let trimmed = v.trim_end_matches(['/', '\\']);
+    match m {
+        "b" => trimmed.rsplit(['/', '\\']).next().unwrap_or("").to_string(),
+        "d" => match trimmed.rfind(['/', '\\']) {
+            Some(i) => trimmed[..i].to_string(),
+            None => v,
+        },
+        "t" => match v.parse::<i64>() {
+            Ok(secs) => chrono::DateTime::from_timestamp(secs, 0)
+                .map(|t| t.with_timezone(&chrono::Local).format("%a %b %e %H:%M:%S %Y").to_string())
+                .unwrap_or(v),
+            Err(_) => v,
+        },
+        _ => {
+            // s/from/to/
+            let body = &m[2..m.len() - 1];
+            match body.split_once('/') {
+                Some((from, to)) if !from.is_empty() => v.replace(from, to),
+                _ => v,
+            }
+        }
+    }
 }
 
 impl Context {
-    fn var(&self, name: &str) -> Option<String> {
+    pub fn var(&self, name: &str) -> Option<String> {
+        if let Some((m, rest)) = name.split_once(':')
+            && is_modifier(m)
+        {
+            return self.var(rest).map(|v| apply_modifier(m, v));
+        }
+        let flag = |b: bool| if b { "1" } else { "0" }.to_string();
         Some(match name {
             "session_name" | "S" => self.session.clone(),
+            "session_id" => format!("${}", self.session_id),
+            "session_windows" => self.session_windows.to_string(),
+            "session_attached" => self.session_attached.to_string(),
+            "session_created" => self.session_created.to_string(),
             "window_name" | "W" => self.window.clone(),
+            "window_id" => format!("@{}", self.window_id),
             "window_index" | "I" => self.window_index.to_string(),
+            "window_panes" => self.window_panes.to_string(),
+            "window_active" => flag(self.window_active),
+            "window_last_flag" => flag(self.window_last),
+            "window_zoomed_flag" => flag(self.window_zoomed),
+            "window_width" => self.window_width.to_string(),
+            "window_height" => self.window_height.to_string(),
+            "window_bell_flag" => flag(self.window_bell),
+            "window_activity_flag" => flag(self.window_activity),
+            "window_silence_flag" => flag(self.window_silence),
+            "window_flags" | "F" => self.flags.clone(),
             "pane_index" | "P" => self.pane_index.to_string(),
+            "pane_id" | "D" => format!("%{}", self.pane_id),
             "pane_title" | "T" => self.pane_title.clone(),
             "pane_current_command" => self.pane_command.clone(),
+            "pane_start_command" => self.pane_start_command.clone(),
             "pane_current_path" => self.pane_path.clone(),
-            "host" | "host_short" | "H" => self.host.clone(),
-            "window_flags" | "F" => self.flags.clone(),
+            "pane_width" => self.pane_width.to_string(),
+            "pane_height" => self.pane_height.to_string(),
+            "pane_active" => flag(self.pane_active),
+            "pane_dead" => flag(self.pane_dead),
+            "pane_dead_status" => self.pane_dead_status.map(|c| c.to_string()).unwrap_or_default(),
+            "pane_synchronized" => flag(self.pane_synchronized),
+            "pane_in_mode" => flag(self.pane_in_mode),
+            "pane_pid" => self.pane_pid.map(|p| p.to_string()).unwrap_or_default(),
+            "client_width" => self.client_width.to_string(),
+            "client_height" => self.client_height.to_string(),
+            "host" | "H" => self.host.clone(),
+            "host_short" | "h" => self.host.split('.').next().unwrap_or("").to_string(),
+            "socket_path" => self.socket.clone(),
+            "version" => env!("CARGO_PKG_VERSION").to_string(),
+            "pid" => std::process::id().to_string(),
             _ => return None,
         })
     }
@@ -261,7 +376,50 @@ mod tests {
             pane_path: "C:\\src".into(),
             host: "BOX".into(),
             flags: "*".into(),
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn more_variables_and_modifiers() {
+        let mut cache = ShellCache::default();
+        let mut t = |f: &str, c: &Context| plain(&expand(f, c, &mut cache, Style::default(), now()));
+        let mut c = ctx();
+        c.session_id = 3;
+        c.window_id = 7;
+        c.pane_id = 12;
+        c.window_panes = 2;
+        c.pane_active = true;
+        c.pane_dead_status = Some(3);
+        c.pane_pid = Some(4242);
+        c.client_width = 120;
+        c.pane_path = r"C:\Users\me\src\wmux".into();
+        c.host = "box.example.com".into();
+        c.session_created = 0;
+        assert_eq!(t("#{session_id} #{window_id} #{pane_id} #D", &c), "$3 @7 %12 %12");
+        assert_eq!(t("#{window_panes}/#{pane_active}/#{pane_dead}", &c), "2/1/0");
+        assert_eq!(t("#{pane_dead_status} #{pane_pid} #{client_width}", &c), "3 4242 120");
+        assert_eq!(t("#{host_short} #h", &c), "box box");
+        assert_eq!(t("#{version}", &c), env!("CARGO_PKG_VERSION"));
+        // Modifiers, nested and in conditionals.
+        assert_eq!(t("#{b:pane_current_path}", &c), "wmux");
+        assert_eq!(t("#{d:pane_current_path}", &c), r"C:\Users\me\src");
+        c.pane_path = r"C:\Users\me\src\wmux\".into();
+        assert_eq!(t("#{b:pane_current_path}", &c), "wmux", "a trailing separator is not a component");
+        assert_eq!(t("#{d:pane_current_path}", &c), r"C:\Users\me\src");
+        c.pane_path = r"C:\Users\me\src\wmux".into();
+        assert_eq!(t("#{=4:pane_current_path}", &c), "C:\\U");
+        assert_eq!(t("#{=-4:pane_current_path}", &c), "wmux");
+        assert_eq!(t("#{=2:b:pane_current_path}", &c), "wm");
+        assert_eq!(t("#{s/src/SRC/:pane_current_path}", &c), r"C:\Users\me\SRC\wmux");
+        assert_eq!(t("#{?pane_active,#{b:pane_current_path},-}", &c), "wmux");
+        assert!(t("#{t:session_created}", &c).contains("1970") || t("#{t:session_created}", &c).contains("1969"));
+        // Things that look like modifiers but are not stay unknown, and an
+        // unknown variable is empty as before.
+        assert_eq!(t("[#{x:pane_title}]", &c), "[]");
+        assert_eq!(t("[#{nosuch}]", &c), "[]");
+        c.pane_pid = None;
+        assert_eq!(t("[#{pane_pid}]", &c), "[]");
     }
 
     fn now() -> chrono::DateTime<chrono::Local> {

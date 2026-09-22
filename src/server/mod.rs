@@ -330,13 +330,26 @@ impl Window {
     }
 
     /// Recompute pane rectangles for a window area and resize the panes.
-    fn relayout(&mut self, area: Rect) {
+    /// `border`: `pane-border-status` wants a row above (`Some(true)`) or
+    /// below (`Some(false)`) every pane, which is taken off the pane itself
+    /// and left for the border text.
+    fn relayout(&mut self, area: Rect, border: Option<bool>) {
         self.rects.clear();
         if self.zoomed && self.pane(self.active).is_some() {
             self.rects.push((self.active, area));
         } else {
             self.zoomed = false;
             self.layout.layout(area, &mut self.rects);
+        }
+        if let Some(top) = border {
+            for (_, r) in &mut self.rects {
+                if r.h >= 2 {
+                    if top {
+                        r.y += 1;
+                    }
+                    r.h -= 1;
+                }
+            }
         }
         for (id, r) in self.rects.clone() {
             if let Some(p) = self.pane_mut(id) {
@@ -355,6 +368,8 @@ struct Session {
     cols: u16,
     rows: u16,
     created: Instant,
+    /// Unix time of creation, for `#{session_created}`.
+    created_at: i64,
     last_used: Instant,
 }
 
@@ -951,6 +966,7 @@ impl Server {
             let s = self.session(sid).ok_or("no such session")?;
             self.window_area(s.cols, s.rows)
         };
+        let border = self.border_rows();
         let mut panes = Vec::new();
         for saved in sw.layout.panes() {
             let argv: Vec<String> = saved.argv.clone();
@@ -980,7 +996,7 @@ impl Server {
         w.active = active;
         w.last_pane = None;
         w.zoomed = sw.zoomed && w.panes.len() > 1;
-        w.relayout(area);
+        w.relayout(area, border);
         Ok(())
     }
 
@@ -1198,8 +1214,10 @@ impl Server {
                 if let Some(p) = self.find_pane_mut(id)
                     && p.generation == generation
                 {
-                    // pipe-pane sees what the program wrote, not the screen.
+                    // pipe-pane and a recording see what the program wrote,
+                    // not the screen.
                     let slow = p.pipe_write(&bytes);
+                    p.record_write(&bytes);
                     p.process_output(&bytes);
                     if let Some(command) = slow {
                         // Say it once per pipe: a command that cannot keep up
@@ -1674,13 +1692,24 @@ impl Server {
         }
     }
 
+    /// Whether `pane-border-status` reserves a row above (`Some(true)`) or
+    /// below (`Some(false)`) each pane.
+    fn border_rows(&self) -> Option<bool> {
+        match self.opts.pane_border_status.as_str() {
+            "top" => Some(true),
+            "bottom" => Some(false),
+            _ => None,
+        }
+    }
+
     fn resize_session(&mut self, sid: SessionId, cols: u16, rows: u16) {
         let area = self.window_area(cols.max(1), rows.max(1));
+        let border = self.border_rows();
         if let Some(s) = self.session_mut(sid) {
             s.cols = cols.max(1);
             s.rows = rows.max(1);
             for w in &mut s.windows {
-                w.relayout(area);
+                w.relayout(area, border);
             }
         }
     }
@@ -1881,7 +1910,7 @@ impl Server {
             alert_silence: false,
             last_output: Instant::now(),
         };
-        w.relayout(area);
+        w.relayout(area, self.border_rows());
         let s = self.session_mut(sid).unwrap();
         s.windows.push(w);
         let idx = s.windows.len() - 1;
@@ -1929,6 +1958,7 @@ impl Server {
             cols: cols.max(1),
             rows: rows.max(1),
             created: Instant::now(),
+            created_at: chrono::Local::now().timestamp(),
             last_used: Instant::now(),
         });
         self.had_session = true;
@@ -2263,6 +2293,34 @@ impl Server {
             }
             // Whoever asked has already started it.
             Cmd::StartServer => Outcome::Ok,
+            Cmd::Record { target, path } => {
+                let pid = match self.resolve(target.as_ref(), cid) {
+                    Ok((_, _, p)) => p,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some(path) = path else {
+                    // No path: stop, and say which file was closed.
+                    let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                    return match p.recorder.take() {
+                        Some(r) => Outcome::Text(format!("recording stopped: {}", r.path)),
+                        None => Outcome::Error("not recording".into()),
+                    };
+                };
+                // A relative path is relative to where the client was run,
+                // which is where the file will be looked for.
+                let mut full = expand_home(&path);
+                if std::path::Path::new(&full).is_relative()
+                    && let Some(cwd) = cid.and_then(|c| self.clients.get(&c)).map(|c| c.cwd.clone())
+                    && !cwd.is_empty()
+                {
+                    full = std::path::Path::new(&cwd).join(&full).to_string_lossy().into_owned();
+                }
+                let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                match p.record_to(&full) {
+                    Ok(()) => Outcome::Text(format!("recording %{pid} to {full}")),
+                    Err(e) => Outcome::Error(format!("{e:#}")),
+                }
+            }
             Cmd::FindText { pattern, target, case_sensitive, per_pane } => {
                 // Which panes to look in: everything, or one session (or one
                 // window of it) when -t says so.
@@ -2608,11 +2666,12 @@ impl Server {
                 let cwd = self.pane_cwd(cwd.as_deref(), sid, cid);
                 let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(scols, srows);
+                let border = self.border_rows();
                 // Unzoom first so the layout rectangles are real.
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 if w.zoomed {
                     w.zoomed = false;
-                    w.relayout(area);
+                    w.relayout(area, border);
                 }
                 let rect = if full {
                     area
@@ -2725,6 +2784,7 @@ impl Server {
                     w.layout.resize(pid, d, amount.max(1));
                 }
                 // -x / -y: grow or shrink until the pane has that size.
+                let border = self.border_rows();
                 for (spec, horizontal) in [(width, true), (height, false)] {
                     let Some(spec) = spec else { continue };
                     let full = if horizontal { area.w } else { area.h };
@@ -2735,7 +2795,7 @@ impl Server {
                     let w = &mut self.session_mut(sid).unwrap().windows[widx];
                     w.zoomed = false;
                     for _ in 0..full {
-                        w.relayout(area);
+                        w.relayout(area, border);
                         let Some(rect) = w.rect_of(pid) else { break };
                         let now = if horizontal { rect.w } else { rect.h };
                         if now == want {
@@ -2749,7 +2809,7 @@ impl Server {
                         };
                         let before = now;
                         w.layout.resize(pid, dir, 1);
-                        w.relayout(area);
+                        w.relayout(area, border);
                         // Wedged against a minimum: stop rather than spin.
                         let after = w.rect_of(pid).map(|r| if horizontal { r.w } else { r.h }).unwrap_or(before);
                         if after == before {
@@ -2905,10 +2965,11 @@ impl Server {
                 // a refused split leaves everything where it was.
                 let (dcols, drows) = self.session(dsid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(dcols, drows);
+                let border = self.border_rows();
                 let dw = &mut self.session_mut(dsid).unwrap().windows[dwidx];
                 if dw.zoomed {
                     dw.zoomed = false;
-                    dw.relayout(area);
+                    dw.relayout(area, border);
                 }
                 let Some(rect) = dw.rect_of(dpid) else { return Outcome::Error("pane has no layout".into()) };
                 if (horizontal && rect.w < 3) || (!horizontal && rect.h < 3) {
@@ -3753,24 +3814,70 @@ impl Server {
     /// mean the same thing everywhere.
     fn expand_format(&mut self, s: &str, cid: ClientId) -> String {
         let Ok((sid, widx, pid)) = self.resolve(None, Some(cid)) else { return s.to_string() };
-        let sess = self.session(sid).unwrap();
-        let w = &sess.windows[widx];
-        let pidx = w.layout.panes().iter().position(|p| *p == pid).unwrap_or(0);
-        let pane = w.pane(pid);
-        let ctx = crate::format::Context {
-            session: sess.name.clone(),
-            window: w.name.clone(),
-            window_index: widx + self.opts.base_index,
-            pane_index: pidx + self.opts.pane_base_index,
-            pane_title: pane.map(|p| p.display_title().to_string()).unwrap_or_default(),
-            pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
-            pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
-            host: std::env::var("COMPUTERNAME").unwrap_or_default(),
-            flags: w.flags(widx == sess.cur, Some(w.id) == sess.last),
-        };
+        let ctx = self.context(sid, widx, Some(pid), Some(cid));
         let now = chrono::Local::now();
         let base = render::Style::default();
         crate::format::expand(s, &ctx, &mut self.shell_cache, base, now).into_iter().map(|seg| seg.text).collect()
+    }
+
+    /// Everything a format can ask about a session, one of its windows, a
+    /// pane of that window (the active one when `pid` is None) and the
+    /// client it is drawn for. The one place every `#{...}` is answered from.
+    fn context(
+        &self,
+        sid: SessionId,
+        widx: usize,
+        pid: Option<PaneId>,
+        cid: Option<ClientId>,
+    ) -> crate::format::Context {
+        let mut ctx = crate::format::Context {
+            host: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            socket: self.socket.clone(),
+            ..Default::default()
+        };
+        let Some(sess) = self.session(sid) else { return ctx };
+        ctx.session = sess.name.clone();
+        ctx.session_id = sess.id;
+        ctx.session_windows = sess.windows.len();
+        ctx.session_attached = self.clients.values().filter(|c| c.session == Some(sid)).count();
+        ctx.session_created = sess.created_at;
+        if let Some(c) = cid.and_then(|c| self.clients.get(&c)) {
+            ctx.client_width = c.cols;
+            ctx.client_height = c.rows;
+        }
+        let Some(w) = sess.windows.get(widx) else { return ctx };
+        ctx.window = w.name.clone();
+        ctx.window_id = w.id;
+        ctx.window_index = widx + self.opts.base_index;
+        ctx.window_panes = w.panes.len();
+        ctx.window_active = widx == sess.cur;
+        ctx.window_last = Some(w.id) == sess.last;
+        ctx.window_zoomed = w.zoomed;
+        ctx.window_width = sess.cols;
+        ctx.window_height = sess.rows;
+        ctx.window_bell = w.alert_bell;
+        ctx.window_activity = w.alert_activity;
+        ctx.window_silence = w.alert_silence;
+        ctx.flags = w.flags(widx == sess.cur, Some(w.id) == sess.last);
+        let pid = pid.unwrap_or(w.active);
+        let order = w.layout.panes();
+        ctx.pane_index = order.iter().position(|p| *p == pid).unwrap_or(0) + self.opts.pane_base_index;
+        ctx.pane_id = pid;
+        ctx.pane_active = pid == w.active;
+        ctx.pane_synchronized = w.synchronized;
+        if let Some(p) = w.pane(pid) {
+            ctx.pane_title = p.display_title().to_string();
+            ctx.pane_command = p.command.clone();
+            ctx.pane_start_command = p.argv.join(" ");
+            ctx.pane_path = p.cwd.clone().unwrap_or_default();
+            ctx.pane_width = p.cols;
+            ctx.pane_height = p.rows;
+            ctx.pane_dead = p.exit_code.is_some();
+            ctx.pane_dead_status = p.exit_code;
+            ctx.pane_in_mode = p.copy.is_some();
+            ctx.pane_pid = p.pid;
+        }
+        ctx
     }
 
     // ------------------------------------------------------------------ keys
@@ -4792,13 +4899,8 @@ impl Server {
         }
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else { return };
         let pane_base_index = self.opts.pane_base_index;
-        let (status_top, border_fg, active_fg, base_index, opts_status) = (
-            self.opts.status_top,
-            self.opts.pane_border_fg,
-            self.opts.pane_border_active_fg,
-            self.opts.base_index,
-            self.opts.status,
-        );
+        let (status_top, border_fg, active_fg, opts_status) =
+            (self.opts.status_top, self.opts.pane_border_fg, self.opts.pane_border_active_fg, self.opts.status);
         let (message, prompt) = {
             let c = self.clients.get(&cid).unwrap();
             (
@@ -4812,38 +4914,33 @@ impl Server {
         let status_line = if opts_status {
             let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
             let now = chrono::Local::now();
-            let s = &self.sessions[spos];
-            let host = std::env::var("COMPUTERNAME").unwrap_or_default();
-            let ctx_for = |s: &Session, widx: usize| -> crate::format::Context {
-                let w = &s.windows[widx];
-                let pane = w.active_pane();
-                let pidx = w.layout.panes().iter().position(|p| *p == w.active).unwrap_or(0);
-                crate::format::Context {
-                    session: s.name.clone(),
-                    window: w.name.clone(),
-                    window_index: widx + base_index,
-                    pane_index: pidx + pane_base_index,
-                    pane_title: pane.map(|p| truncate(p.display_title(), 30)).unwrap_or_default(),
-                    pane_command: pane.map(|p| p.command.clone()).unwrap_or_default(),
-                    pane_path: pane.and_then(|p| p.cwd.clone()).unwrap_or_default(),
-                    host: host.clone(),
-                    flags: w.flags(widx == s.cur, Some(w.id) == s.last),
-                }
-            };
+            // One context per window, built while nothing is borrowed
+            // mutably; the status line's title is clipped so a long path
+            // in it cannot push the window list off the line.
+            let (cur, n) = (self.sessions[spos].cur, self.sessions[spos].windows.len());
+            let ctxs: Vec<crate::format::Context> = (0..n)
+                .map(|i| {
+                    let mut c = self.context(sid, i, None, Some(cid));
+                    c.pane_title = truncate(&c.pane_title, 30);
+                    c
+                })
+                .collect();
             let cache = &mut self.shell_cache;
-            let cur_ctx = ctx_for(s, s.cur);
+            let cur_ctx = ctxs.get(cur).cloned().unwrap_or_default();
             let mut left = crate::format::expand(&self.opts.status_left, &cur_ctx, cache, base, now);
             let mut right = crate::format::expand(&self.opts.status_right, &cur_ctx, cache, base, now);
             clip_segments(&mut left, self.opts.status_left_length);
             clip_segments(&mut right, self.opts.status_right_length);
-            let windows = (0..s.windows.len())
-                .map(|i| {
-                    let fmt = if i == s.cur {
+            let windows = ctxs
+                .iter()
+                .enumerate()
+                .map(|(i, ctx)| {
+                    let fmt = if i == cur {
                         &self.opts.window_status_current_format
                     } else {
                         &self.opts.window_status_format
                     };
-                    (crate::format::expand(fmt, &ctx_for(s, i), cache, base, now), i == s.cur)
+                    (crate::format::expand(fmt, ctx, cache, base, now), i == cur)
                 })
                 .collect();
             Some(StatusLine { left, windows, right, message, prompt, fg: self.opts.status_fg, bg: self.opts.status_bg })
@@ -4851,6 +4948,27 @@ impl Server {
             None
         };
         self.refresh_status_shells();
+        // `pane-border-status`: the text for each pane's border row, expanded
+        // before the window is borrowed for drawing.
+        let border_top = self.border_rows();
+        let mut border_texts: HashMap<PaneId, Vec<crate::format::Segment>> = HashMap::new();
+        if border_top.is_some() {
+            let widx = self.sessions[spos].cur;
+            let ids: Vec<PaneId> = self.sessions[spos]
+                .windows
+                .get(widx)
+                .map(|w| w.rects.iter().map(|(id, _)| *id).collect())
+                .unwrap_or_default();
+            let now = chrono::Local::now();
+            let active_id = self.sessions[spos].windows.get(widx).map(|w| w.active);
+            for id in ids {
+                let ctx = self.context(sid, widx, Some(id), Some(cid));
+                let fg = if Some(id) == active_id { active_fg } else { border_fg };
+                let base = render::Style::colors(fg, vt100::Color::Default);
+                let segs = crate::format::expand(&self.opts.pane_border_format, &ctx, &mut self.shell_cache, base, now);
+                border_texts.insert(id, segs);
+            }
+        }
         let s = &mut self.sessions[spos];
         let Some(w) = s.window_mut() else { return };
         let active = w.active;
@@ -4879,6 +4997,7 @@ impl Server {
                 screen: p.screen(),
                 active: *id == active,
                 copy: copy_views.get(id).copied(),
+                border_text: border_top.and_then(|top| border_texts.remove(id).map(|segs| (segs, top))),
             });
         }
         let frame =

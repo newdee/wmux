@@ -36,6 +36,10 @@ pub struct Options {
     /// Also raise a desktop notification for an alert, so a job that ends
     /// while wmux is not on screen still reaches you.
     pub notify: bool,
+    /// A line of text on every pane's top or bottom border ("off", "top",
+    /// "bottom"), from `pane-border-format`.
+    pub pane_border_status: String,
+    pub pane_border_format: String,
     pub base_index: usize,
     /// First pane number shown to the user (tmux pane-base-index).
     pub pane_base_index: usize,
@@ -94,6 +98,8 @@ pub const SHOWABLE: &[&str] = &[
     "visual-bell",
     "visual-activity",
     "notify",
+    "pane-border-status",
+    "pane-border-format",
     "pane-base-index",
     "display-time",
     "repeat-time",
@@ -123,6 +129,8 @@ impl Default for Options {
             visual_bell: false,
             visual_activity: false,
             notify: false,
+            pane_border_status: "off".into(),
+            pane_border_format: " #{?pane_active,#[bold],}#{pane_index}: #{pane_title}#[default] ".into(),
             base_index: 0,
             pane_base_index: 0,
             display_time_ms: 1500,
@@ -227,6 +235,8 @@ pub const KNOWN: &[&str] = &[
     "notify",
     "pane-active-border-style",
     "pane-base-index",
+    "pane-border-format",
+    "pane-border-status",
     "pane-border-style",
     "plugin-path",
     "prefix",
@@ -403,6 +413,13 @@ impl Options {
             "visual-bell" => self.visual_bell = parse_bool(value)?,
             "visual-activity" => self.visual_activity = parse_bool(value)?,
             "notify" => self.notify = parse_bool(value)?,
+            "pane-border-status" => {
+                self.pane_border_status = match value {
+                    "off" | "top" | "bottom" => value.to_string(),
+                    v => return Err(format!("bad pane-border-status '{v}' (off, top or bottom)")),
+                }
+            }
+            "pane-border-format" => self.pane_border_format = value.to_string(),
             "pane-base-index" => self.pane_base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "display-time" => self.display_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "repeat-time" => self.repeat_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -483,6 +500,8 @@ impl Options {
             "visual-bell" => onoff(self.visual_bell),
             "visual-activity" => onoff(self.visual_activity),
             "notify" => onoff(self.notify),
+            "pane-border-status" => self.pane_border_status.clone(),
+            "pane-border-format" => self.pane_border_format.clone(),
             "pane-base-index" => self.pane_base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
             "repeat-time" => self.repeat_time_ms.to_string(),

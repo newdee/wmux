@@ -433,6 +433,12 @@ pub enum Cmd {
         title: Option<String>,
         message: String,
     },
+    /// `record [-t target] [path]`: write a pane's output to an asciinema
+    /// file from now on; no path stops the recording.
+    Record {
+        target: Option<Target>,
+        path: Option<String>,
+    },
     /// `find-text [-C] [-n hits] [-t target] pattern`: look through what
     /// every pane has printed, not just the window names, and say where the
     /// matches are.
@@ -1029,6 +1035,14 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " {}", quote(message))
             }
+            Cmd::Record { target, path } => {
+                f.write_str("record")?;
+                fmt_target(f, target)?;
+                if let Some(p) = path {
+                    write!(f, " {}", quote(p))?;
+                }
+                Ok(())
+            }
             Cmd::FindText { pattern, target, case_sensitive, per_pane } => {
                 f.write_str("find-text")?;
                 if *case_sensitive {
@@ -1292,6 +1306,7 @@ pub const COMMANDS: &[&str] = &[
     "pipe-pane",
     "previous-layout",
     "previous-window",
+    "record",
     "refresh-client",
     "respawn-pane",
     "respawn-window",
@@ -1387,6 +1402,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "move-pane" | "movep" => "join-pane",
         "find-window" | "findw" => "find-window",
         "find-text" | "findt" => "find-text",
+        "record" => "record",
         "select-layout" | "selectl" => "select-layout",
         "next-layout" | "nextl" => "next-layout",
         "previous-layout" | "prevl" => "previous-layout",
@@ -2462,6 +2478,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::StartServer
+        }
+        "record" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let path = a.next().map(str::to_string);
+            a.none_left(n)?;
+            Cmd::Record { target, path }
         }
         "find-text" => {
             let (mut target, mut case_sensitive, mut per_pane) = (None, false, 3usize);

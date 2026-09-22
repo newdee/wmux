@@ -175,6 +175,32 @@ pub struct Pane {
     pub rows: u16,
     /// `pipe-pane`: everything this pane writes is copied here as well.
     pub pipe: Option<Pipe>,
+    /// `record`: an asciinema file being written from this pane's output.
+    pub recorder: Option<Recorder>,
+    /// Process id of the pane's program (`#{pane_pid}`).
+    pub pid: Option<u32>,
+    /// When the current program was started (`jobs`, uptime).
+    pub spawned_at: std::time::Instant,
+}
+
+/// An asciinema v2 recording in progress: a header line, then one JSON
+/// event per output chunk or resize, stamped with seconds since the start.
+/// Writing goes through a thread like `Pipe`, so a slow disk never stalls
+/// the server; dropping the recorder closes the file.
+pub struct Recorder {
+    pub path: String,
+    started: std::time::Instant,
+    tx: std::sync::mpsc::SyncSender<String>,
+}
+
+impl Recorder {
+    fn event(&mut self, kind: &str, data: &str) {
+        let t = self.started.elapsed().as_secs_f64();
+        let line =
+            format!("[{t:.6}, {}, {}]\n", serde_json::to_string(kind).unwrap(), serde_json::to_string(data).unwrap());
+        // A recording that cannot keep up loses events rather than output.
+        let _ = self.tx.try_send(line);
+    }
 }
 
 /// A running `pipe-pane` command. The bytes go through a bounded channel to a
@@ -230,6 +256,7 @@ impl Pane {
             cmd.env(k, v);
         }
         let mut child = pair.slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", argv))?;
+        let pid = child.process_id();
         let killer = child.clone_killer();
         drop(pair.slave);
         let job = match crate::winsec::KillOnCloseJob::new() {
@@ -299,7 +326,50 @@ impl Pane {
             cols,
             rows,
             pipe: None,
+            recorder: None,
+            pid,
+            spawned_at: std::time::Instant::now(),
         })
+    }
+
+    /// Start recording this pane's output to `path` as asciinema v2,
+    /// replacing any recording in progress.
+    pub fn record_to(&mut self, path: &str) -> Result<()> {
+        use std::io::Write as _;
+        self.recorder = None;
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::create(path).with_context(|| format!("record: cannot create {path}"))?,
+        );
+        let header = serde_json::json!({
+            "version": 2,
+            "width": self.cols,
+            "height": self.rows,
+            "timestamp": chrono::Local::now().timestamp(),
+            "env": { "TERM": "xterm-256color", "SHELL": self.command },
+            "title": self.display_title(),
+        });
+        writeln!(file, "{header}").context("record: write header")?;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1024);
+        std::thread::Builder::new()
+            .name(format!("pane-{}-record", self.id))
+            .spawn(move || {
+                for line in rx {
+                    if file.write_all(line.as_bytes()).is_err() {
+                        break;
+                    }
+                }
+                let _ = file.flush();
+            })
+            .context("record: spawn writer thread")?;
+        self.recorder = Some(Recorder { path: path.to_string(), started: std::time::Instant::now(), tx });
+        Ok(())
+    }
+
+    /// Output for the recording, if one is running.
+    pub fn record_write(&mut self, bytes: &[u8]) {
+        if let Some(r) = self.recorder.as_mut() {
+            r.event("o", &String::from_utf8_lossy(bytes));
+        }
     }
 
     /// Start a `pipe-pane` command for this pane, replacing any running one.
@@ -437,6 +507,9 @@ impl Pane {
         self.cols = cols;
         self.rows = rows;
         self.parser.screen_mut().set_size(rows, cols);
+        if let Some(r) = self.recorder.as_mut() {
+            r.event("r", &format!("{cols}x{rows}"));
+        }
         if let Err(e) = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
             log::warn!("pane {} resize failed: {e}", self.id);
         }

@@ -2278,6 +2278,131 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     h.cli(&["kill-server"]).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn record_writes_an_asciinema_file() {
+    let h = Harness::start("record").await;
+    h.cli(&["new", "-d", "-s", "r"]).await;
+    h.wait_capture("r:0", "shell prompt", |t| t.contains("wmux>")).await;
+    let cast = std::env::temp_dir().join(format!("wmux-record-{}.cast", std::process::id()));
+    let _ = std::fs::remove_file(&cast);
+
+    let (code, _, err) = h.cli(&["record", "-t", "r:0"]).await;
+    assert_eq!(code, 1, "nothing to stop yet");
+    assert!(err.contains("not recording"), "{err}");
+    let (code, out, err) = h.cli(&["record", "-t", "r:0", &cast.to_string_lossy()]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("recording %"), "{out}");
+    h.cli(&["send-keys", "-t", "r:0", "echo captured-in-the-cast", "Enter"]).await;
+    h.wait_capture("r:0", "the echo", |t| t.matches("captured-in-the-cast").count() >= 2).await;
+    // A split resizes the pane, which the recording notes as an "r" event.
+    h.cli(&["split-window", "-d", "-t", "r:0"]).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (code, out, err) = h.cli(&["record", "-t", "r:0.0"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("recording stopped"), "{out}");
+    tokio::time::sleep(Duration::from_millis(300)).await; // the writer thread flushes on close
+
+    let text = std::fs::read_to_string(&cast).expect("the cast file");
+    let mut lines = text.lines();
+    let header: serde_json::Value = serde_json::from_str(lines.next().expect("header")).expect("header is JSON");
+    assert_eq!(header["version"], 2, "{header}");
+    assert!(header["width"].as_u64().unwrap() > 0 && header["height"].as_u64().unwrap() > 0, "{header}");
+    let events: Vec<serde_json::Value> = lines.map(|l| serde_json::from_str(l).expect("event is JSON")).collect();
+    assert!(!events.is_empty());
+    let mut last_t = 0.0;
+    for e in &events {
+        let t = e[0].as_f64().expect("time");
+        assert!(t >= last_t, "times never go backwards: {e}");
+        last_t = t;
+        assert!(matches!(e[1].as_str(), Some("o") | Some("r")), "{e}");
+    }
+    assert!(events.iter().any(|e| e[1] == "o" && e[2].as_str().is_some_and(|d| d.contains("captured-in-the-cast"))));
+    assert!(events.iter().any(|e| e[1] == "r" && e[2].as_str().is_some_and(|d| d.contains('x'))), "a resize event");
+    let _ = std::fs::remove_file(&cast);
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_border_status_reserves_a_row_for_its_text() {
+    let h = Harness::start("borderstatus").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "b"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // cmd.exe starts with a blank line, so the prompt is on row 1; with a
+    // top border line it moves to row 2 and row 0 becomes the label.
+    let prompt_row = c.screen.screen().rows(0, COLS).position(|r| r.contains("wmux>")).unwrap();
+
+    // top: the first row becomes the border text, the pane moves down one.
+    h.cli(&["set", "-g", "pane-border-status", "top"]).await;
+    c.wait_for("border text on top", |s| {
+        let r0 = s.rows(0, COLS).next().unwrap();
+        r0.contains("0:") && s.rows(0, COLS).nth(prompt_row + 1).unwrap().contains("wmux>")
+    })
+    .await;
+    // The format is a format: pane variables and modifiers work in it.
+    h.cli(&["set", "-g", "pane-border-format", " [#{pane_index}] #{pane_width}x#{pane_height} "]).await;
+    // 24 rows less the status line and the border row: 22.
+    c.wait_for("custom format", |s| s.rows(0, COLS).next().unwrap().contains(&format!("[0] {}x{}", COLS, ROWS - 2)))
+        .await;
+    // Two panes side by side: each gets its own text on its own columns.
+    c.prefix('%').await;
+    c.wait_for("two border texts", |s| s.rows(0, COLS).next().unwrap().matches("] ").count() == 2).await;
+
+    // bottom: the row just above the status line.
+    h.cli(&["set", "-g", "pane-border-status", "bottom"]).await;
+    c.wait_for("border text at the bottom", |s| {
+        s.rows(0, COLS).nth(prompt_row).unwrap().contains("wmux>")
+            && s.rows(0, COLS).nth(ROWS as usize - 2).unwrap().matches("] ").count() == 2
+    })
+    .await;
+    // off: everything back.
+    h.cli(&["set", "-g", "pane-border-status", "off"]).await;
+    c.wait_for("back to normal", |s| !s.rows(0, COLS).nth(ROWS as usize - 2).unwrap().contains("] ")).await;
+    let (code, _, err) = h.cli(&["set", "-g", "pane-border-status", "sideways"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("off, top or bottom"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn format_variables_answer_from_the_live_tree() {
+    let h = Harness::start("formats").await;
+    h.cli(&["new", "-d", "-s", "fmt"]).await;
+    h.wait_capture("fmt:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["split-window", "-d", "-t", "fmt:0"]).await;
+    // A pane's path is what the shell announced or set-cwd recorded.
+    let dir = std::env::temp_dir();
+    h.cli(&["set-cwd", "-t", "fmt:0.0", &dir.to_string_lossy()]).await;
+    let (code, out, err) = h
+        .cli(&[
+            "display-message",
+            "-p",
+            "#{session_windows}|#{window_panes}|#{pane_pid}|#{client_width}x#{client_height}|#{=2:session_name}|#{session_id}|#{window_id}|#{pane_id}|#{pane_active}|#{pane_dead}|#{b:pane_current_path}|#{version}",
+        ])
+        .await;
+    assert_eq!(code, 0, "{err}");
+    let parts: Vec<&str> = out.trim().split('|').collect();
+    assert_eq!(parts.len(), 12, "{out}");
+    assert_eq!(parts[0], "1");
+    assert_eq!(parts[1], "2");
+    assert!(parts[2].parse::<u32>().is_ok_and(|p| p > 0), "pane_pid: {out}");
+    assert_eq!(parts[3], "80x24");
+    assert_eq!(parts[4], "fm");
+    assert!(parts[5].starts_with('$') && parts[6].starts_with('@') && parts[7].starts_with('%'), "{out}");
+    assert_eq!(parts[8], "1");
+    assert_eq!(parts[9], "0");
+    let base = dir.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(parts[10], base, "basename only: {out}");
+    assert_eq!(parts[11], env!("CARGO_PKG_VERSION"));
+    // Conditionals on the new variables.
+    let (_, out, _) = h.cli(&["display-message", "-p", "#{?window_zoomed_flag,Z,-}#{?pane_synchronized,S,-}"]).await;
+    assert_eq!(out.trim(), "--");
+    h.cli(&["set", "sync"]).await;
+    let (_, out, _) = h.cli(&["display-message", "-p", "#{?pane_synchronized,S,-}"]).await;
+    assert_eq!(out.trim(), "S");
+    h.cli(&["kill-server"]).await;
+}
+
 // Keep the unused-import lint quiet for helper traits used through split().
 #[allow(dead_code)]
 fn _assert_traits<T: AsyncRead + AsyncWrite>() {}

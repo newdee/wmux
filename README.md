@@ -253,14 +253,33 @@ source-file ~/.wmux/themes/dracula.conf
 
 ### Status line
 
-`status-left`, `status-right`, `window-status-format` and
-`window-status-current-format` take tmux format strings: `#S` session, `#W`
-window name, `#I` window index, `#P` pane index, `#T` pane title, `#H` host,
-`#F` flags, `#{session_name}`-style names, `#{?flag,then,else}` conditionals
-(`#{?window_flags,busy,idle}`, `#{?session_name==work,…,…}`), `%H:%M` time fields,
+`status-left`, `status-right`, `window-status-format`,
+`window-status-current-format` and `pane-border-format` take tmux format
+strings: `#S` session, `#W` window name, `#I` window index, `#P` pane
+index, `#T` pane title, `#H` host, `#F` flags, `#{session_name}`-style
+names, `#{?flag,then,else}` conditionals (`#{?window_flags,busy,idle}`,
+`#{?session_name==work,…,…}`), `%H:%M` time fields,
 `#[fg=colour39,bg=black,bold]` style changes and `#(command)`, which runs the
 command every `status-interval` seconds (default 15) and shows its first
 line. `status-left-length` / `status-right-length` clip.
+
+Variables: `session_name` `session_id` `session_windows` `session_attached`
+`session_created`, `window_name` `window_id` `window_index` `window_panes`
+`window_active` `window_last_flag` `window_zoomed_flag` `window_width`
+`window_height` `window_bell_flag` `window_activity_flag`
+`window_silence_flag` `window_flags`, `pane_index` `pane_id` `pane_title`
+`pane_current_command` `pane_start_command` `pane_current_path` `pane_width`
+`pane_height` `pane_active` `pane_dead` `pane_dead_status`
+`pane_synchronized` `pane_in_mode` `pane_pid`, `client_width`
+`client_height`, `host` `host_short` `socket_path` `version` `pid`.
+Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
+`#{=-10:…}` (last 10), `#{b:pane_current_path}` (basename), `#{d:…}`
+(dirname), `#{t:session_created}` (a time as a clock), `#{s/foo/bar/:…}`
+(substitution); they nest (`#{=8:b:pane_current_path}`).
+
+`set -g pane-border-status top` (or `bottom`) puts a line of
+`pane-border-format` on every pane's border — by default the pane's number
+and title, the active pane's in bold.
 
 ```tmux
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
@@ -328,6 +347,11 @@ Commands a script or a binding reaches for, beyond the obvious ones
   `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C` matches case, `-t` narrows to a
   session or window, `-n` caps the hits per pane. Neither tmux nor
   `find-window` can do this: `find-window` searches names and titles.
+- `record [-t target] out.cast` writes everything a pane prints from now
+  on as an [asciinema](https://asciinema.org) v2 file (resizes included);
+  `record -t target` with no path stops. Play it with `asciinema play`, or
+  upload it, or embed it in a page: a terminal session someone else can
+  watch, not a screenshot.
 - `notify [-T title] message` raises a desktop notification, and
   `set -g notify on` sends one for every alert, so a job that ends while
   the terminal is behind other windows still reaches you.

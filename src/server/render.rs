@@ -282,6 +282,9 @@ pub struct PaneView<'a> {
     pub active: bool,
     /// Copy-mode cursor and inclusive selection range in screen coordinates.
     pub copy: Option<CopyView>,
+    /// `pane-border-status`: text for the border row above (true) or below
+    /// (false) the pane, which the layout has left free for it.
+    pub border_text: Option<(Vec<Segment>, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -369,6 +372,15 @@ pub fn compose(f: &Frame) -> Composed {
     }
 
     for p in &f.panes {
+        // The pane's border text, on the border row the layout reserved.
+        if let Some((segs, top)) = &p.border_text {
+            let y = if *top { p.rect.y.checked_sub(1) } else { Some(p.rect.y + p.rect.h) };
+            if let Some(y) = y
+                && win.contains(p.rect.x, y)
+            {
+                g.put_segments(p.rect.x, y, segs, p.rect.w);
+            }
+        }
         g.blit_screen(p.rect, p.screen);
         if let Some(c) = p.copy {
             if let Some(((sy, sx), (ey, ex))) = c.sel {
@@ -763,8 +775,20 @@ mod tests {
             cols: 20,
             rows: 4,
             panes: vec![
-                PaneView { rect: Rect { x: 0, y: 0, w: 4, h: 3 }, screen: left.screen(), active: true, copy: None },
-                PaneView { rect: Rect { x: 5, y: 0, w: 15, h: 3 }, screen: right.screen(), active: false, copy: None },
+                PaneView {
+                    rect: Rect { x: 0, y: 0, w: 4, h: 3 },
+                    screen: left.screen(),
+                    active: true,
+                    copy: None,
+                    border_text: None,
+                },
+                PaneView {
+                    rect: Rect { x: 5, y: 0, w: 15, h: 3 },
+                    screen: right.screen(),
+                    active: false,
+                    copy: None,
+                    border_text: None,
+                },
             ],
             status: Some(StatusLine {
                 left: seg("[s] ", Style { bold: true, ..st }),
@@ -812,6 +836,7 @@ mod tests {
                 screen: a.screen(),
                 active: true,
                 copy: None,
+                border_text: None,
             }],
             status: Some(StatusLine {
                 left,
@@ -859,9 +884,27 @@ mod tests {
                 rows,
                 panes: vec![
                     // Rects that are larger than, empty, or outside the client grid.
-                    PaneView { rect: Rect { x: 0, y: 0, w: 5, h: 2 }, screen: a.screen(), active: true, copy: None },
-                    PaneView { rect: Rect { x: 1, y: 0, w: 0, h: 2 }, screen: a.screen(), active: false, copy: None },
-                    PaneView { rect: Rect { x: 40, y: 40, w: 5, h: 2 }, screen: a.screen(), active: false, copy: None },
+                    PaneView {
+                        rect: Rect { x: 0, y: 0, w: 5, h: 2 },
+                        screen: a.screen(),
+                        active: true,
+                        copy: None,
+                        border_text: None,
+                    },
+                    PaneView {
+                        rect: Rect { x: 1, y: 0, w: 0, h: 2 },
+                        screen: a.screen(),
+                        active: false,
+                        copy: None,
+                        border_text: None,
+                    },
+                    PaneView {
+                        rect: Rect { x: 40, y: 40, w: 5, h: 2 },
+                        screen: a.screen(),
+                        active: false,
+                        copy: None,
+                        border_text: None,
+                    },
                 ],
                 status: Some(StatusLine {
                     left: seg("[a-very-long-session-name] ", Style::default()),
@@ -900,9 +943,27 @@ mod tests {
             cols: 7,
             rows: 5,
             panes: vec![
-                PaneView { rect: Rect { x: 0, y: 0, w: 3, h: 5 }, screen: a.screen(), active: false, copy: None },
-                PaneView { rect: Rect { x: 4, y: 0, w: 3, h: 2 }, screen: a.screen(), active: true, copy: None },
-                PaneView { rect: Rect { x: 4, y: 3, w: 3, h: 2 }, screen: a.screen(), active: false, copy: None },
+                PaneView {
+                    rect: Rect { x: 0, y: 0, w: 3, h: 5 },
+                    screen: a.screen(),
+                    active: false,
+                    copy: None,
+                    border_text: None,
+                },
+                PaneView {
+                    rect: Rect { x: 4, y: 0, w: 3, h: 2 },
+                    screen: a.screen(),
+                    active: true,
+                    copy: None,
+                    border_text: None,
+                },
+                PaneView {
+                    rect: Rect { x: 4, y: 3, w: 3, h: 2 },
+                    screen: a.screen(),
+                    active: false,
+                    copy: None,
+                    border_text: None,
+                },
             ],
             status: None,
             status_top: false,
@@ -926,6 +987,7 @@ mod tests {
                 screen: a.screen(),
                 active: true,
                 copy: None,
+                border_text: None,
             }],
             status: Some(StatusLine {
                 left: seg("[s] ", Style::default()),
@@ -948,6 +1010,39 @@ mod tests {
         assert_eq!(cursor, Some((10, 0)));
     }
 
+    /// `pane-border-status`: the text lands on the row the layout left free,
+    /// above or below the pane, clipped to the pane's columns, and a pane
+    /// flush with the top has nowhere to put a top line.
+    #[test]
+    fn border_text_goes_on_the_reserved_row() {
+        let a = screen(6, 2, b"abcdef\r\nghijkl");
+        let label = |s: &str| vec![Segment { text: s.to_string(), style: Style::default() }];
+        let row = |g: &Grid, y: u16| (0..g.cols).map(|x| g.get(x, y).text()).collect::<String>();
+        let frame = |rect: Rect, text: Option<(Vec<Segment>, bool)>| Frame {
+            cols: 6,
+            rows: 4,
+            panes: vec![PaneView { rect, screen: a.screen(), active: true, copy: None, border_text: text }],
+            status: None,
+            status_top: false,
+            border_fg: Color::Default,
+            active_border_fg: Color::Default,
+        };
+        // Top: row 0 is the label, the pane starts on row 1.
+        let (g, _, _) = compose(&frame(Rect { x: 0, y: 1, w: 6, h: 2 }, Some((label(" 0: long label"), true))));
+        assert_eq!(row(&g, 0), " 0: lo", "clipped to the pane's width");
+        assert_eq!(row(&g, 1), "abcdef");
+        // Bottom: the row after the pane.
+        let (g, _, _) = compose(&frame(Rect { x: 0, y: 0, w: 6, h: 2 }, Some((label("[0]"), false))));
+        assert_eq!(row(&g, 0), "abcdef");
+        let r2 = row(&g, 2);
+        assert!(r2.starts_with("[0]"), "{r2}");
+        // The rest of the reserved row is border line, as in tmux.
+        assert!(r2[3..].chars().all(|c| "─┬┐┼┤".contains(c)), "{r2}");
+        // A pane on row 0 asked for a top line: nothing to draw, nothing broken.
+        let (g, _, _) = compose(&frame(Rect { x: 0, y: 0, w: 6, h: 2 }, Some((label("[0]"), true))));
+        assert_eq!(row(&g, 0), "abcdef");
+    }
+
     #[test]
     fn copy_selection_inverts() {
         let a = screen(5, 2, b"abcde\r\nfghij");
@@ -959,6 +1054,7 @@ mod tests {
                 screen: a.screen(),
                 active: true,
                 copy: Some(CopyView { cx: 1, cy: 1, sel: Some(((0, 3), (1, 1))), rect: false, offset: 0 }),
+                border_text: None,
             }],
             status: None,
             status_top: false,

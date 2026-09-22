@@ -926,3 +926,50 @@ clippy 与 `cargo fmt --check` 无输出。
 ## 结论（第十五次验收）
 
 第 3、4、5 轮连续零发现，验收通过。测试 131 → 136（lib 93 / console 4 / e2e 39）。
+
+# 第十六次验收（2026-09-22）— 会话录制、pane 边框标题、format 变量
+
+本次新增：
+- `record [-t 目标] [文件]`：把 pane 输出写成 asciinema v2（`o` 事件 + 尺寸变化的 `r` 事件），
+  写文件走独立线程（有界通道 1024 条，跟不上丢事件不丢输出）；不带路径就停，
+  pane 被杀时录制器随之关闭，文件完整。
+- `pane-border-status top|bottom` + `pane-border-format`：布局阶段每个 pane 让出一行给边框文字，
+  `compose` 在那一行画 `pane-border-format` 展开的内容（当前 pane 用活动边框色），其余格子仍是边框线。
+- format 变量从 9 个扩到 39 个（session/window/pane/client/server 五组），修饰符
+  `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:` 可嵌套；两处各自手写的 `Context` 字面量合并成一个
+  `Server::context()`，状态栏、`display-message`、边框文字、菜单标题都从这一处取值。
+
+## 第 1 轮（不计数）— 视角：机制通路（e2e）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `#{b:pane_current_path}` 对 `C:\…\Temp\`（`temp_dir()` 带尾部反斜杠）取出空串 | `b:` / `d:` 先剥掉尾部分隔符；单元测试覆盖 |
+| 2 | （测试自身）以为 cmd.exe 的提示符在第 0 行、pane 高度算成 21 | 先探出提示符所在行再断言；高度 = 24 − 状态栏 − 边框行 = 22 |
+| 3 | （测试自身）以为新 pane 天生有 `pane_current_path` | 先 `set-cwd` 再查 |
+
+## 第 2 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：录制文件头 `version=2 size=80x23`，事件序列 `ooro`（回显、输出、分屏引起的 resize、新提示符），
+含 `in-the-cast` 的 `o` 事件存在，时间单调；`pane-border-status top` 使两个 pane 高度 11→10，`off` 回到 11；
+`display-message -p` 一次展开 11 个变量/修饰符：`1|2|1|System32|C:\Windows|a|NE|C:\WINdows\System32\|Tue Sep 22 …|alive|Syst`，
+逐项对上（含带尾部反斜杠的 `b:`、`=-2:host`、嵌套 `=4:b:`、`t:` 时间、条件）。
+
+## 第 3 轮（计数 2/3，无发现）— 视角：边界与退化输入
+
+数据：`record` 到不存在的盘报 `cannot create … (os error 3)`；未录制时停报 `not recording`；
+两次 `record` 第二个文件替换第一个（旧文件只剩头）；多余参数报 `unexpected argument`；
+2000 行输出爆发后 1992 个事件、末行 JSON 完整；录制中的 pane 被 `kill-window`，文件末行完整；
+`pane-border-status sideways` 拒绝并列出三个合法值；`-x 20 -y 4` 的小 session 下 top/bottom/status off/on
+来回切、空 format、`#{nosuch}#{b:}#[bold` 残缺 format，server 全部存活；
+7 个畸形修饰符（`=abc:`、`=-0:`、`s//x/:`、`b:` 空值、`t:` 非数字、`s/a:`、`:`）全部得到空串或原值，
+20 层嵌套 `s/a/b/:` 正常，`==1` / `==` 空比较正常。
+
+## 第 4 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，141 项指纹均为 `8C92D0A2B4D2D05F`；README 列出的 39 个变量
+在 `Context::var` 里逐个存在，对照表同样齐全；`--help` 含 `record`；`show-options` 含两个边框选项；
+clippy 与 `cargo fmt --check` 无输出。
+
+## 结论（第十六次验收）
+
+第 2、3、4 轮连续零发现，验收通过。测试 136 → 141（lib 95 / console 4 / e2e 42）。
