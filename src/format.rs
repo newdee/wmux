@@ -53,10 +53,24 @@ pub struct Context {
     /// In copy mode.
     pub pane_in_mode: bool,
     pub pane_pid: Option<u32>,
+    /// Unix time the pane's program was started, and of its last output.
+    pub pane_start_time: i64,
+    pub pane_activity: i64,
     pub client_width: u16,
     pub client_height: u16,
     pub host: String,
     pub socket: String,
+}
+
+/// A number of seconds as people say it: `42s`, `5m`, `2h13m`, `3d2h`.
+pub fn human_duration(secs: i64) -> String {
+    let s = secs.max(0);
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m", s / 60),
+        3600..=86399 => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+        _ => format!("{}d{}h", s / 86400, (s % 86400) / 3600),
+    }
 }
 
 /// `#{=10:var}` (first 10), `#{=-10:var}` (last 10), `#{b:var}` (basename),
@@ -146,6 +160,8 @@ impl Context {
             "pane_synchronized" => flag(self.pane_synchronized),
             "pane_in_mode" => flag(self.pane_in_mode),
             "pane_pid" => self.pane_pid.map(|p| p.to_string()).unwrap_or_default(),
+            "pane_start_time" => self.pane_start_time.to_string(),
+            "pane_activity" => self.pane_activity.to_string(),
             "client_width" => self.client_width.to_string(),
             "client_height" => self.client_height.to_string(),
             "host" | "H" => self.host.clone(),
@@ -364,6 +380,22 @@ fn _color_in_scope(_: Color) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_read_like_speech() {
+        assert_eq!(human_duration(-5), "0s");
+        assert_eq!(human_duration(0), "0s");
+        assert_eq!(human_duration(59), "59s");
+        assert_eq!(human_duration(60), "1m");
+        assert_eq!(human_duration(3599), "59m");
+        assert_eq!(human_duration(3600), "1h00m");
+        assert_eq!(human_duration(8013), "2h13m");
+        assert_eq!(human_duration(86400), "1d0h");
+        assert_eq!(human_duration(266400), "3d2h");
+        let c = Context { pane_start_time: 1_700_000_000, pane_activity: 1_700_000_042, ..Default::default() };
+        assert_eq!(c.var("pane_start_time").as_deref(), Some("1700000000"));
+        assert_eq!(c.var("pane_activity").as_deref(), Some("1700000042"));
+    }
 
     fn ctx() -> Context {
         Context {

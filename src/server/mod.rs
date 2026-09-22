@@ -1500,6 +1500,9 @@ impl Server {
         let current = s.cur == widx;
         let Some(w) = s.windows.get_mut(widx) else { return };
         w.last_output = Instant::now();
+        if let Some(p) = w.panes.iter_mut().find(|p| p.id == pid) {
+            p.last_output = w.last_output;
+        }
         w.alert_silence = false;
         if current {
             return; // the bell of the window in view is rung by the renderer
@@ -2128,9 +2131,12 @@ impl Server {
                 };
                 let ids: Vec<PaneId> =
                     if window { self.session(sid).unwrap().windows[widx].layout.panes() } else { vec![pid] };
-                let (history, env, tx) = (self.opts.history_limit, self.env.clone(), self.pane_tx.clone());
+                let (history, tx) = (self.opts.history_limit, self.pane_tx.clone());
                 let mut done = 0;
                 for id in ids {
+                    // The same environment a new pane gets: WMUX, WMUX_PANE
+                    // and PATH, not just the set-environment entries.
+                    let env = self.pane_env(id);
                     let Some(p) = self.find_pane_mut(id) else { continue };
                     if p.exit_code.is_none() && !kill {
                         continue; // tmux refuses a live pane without -k
@@ -3382,6 +3388,79 @@ impl Server {
                 }
                 Outcome::Ok
             }
+            Cmd::Jobs { target, format } => {
+                // A session narrows it to that session, a window to that
+                // window, a pane to that one pane (a script asking after one).
+                let (only_sid, only_widx, only_pid) = match target.as_ref() {
+                    Some(t) => match self.resolve(Some(t), cid) {
+                        Ok((s, w, p)) => (Some(s), t.window.as_ref().map(|_| w), t.pane.as_ref().map(|_| p)),
+                        Err(e) => return Outcome::Error(e),
+                    },
+                    None => (None, None, None),
+                };
+                let mut panes: Vec<(SessionId, usize, PaneId)> = Vec::new();
+                for s in self.sessions.iter().filter(|s| only_sid.is_none_or(|id| id == s.id)) {
+                    for (wi, w) in s.windows.iter().enumerate().filter(|(wi, _)| only_widx.is_none_or(|i| i == *wi)) {
+                        panes.extend(
+                            w.layout
+                                .panes()
+                                .into_iter()
+                                .filter(|p| only_pid.is_none_or(|id| id == *p))
+                                .map(|p| (s.id, wi, p)),
+                        );
+                    }
+                }
+                let now = chrono::Local::now();
+                let mut lines = Vec::new();
+                // Standard view: a header and aligned columns.
+                let mut rows: Vec<Vec<String>> = vec![
+                    ["PANE", "STATE", "UP", "IDLE", "PID", "COMMAND", "DIR"].iter().map(|s| s.to_string()).collect(),
+                ];
+                for (sid, widx, pid) in panes {
+                    let ctx = self.context(sid, widx, Some(pid), cid);
+                    match &format {
+                        Some(f) => {
+                            let base = render::Style::default();
+                            let segs = crate::format::expand(f, &ctx, &mut self.shell_cache, base, now);
+                            lines.push(segs.into_iter().map(|s| s.text).collect::<String>());
+                        }
+                        None => {
+                            let t = now.timestamp();
+                            rows.push(vec![
+                                format!("{}:{}.{}", ctx.session, ctx.window_index, ctx.pane_index),
+                                match ctx.pane_dead_status {
+                                    Some(code) => format!("exit {code}"),
+                                    None => "running".to_string(),
+                                },
+                                crate::format::human_duration(t - ctx.pane_start_time),
+                                crate::format::human_duration(t - ctx.pane_activity),
+                                ctx.pane_pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+                                ctx.pane_title,
+                                ctx.pane_path,
+                            ]);
+                        }
+                    }
+                }
+                if format.is_none() && rows.len() > 1 {
+                    // Columns line up on screen, so pad by display width: a
+                    // CJK session name is two cells a character.
+                    use unicode_width::UnicodeWidthStr;
+                    let ncol = rows[0].len();
+                    let widths: Vec<usize> =
+                        (0..ncol).map(|c| rows.iter().map(|r| r[c].width()).max().unwrap_or(0)).collect();
+                    for r in &rows {
+                        let mut line = String::new();
+                        for (c, cell) in r.iter().enumerate() {
+                            line.push_str(cell);
+                            if c + 1 < ncol {
+                                line.extend(std::iter::repeat_n(' ', widths[c] - cell.width() + 2));
+                            }
+                        }
+                        lines.push(line.trim_end().to_string());
+                    }
+                }
+                Outcome::Text(lines.join("\n"))
+            }
             Cmd::DisplayMessage { msg, target } => {
                 if cid.is_none() && target.is_none() {
                     return Outcome::Ok; // from the config: nobody to show it to
@@ -3894,6 +3973,9 @@ impl Server {
             ctx.pane_dead_status = p.exit_code;
             ctx.pane_in_mode = p.copy.is_some();
             ctx.pane_pid = p.pid;
+            let now = chrono::Local::now().timestamp();
+            ctx.pane_start_time = now - p.spawned_at.elapsed().as_secs() as i64;
+            ctx.pane_activity = now - p.last_output.elapsed().as_secs() as i64;
         }
         ctx
     }

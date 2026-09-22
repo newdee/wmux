@@ -181,6 +181,8 @@ pub struct Pane {
     pub pid: Option<u32>,
     /// When the current program was started (`jobs`, uptime).
     pub spawned_at: std::time::Instant,
+    /// When it last printed anything (`jobs`, idle time).
+    pub last_output: std::time::Instant,
 }
 
 /// An asciinema v2 recording in progress: a header line, then one JSON
@@ -329,6 +331,7 @@ impl Pane {
             recorder: None,
             pid,
             spawned_at: std::time::Instant::now(),
+            last_output: std::time::Instant::now(),
         })
     }
 

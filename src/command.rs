@@ -456,6 +456,14 @@ pub enum Cmd {
         /// `-n`: how many hits to report per pane.
         per_pane: usize,
     },
+    /// `jobs`: every pane on the server as one line: where it is, whether
+    /// its program is still running, for how long, when it last printed.
+    Jobs {
+        /// Limit to a session (or a window of it).
+        target: Option<Target>,
+        /// `-F`: a format instead of the standard columns.
+        format: Option<String>,
+    },
     /// `delete-saved name`: forget a saved session.
     DeleteSaved {
         name: String,
@@ -1069,6 +1077,13 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)?;
                 write!(f, " {}", quote(pattern))
             }
+            Cmd::Jobs { target, format } => {
+                f.write_str("jobs")?;
+                if let Some(fm) = format {
+                    write!(f, " -F {}", quote(fm))?;
+                }
+                fmt_target(f, target)
+            }
             Cmd::ClearHistory => f.write_str("clear-history"),
             Cmd::SetCwd { target, dir } => {
                 f.write_str("set-cwd")?;
@@ -1292,6 +1307,7 @@ pub const COMMANDS: &[&str] = &[
     "find-window",
     "has-session",
     "if-shell",
+    "jobs",
     "join-pane",
     "kill-pane",
     "kill-server",
@@ -1417,6 +1433,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "move-pane" | "movep" => "join-pane",
         "find-window" | "findw" => "find-window",
         "find-text" | "findt" => "find-text",
+        "jobs" => "jobs",
         "record" => "record",
         "select-layout" | "selectl" => "select-layout",
         "next-layout" | "nextl" => "next-layout",
@@ -2546,6 +2563,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 return Err("find-text: pattern required".into());
             }
             Cmd::FindText { pattern, target, case_sensitive, per_pane: per_pane.clamp(1, 100) }
+        }
+        "jobs" => {
+            let (mut target, mut format) = (None, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-F" => format = Some(a.value("-F")?.to_string()),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::Jobs { target, format }
         }
         "notify" => {
             let mut title = None;

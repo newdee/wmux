@@ -1634,6 +1634,15 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     let (code, _, err) = h.cli(&["respawn-pane", "-t", "r:0"]).await;
     assert_eq!(code, 0, "{err}");
     h.wait_capture("r:0", "a fresh prompt", |t| t.contains("wmux>")).await;
+    // ...with the pane environment a new pane gets, so `wmux` inside it
+    // still talks to this server (respawn used to pass set-environment only).
+    h.cli(&["send-keys", "-t", "r:0", "echo WMUX=%WMUX% PANE=%WMUX_PANE%", "Enter"]).await;
+    // The typed line still says %WMUX%; the output line has the real values.
+    let want = format!("WMUX={} PANE=", h.socket);
+    h.wait_capture("r:0", "the socket name and pane id from inside", |t| {
+        t.lines().any(|l| l.strip_prefix(&want).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())))
+    })
+    .await;
     h.cli(&["kill-server"]).await;
 }
 
@@ -2470,5 +2479,73 @@ async fn save_history_all_keeps_the_whole_scrollback_with_colours() {
     let (code, _, err) = h.cli(&["new", "-d", "-s", "tooSmall", "-x", "3"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("at least 10"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jobs_lists_every_pane_with_its_state() {
+    let h = Harness::start("jobs").await;
+    h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
+    h.cli(&["new", "-d", "-s", "build"]).await;
+    h.cli(&["new", "-d", "-s", "web"]).await;
+    h.cli(&["split-window", "-d", "-t", "web:0"]).await;
+    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "build", "-n", "dies", "cmd.exe", "/c", "exit", "4"]).await;
+    assert_eq!(code, 0, "{err}");
+    // The board notices the exit (remain-on-exit keeps the pane to show it).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let out = loop {
+        let (code, out, err) = h.cli(&["jobs"]).await;
+        assert_eq!(code, 0, "{err}");
+        if out.contains("exit 4") {
+            break out;
+        }
+        assert!(Instant::now() < deadline, "the exited pane never showed: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 5, "a header and four panes: {out}");
+    assert!(lines[0].starts_with("PANE") && lines[0].contains("STATE") && lines[0].contains("IDLE"), "{out}");
+    for want in ["build:0.0", "build:1.0", "web:0.0", "web:0.1"] {
+        assert!(lines.iter().any(|l| l.starts_with(want)), "{want} listed: {out}");
+    }
+    let dead = lines.iter().find(|l| l.starts_with("build:1.0")).unwrap();
+    assert!(dead.contains("exit 4"), "{dead}");
+    let live = lines.iter().find(|l| l.starts_with("web:0.1")).unwrap();
+    assert!(live.contains("running"), "{live}");
+    // pid, then the command: a number in the PID column.
+    assert!(live.split_whitespace().nth(4).is_some_and(|p| p.parse::<u32>().is_ok()), "{live}");
+
+    // -t narrows to a session, a window or one pane; -F says what to print.
+    let (_, out, _) = h.cli(&["jobs", "-t", "web"]).await;
+    assert_eq!(out.lines().count(), 3, "{out}");
+    assert!(out.lines().skip(1).all(|l| l.starts_with("web:")), "{out}");
+    let (_, out, _) = h.cli(&["jobs", "-t", "web:0.1", "-F", "#{pane_index}"]).await;
+    assert_eq!(out.trim(), "1", "one pane asked for, one answered: {out:?}");
+    // Columns line up on screen even with a double-width session name.
+    h.cli(&["new", "-d", "-s", "中文"]).await;
+    let (_, out, _) = h.cli(&["jobs"]).await;
+    let offsets: std::collections::HashSet<usize> = out
+        .lines()
+        .map(|l| {
+            let at = l.find("running").or_else(|| l.find("STATE")).or_else(|| l.find("exit")).unwrap();
+            unicode_width::UnicodeWidthStr::width(&l[..at])
+        })
+        .collect();
+    assert_eq!(offsets.len(), 1, "the STATE column starts at one screen column on every row: {out}");
+    let (_, out, _) =
+        h.cli(&["jobs", "-t", "build:1", "-F", "#{session_name}/#{window_name} #{pane_dead_status}"]).await;
+    assert_eq!(out.trim(), "build/dies 4");
+    let (_, out, _) = h.cli(&["jobs", "-t", "web:0.0", "-F", "#{pane_start_time} #{pane_activity}"]).await;
+    let mut it = out.split_whitespace().map(|n| n.parse::<i64>().expect("unix seconds"));
+    let (start, activity) = (it.next().unwrap(), it.next().unwrap());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    assert!((now - start).abs() < 60 && activity >= start && activity <= now, "{out} vs now {now}");
+
+    let (code, _, err) = h.cli(&["jobs", "-t", "nosuch"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("nosuch"), "{err}");
+    let (code, _, err) = h.cli(&["jobs", "extra"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("unexpected argument"), "{err}");
     h.cli(&["kill-server"]).await;
 }

@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `record` (a pane's output as an asciinema file), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `record` (a pane's output as an asciinema file), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
@@ -205,7 +205,7 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `window_flags`), the pane (`pane_index` `pane_id` `pane_title`
 `pane_current_command` `pane_start_command` `pane_current_path`
 `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status`
-`pane_synchronized` `pane_in_mode` `pane_pid`), the client
+`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity`), the client
 (`client_width` `client_height`) and the server (`host` `host_short`
 `socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
 #H #F #D #h`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.

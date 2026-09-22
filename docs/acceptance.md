@@ -1035,3 +1035,53 @@ resume 后底部多一组"空行+提示符"（旧提示符行在存档里，新 
 ## 结论（第十七次验收）
 
 第 4、5、6 轮连续零发现，验收通过。测试 141 → 143（lib 96 / console 4 / e2e 43）。
+
+# 第十八次验收（2026-09-22）— `jobs` 任务板、respawn 环境修正
+
+本次新增 / 修正：
+- `jobs [-t 目标] [-F 格式]`：整个 server 每个 pane 一行——PANE、STATE（`running` / `exit N`）、UP（启动至今）、
+  IDLE（上次输出至今）、PID、COMMAND、DIR，列按显示宽度对齐（中文占两格）。`-t` 到 session / 窗口 / 单个 pane；
+  `-F` 走 format 引擎。新增变量 `pane_start_time`、`pane_activity`（unix 秒，可配 `t:`），`Pane.last_output`
+  在 `note_output` 打点。`format::human_duration`：`42s` / `5m` / `2h13m` / `3d2h`。
+- **修 bug（既有）**：`respawn-pane` 只传了 `set-environment` 的条目，没传 `pane_env()`（WMUX、WMUX_PANE、
+  把本 exe 目录放最前的 PATH）。后果：respawn 过的 pane 里 `WMUX=default`，`wmux` 解析到 `C:\Program Files\wmux\wmux.exe`
+  （0.5.0）——探针里 `jobs` 报 `unknown command: jobs`、空文件。现在 respawn 与新建 pane 用同一套环境。
+
+## 第 1 轮（不计数）— 视角：机制通路（release 二进制）
+
+`jobs` 输出形状正确；发现 respawn 后 pane 内 `wmux` 指向别的 exe（见上）→ 修；探针自身两处失误
+（把 `cmd.exe /c exit 3` 当一个参数传、竖切第 4 次被拒后误以为有 40 个 pane）。
+
+## 第 2 轮（不计数）— 视角：边界
+
+发现：(1) 列按字符数补齐，中文 session 名在终端里错位 → 改按 unicode 显示宽度；(2) `-t s:w.p` 带 pane 时列的是整个窗口，
+脚本问单个 pane 不方便，且 e2e 里那条 `-F` 时间检查其实拿到两行、凑巧通过 → pane 目标只列该 pane，e2e 改成明确断言一行。
+另：`#(cmd)` 在一次性命令里展开为空（缓存按 `status-interval` 刷新，`display-message` 同样）——记录，不改。
+
+## 第 3 轮（不计数）— 视角：可复现性 + 文档 claim
+
+`list-commands` 检查 False 是脚本没先起 server（该命令不自动起 server）；改脚本后 True。
+
+## 第 4 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：4 个 200×50 session 各 10 个 pane，`jobs` 40 行 21 ms，全部 `running`，40 个 pid 互不相同；
+`pane_activity` 在一次 `echo` 后前移（1790070884 → 1790070888），IDLE 显示 `0s`；`respawn-pane -k` 后
+`pane_start_time` 前移、pid 改变（34088 → 6044）；`cmd.exe /c exit 7` 的窗口在 `remain-on-exit on` 下留一行 `exit 7`；
+respawn 过的 pane 里跑 `wmux jobs -F …` 得到 42 行（本 server 全部 pane）。
+
+## 第 5 轮（计数 2/3，无发现）— 视角：边界
+
+数据：无 session 时退出 0、空输出；`中文会话` + 12 层深目录，STATE 列三行都从第 14 格开始；
+`-t b:0` / `-t b:0.0` / `-t b:9`（`no window 9`，退出 1）；zoom 的窗口仍列出被藏的 2 个 pane；
+`-F ""` 输出空行、`#{nosuch}|#{b:}|#[bold|…` 残缺格式不崩、`-F` 无值报 `-F: missing value`、`-x` 报 unknown flag、
+`job` 缩写可用；带空格的标题一行内列位置不变。
+
+## 第 6 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，145 项指纹均为 `96D4C038C0B1567D`；`--help` 与 `list-commands` 都有 `jobs`；
+README（中英）与对照表都写了 `jobs` 及两个新变量；`Context::var` 应答两者；网站 145 tests；COMMANDS 含 `jobs`
+且解析测试覆盖每一项；clippy 与 fmt 无输出。
+
+## 结论（第十八次验收）
+
+第 4、5、6 轮连续零发现，验收通过。测试 143 → 145（lib 97 / console 4 / e2e 44）。

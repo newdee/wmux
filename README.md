@@ -271,7 +271,8 @@ Variables: `session_name` `session_id` `session_windows` `session_attached`
 `window_silence_flag` `window_flags`, `pane_index` `pane_id` `pane_title`
 `pane_current_command` `pane_start_command` `pane_current_path` `pane_width`
 `pane_height` `pane_active` `pane_dead` `pane_dead_status`
-`pane_synchronized` `pane_in_mode` `pane_pid`, `client_width`
+`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time`
+`pane_activity`, `client_width`
 `client_height`, `host` `host_short` `socket_path` `version` `pid`.
 Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
 `#{=-10:…}` (last 10), `#{b:pane_current_path}` (basename), `#{d:…}`
@@ -356,6 +357,17 @@ Commands a script or a binding reaches for, beyond the obvious ones
 - `notify [-T title] message` raises a desktop notification, and
   `set -g notify on` sends one for every alert, so a job that ends while
   the terminal is behind other windows still reaches you.
+- `jobs` is the task board: one line per pane on the whole server, with
+  whether its program is still running or what it exited with, how long it
+  has been up, how long since it last printed, its pid, command and
+  directory. `-t session` narrows it; `-F format` prints what you want
+  instead (`#{pane_start_time}` and `#{pane_activity}` are the raw times).
+
+  ```
+  PANE       STATE    UP     IDLE   PID    COMMAND       DIR
+  build:0.0  running  2h13m  4s     21608  cargo build   C:\src\wmux
+  web:0.0    exit 1   2h13m  1h02m  28748  npm run dev   C:\src\site
+  ```
 
 Every window and pane command accepts `-t target` as in tmux:
 `session`, `session:window`, `:window`, `session:window.pane`, and the window
