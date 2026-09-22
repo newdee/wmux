@@ -292,6 +292,11 @@ pub enum Cmd {
     /// `choose-jobs`: the task board as a picker (prefix `B`): Enter goes
     /// to the pane, `x` kills it, `r` restarts it.
     ChooseJobs,
+    /// `focus-pane %N`: every attached client switches to that pane and
+    /// its terminal window is brought forward (a notification's button).
+    FocusPane {
+        pane: u32,
+    },
     /// `display-menu [-T title] name key command ...`: a menu over the window;
     /// an empty name is a separator, `key` selects the entry directly.
     DisplayMenu {
@@ -877,6 +882,7 @@ impl fmt::Display for Cmd {
             Cmd::ChooseBuffer => f.write_str("choose-buffer"),
             Cmd::ChooseClient => f.write_str("choose-client"),
             Cmd::ChooseJobs => f.write_str("choose-jobs"),
+            Cmd::FocusPane { pane } => write!(f, "focus-pane %{pane}"),
             Cmd::DisplayMenu { title, items } => {
                 f.write_str("display-menu")?;
                 if let Some(t) = title {
@@ -1310,6 +1316,7 @@ pub const COMMANDS: &[&str] = &[
     "display-panes",
     "find-text",
     "find-window",
+    "focus-pane",
     "has-session",
     "if-shell",
     "jobs",
@@ -1461,6 +1468,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "choose-buffer" => "choose-buffer",
         "choose-client" => "choose-client",
         "choose-jobs" => "choose-jobs",
+        "focus-pane" | "focusp" => "focus-pane",
         "command-prompt" => "command-prompt",
         "pipe-pane" | "pipep" => "pipe-pane",
         "wait-for" | "wait" => "wait-for",
@@ -2087,6 +2095,16 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "choose-jobs" => {
             a.none_left(n)?;
             Cmd::ChooseJobs
+        }
+        "focus-pane" => {
+            let id = a.next().ok_or("focus-pane: pane id required (%N, as list-panes shows it)")?;
+            let pane: u32 = id
+                .strip_prefix('%')
+                .unwrap_or(id)
+                .parse()
+                .map_err(|_| format!("focus-pane: bad pane id '{id}' (%N, as list-panes shows it)"))?;
+            a.none_left(n)?;
+            Cmd::FocusPane { pane }
         }
         "choose-client" => {
             while a.is_flag() {
@@ -3043,6 +3061,12 @@ mod tests {
         assert!(matches!(p("wait x"), Cmd::WaitFor { .. }));
         assert!(matches!(p("choose-c"), Cmd::ChooseClient));
         assert!(matches!(p("choose-j"), Cmd::ChooseJobs));
+        assert!(matches!(p("focus-pane %7"), Cmd::FocusPane { pane: 7 }));
+        assert!(matches!(p("focusp 7"), Cmd::FocusPane { pane: 7 }));
+        assert_eq!(p("focus-pane 7").to_string(), "focus-pane %7");
+        assert!(parse_line("focus-pane").unwrap_err().contains("pane id required"));
+        assert!(parse_line("focus-pane %x").unwrap_err().contains("bad pane id"));
+        assert!(parse_line("focus-pane %1 %2").unwrap_err().contains("unexpected argument"));
         assert!(parse_line("choose-jobs extra").unwrap_err().contains("unexpected argument"));
         // Commands that exist must be in the table, or a prefix of them is
         // "unknown" and `list-commands` does not mention them.

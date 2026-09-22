@@ -28,6 +28,52 @@ const KEY_EVENT: u16 = 0x0001;
 const MOUSE_EVENT: u16 = 0x0002;
 const WINDOW_BUFFER_SIZE_EVENT: u16 = 0x0004;
 
+/// Write `text` to this process's console screen (`CONOUT$`), VT sequences
+/// interpreted, whatever the standard handles are: a process started into
+/// a ConPTY gets no usable stdout, only the console itself. For the helper
+/// that prints a resumed pane's saved output (`wmux __replay`).
+pub fn write_to_console(text: &str) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+    use windows_sys::Win32::System::Console::WriteConsoleW;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+    let h = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if h == INVALID_HANDLE_VALUE || h.is_null() {
+        bail!("no console: {}", std::io::Error::last_os_error());
+    }
+    let result = (|| {
+        let mut mode = 0;
+        if unsafe { GetConsoleMode(h, &mut mode) } != 0 {
+            unsafe { SetConsoleMode(h, mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING) };
+        }
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut done = 0usize;
+        while done < wide.len() {
+            let chunk = (wide.len() - done).min(16 * 1024) as u32;
+            let mut written = 0u32;
+            let ok = unsafe { WriteConsoleW(h, wide[done..].as_ptr(), chunk, &mut written, std::ptr::null()) };
+            if ok == 0 || written == 0 {
+                bail!("WriteConsoleW failed: {}", std::io::Error::last_os_error());
+            }
+            done += written as usize;
+        }
+        Ok(())
+    })();
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(h) };
+    result
+}
+
 pub enum InputEvent {
     Key(KeyRecord),
     Mouse(MouseRecord),

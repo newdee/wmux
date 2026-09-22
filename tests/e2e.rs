@@ -24,6 +24,11 @@ impl Drop for Harness {
 
 impl Harness {
     async fn start(name: &str) -> Harness {
+        // No toasts from tests: a toast registers the running binary as the
+        // wmux:// handler on the developer's machine.
+        unsafe { std::env::set_var("WMUX_NO_TOAST", "1") };
+        // The replay helper is wmux.exe; this test binary is not it.
+        unsafe { std::env::set_var("WMUX_EXE", env!("CARGO_BIN_EXE_wmux")) };
         let socket = format!("test-{name}-{}", std::process::id());
         let s = socket.clone();
         let server = tokio::spawn(async move {
@@ -2237,6 +2242,8 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     }
     let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
     h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt wmux$g"]).await;
+    // Autosave must never touch the real sessions directory from a test.
+    h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
     h.cli(&["new", "-d", "-s", "t"]).await;
 
     // What wmux understands is applied...
@@ -2465,9 +2472,19 @@ async fn save_history_all_keeps_the_whole_scrollback_with_colours() {
     h.cli(&["kill-session", "-t", "h"]).await;
     let (code, _, err) = h.cli(&["resume", "h"]).await;
     assert_eq!(code, 0, "{err}");
-    h.wait_capture("h:0", "the restored shell", |t| t.contains("wmux>")).await;
-    let (_, out, _) = h.cli(&["capture-pane", "-p", "-e", "-S", "-", "-t", "h:0"]).await;
-    assert!(out.lines().any(|l| l.trim_end() == "scroll-line-1"), "{out}");
+    // The saved output is printed back first and the shell starts after
+    // it, so the new shell's prompt (plain "wmux>", the saved one is red)
+    // is the last line once everything is in.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let out = loop {
+        let (_, out, _) = h.cli(&["capture-pane", "-p", "-e", "-S", "-", "-t", "h:0"]).await;
+        let last = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+        if last.trim_end() == "wmux>" && out.lines().any(|l| l.trim_end() == "scroll-line-1") {
+            break out;
+        }
+        assert!(Instant::now() < deadline, "restored scrollback then a fresh prompt: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert!(out.contains("\x1b[31mred"), "{out}");
 
     // A detached session takes its size from -x/-y (there is no terminal
@@ -2697,8 +2714,8 @@ async fn choose_jobs_is_the_board_you_can_act_on() {
         !t.contains("j/k move") && t.contains("[other]")
     })
     .await;
-    // Nothing leaked into a shell.
-    let out = h.cli(&["capture-pane", "-p", "-t", "other:0"]).await.1;
+    // Nothing leaked into a shell (once its prompt is there to see).
+    let out = h.wait_capture("other:0", "other's prompt", |t| t.contains("wmux>")).await;
     assert_eq!(out.trim(), "wmux>", "picker keys leaked into the pane: {out:?}");
     // From a script there is no client to draw it for.
     let (code, _, err) = h.cli(&["choose-jobs"]).await;
@@ -2747,5 +2764,126 @@ async fn choose_jobs_edges() {
     c.wait_for("the board again", |s| s.contents().contains("j/k move")).await;
     c.type_str("q").await;
     c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn focus_pane_brings_every_attached_client_to_that_pane() {
+    let h = Harness::start("focus").await;
+    // Nobody attached yet: nothing to switch, said plainly.
+    h.cli(&["new", "-d", "-s", "a"]).await;
+    let (_, first, _) = h.cli(&["jobs", "-t", "a:0", "-F", "#{pane_id}"]).await;
+    let (code, _, err) = h.cli(&["focus-pane", first.trim()]).await;
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("no client attached"), "{err}");
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "a"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    h.cli(&["new", "-d", "-s", "b", "-n", "target"]).await;
+    h.cli(&["split-window", "-d", "-t", "b:0"]).await;
+    let (_, ids, _) = h.cli(&["jobs", "-t", "b:0", "-F", "#{pane_id}"]).await;
+    let bottom = ids.lines().last().unwrap().trim().to_string();
+    assert!(bottom.starts_with('%'), "{ids}");
+
+    // The client is looking at a; focus-pane on b's second pane takes it
+    // there: session b, window target, that pane active.
+    let (code, out, err) = h.cli(&["focus-pane", &bottom]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("1 client(s) switched"), "{out}");
+    c.wait_for("switched to b", |s| s.contents().contains("[b]")).await;
+    let (_, active, _) = h.cli(&["display-message", "-p", "-t", "b:0", "#{pane_id}"]).await;
+    assert_eq!(active.trim(), bottom, "the pane became the active one");
+    // Wrong ids are refused; a bare number is the same as %number.
+    let (code, _, err) = h.cli(&["focus-pane", "%999"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane %999"), "{err}");
+    let (code, _, _) = h.cli(&["focus-pane", bottom.trim_start_matches('%')]).await;
+    assert_eq!(code, 0);
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_knows_where_its_shell_went() {
+    let h = Harness::start("cwd").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "cw", "pwsh.exe", "-NoLogo"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("cw:0", "a pwsh prompt", |t| t.contains("PS ")).await;
+    // PowerShell, no profile of the user's: the prompt hook wmux gives it
+    // reports every cd through OSC 9;9.
+    h.cli(&["send-keys", "-t", "cw:0", "cd C:\\Windows", "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, out, _) = h.cli(&["display-message", "-p", "-t", "cw:0", "#{pane_current_path}"]).await;
+        if out.trim().eq_ignore_ascii_case("C:\\Windows") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "pwsh's cd was not followed: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The prompt itself still reads as before (the hook adds only an
+    // invisible sequence after it).
+    let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", "cw:0"]).await;
+    assert!(screen.contains("PS C:\\Windows>"), "{screen}");
+    // cmd.exe says nothing; its process's own directory is read instead.
+    h.cli(&["new-window", "-d", "-t", "cw", "-n", "c"]).await;
+    h.wait_capture("cw:1", "cmd prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["send-keys", "-t", "cw:1", "cd /d C:\\Windows\\System32", "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, out, _) = h.cli(&["display-message", "-p", "-t", "cw:1", "#{pane_current_path}"]).await;
+        if out.trim().eq_ignore_ascii_case("C:\\Windows\\System32") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "cmd's cd was not followed: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // ...and both land in the session file, so a resumed pane starts there.
+    h.cli(&["save-session", "-t", "cw"]).await;
+    let file = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .find(|t| t.contains("\"name\": \"cw\""))
+        .expect("a saved file for cw");
+    assert!(
+        file.contains("\"cwd\": \"C:\\\\Windows\"") && file.contains("\"cwd\": \"C:\\\\Windows\\\\System32\""),
+        "{file}"
+    );
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_pane_keeps_its_history_through_a_resize() {
+    let h = Harness::start("resizeresume").await;
+    h.cli(&["new", "-d", "-s", "keeper"]).await;
+    h.cli(&["new", "-d", "-s", "r"]).await;
+    h.wait_capture("r:0", "prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["send-keys", "-t", "r:0", "for /l %i in (1,1,40) do @echo keep-%i", "Enter"]).await;
+    h.wait_capture("r:0", "the last line", |t| t.contains("keep-40")).await;
+    h.cli(&["save-session", "-t", "r"]).await;
+    h.cli(&["kill-session", "-t", "r"]).await;
+    h.cli(&["resume", "r"]).await;
+    // Everything back, then a fresh prompt below it.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, out, _) = h.cli(&["capture-pane", "-p", "-S", "-", "-t", "r:0"]).await;
+        let n = out.lines().filter(|l| l.trim_end().starts_with("keep-")).count();
+        let last = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+        if n == 40 && last.trim_end() == "wmux>" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{n} keep-lines, last {last:?}: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The pane shrinks (a split) and grows again (the split closed): the
+    // 40 lines are all still there both times.
+    h.cli(&["split-window", "-d", "-t", "r:0"]).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, out, _) = h.cli(&["capture-pane", "-p", "-S", "-", "-t", "r:0.0"]).await;
+    assert_eq!(out.lines().filter(|l| l.trim_end().starts_with("keep-")).count(), 40, "after the shrink: {out}");
+    h.cli(&["kill-pane", "-t", "r:0.1"]).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, out, _) = h.cli(&["capture-pane", "-p", "-S", "-", "-t", "r:0.0"]).await;
+    assert_eq!(out.lines().filter(|l| l.trim_end().starts_with("keep-")).count(), 40, "after the grow: {out}");
     h.cli(&["kill-server"]).await;
 }

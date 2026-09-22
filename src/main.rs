@@ -32,7 +32,8 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   jobs [-t session] [-F format]   (every pane: running or exited, up for how long, idle since when)
   choose-jobs   (prefix B: the same board as a picker; Enter goes there, x kills, r restarts)
   record [-t target] [out.cast]   (write the pane's output as asciinema v2; no path stops)
-  notify [-T title] message   (a desktop notification; `set -g notify on` for alerts)
+  notify [-T title] message   (a desktop notification; `set -g notify on` for alerts, with a Go-to-pane button)
+  focus-pane %N   (every attached client switches to that pane and comes to the front)
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
@@ -86,6 +87,57 @@ fn main() {
                 return;
             }
             _ => break,
+        }
+    }
+    // `wmux __replay file`: the helper a resumed pane runs first. It prints
+    // the pane's saved output into the console it was started in (the
+    // pane's ConPTY) and removes the file, so the text is in the console's
+    // own buffer before the shell starts.
+    if args.first().map(String::as_str) == Some("__replay") {
+        let Some(path) = args.get(1) else {
+            eprintln!("__replay: file required");
+            std::process::exit(2);
+        };
+        let code = match std::fs::read_to_string(path) {
+            Ok(text) => match wmux::console::write_to_console(&text)
+                .and_then(|()| wmux::console::write_to_console(wmux::server::pane::REPLAY_MARKER))
+            {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("__replay: {e:#}");
+                    1
+                }
+            },
+            Err(e) => {
+                eprintln!("__replay: {path}: {e}");
+                1
+            }
+        };
+        // The console lives as long as its first process: stay until the
+        // server has started the pane's program in it, which it signals by
+        // removing the file. A server that never does is not waited on
+        // forever.
+        if code == 0 && std::env::var_os("WMUX_REPLAY_NO_WAIT").is_none() {
+            let started = std::time::Instant::now();
+            while std::path::Path::new(path).exists() && started.elapsed() < std::time::Duration::from_secs(60) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let _ = std::fs::remove_file(path);
+        std::process::exit(code);
+    }
+    // A notification's "Go to pane" button opens a wmux:// URL, which the
+    // protocol registration hands to us as the one argument.
+    if let Some(url) = args.first().filter(|a| a.starts_with("wmux://")).cloned() {
+        match wmux::notify::parse_go_url(&url) {
+            Some((sock, pane)) => {
+                socket = sock;
+                args = vec!["focus-pane".into(), format!("%{pane}")];
+            }
+            None => {
+                eprintln!("wmux: not a wmux://go/<socket>/<pane> link: {url}");
+                std::process::exit(1);
+            }
         }
     }
     if args.is_empty() {

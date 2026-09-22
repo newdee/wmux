@@ -20,7 +20,10 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
 unicode-width = "0.2.2"
 vt100 = "0.16"
-windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Registry"] }
+# WinRT toasts (the notification with a "Go to pane" button); everything
+# else Win32 goes through windows-sys.
+windows = { version = "0.61", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation", "Foundation_Collections", "Win32_System_WinRT"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Registry", "Win32_System_Diagnostics_Debug"] }
 
 [dev-dependencies]
 portable-pty = "0.9"

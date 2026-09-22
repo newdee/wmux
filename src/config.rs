@@ -611,6 +611,47 @@ pub fn resolve_shell(opts: &Options) -> Vec<String> {
     }
 }
 
+/// The prompt hook wmux gives PowerShell: whatever the prompt was, plus an
+/// invisible OSC 9;9 with the current directory after it, so `#{pane_
+/// current_path}`, `split-window -c '#{pane_current_path}'` and the saved
+/// session follow `cd` without anyone editing a profile. `Set-Location`
+/// does not move the process's directory, so nothing else can know it.
+pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__wmux_prompt = $function:prompt; \
+     function global:prompt { \
+     $__p = if ($global:__wmux_prompt) { & $global:__wmux_prompt } else { 'PS ' + $PWD.Path + '> ' }; \
+     \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' }";
+
+/// `argv` with wmux's shell integration added where it applies: an
+/// interactive PowerShell (pwsh or Windows PowerShell) gets the prompt hook
+/// through `-NoExit -Command`. A PowerShell running a command or file of
+/// its own, and every other program, is left exactly as given.
+pub fn with_shell_integration(argv: &[String]) -> Vec<String> {
+    let Some(first) = argv.first() else { return Vec::new() };
+    let stem = std::path::Path::new(first).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
+    if !matches!(stem.as_deref(), Some("pwsh" | "powershell")) {
+        return argv.to_vec();
+    }
+    // PowerShell takes any unambiguous prefix of a parameter name.
+    let runs_its_own = argv[1..].iter().any(|a| {
+        let a = a.to_ascii_lowercase();
+        let a = a.strip_prefix('-').or_else(|| a.strip_prefix('/')).unwrap_or("");
+        !a.is_empty()
+            && ("command".starts_with(a)
+                || "file".starts_with(a)
+                || "encodedcommand".starts_with(a)
+                || a == "ec"
+                || "noexit".starts_with(a) && a.len() >= 3)
+    });
+    if runs_its_own {
+        return argv.to_vec();
+    }
+    let mut run = argv.to_vec();
+    run.push("-NoExit".into());
+    run.push("-Command".into());
+    run.push(POWERSHELL_PROMPT_HOOK.into());
+    run
+}
+
 /// Minimal PATH lookup for an executable name.
 pub fn which(name: &str) -> Option<PathBuf> {
     let p = std::path::Path::new(name);
@@ -803,6 +844,47 @@ mod tests {
         let err = o.set("save-history", "some").unwrap_err();
         assert!(err.contains("or all"), "{err}");
         assert!(o.set("save-history", "").is_err(), "not an on/off option");
+    }
+
+    #[test]
+    fn shell_integration_goes_to_interactive_powershell_only() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // pwsh and Windows PowerShell, by any path or case, get the hook
+        // after their own arguments.
+        for argv in
+            [s(&["pwsh.exe", "-NoLogo"]), s(&["C:\\Program Files\\PowerShell\\7\\pwsh.exe"]), s(&["POWERSHELL"])]
+        {
+            let run = with_shell_integration(&argv);
+            assert_eq!(&run[..argv.len()], &argv[..]);
+            assert_eq!(&run[argv.len()..], &s(&["-NoExit", "-Command", POWERSHELL_PROMPT_HOOK])[..], "{argv:?}");
+        }
+        // One running its own command, file or encoded command is left
+        // alone, with any prefix PowerShell itself accepts.
+        for argv in [
+            s(&["pwsh", "-c", "Get-Date"]),
+            s(&["pwsh", "-Command", "Get-Date"]),
+            s(&["pwsh", "-NoLogo", "-File", "x.ps1"]),
+            s(&["pwsh", "-f", "x.ps1"]),
+            s(&["pwsh", "-e", "ZQBj"]),
+            s(&["pwsh", "-EncodedCommand", "ZQBj"]),
+            s(&["pwsh", "-NoExit", "-c", "1"]),
+        ] {
+            assert_eq!(with_shell_integration(&argv), argv, "{argv:?}");
+        }
+        // -ExecutionPolicy is not -EncodedCommand; -NoLogo is not -NoExit.
+        assert_eq!(with_shell_integration(&s(&["pwsh", "-ExecutionPolicy", "Bypass", "-NoLogo"])).len(), 7);
+        // Everything else is untouched.
+        for argv in [s(&["cmd.exe", "/q"]), s(&["wsl.exe"]), s(&["C:\\tools\\pwshell.exe"]), Vec::new()] {
+            assert_eq!(with_shell_integration(&argv), argv);
+        }
+        // The hook is one PowerShell statement list with balanced braces,
+        // single quotes only where it must quote, and an OSC 9;9 in it.
+        let h = POWERSHELL_PROMPT_HOOK;
+        assert_eq!(h.matches('{').count(), h.matches('}').count());
+        assert!(
+            h.contains("']9;9;'") && h.contains("$PWD.ProviderPath") && h.contains("function global:prompt"),
+            "{h}"
+        );
     }
 
     #[test]

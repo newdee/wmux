@@ -74,9 +74,33 @@ impl Grid {
             self.scroll_bottom = size.rows - 1;
         }
 
+        let old_rows = self.size.rows;
         self.size = size;
         for row in &mut self.rows {
             row.resize(size.cols, crate::Cell::new());
+        }
+        // (wmux) A terminal that shrinks scrolls the lines it can no longer
+        // show into the scrollback rather than dropping them: what falls
+        // off the top is what the cursor does not need on screen; rows
+        // below the cursor (blank, as a rule) are the ones let go. Growing
+        // adds blank rows below, as the console on the other side of a
+        // ConPTY does (it then repaints its viewport, which would overwrite
+        // anything brought back from the scrollback).
+        if !self.rows.is_empty() && size.rows < old_rows {
+            let need = usize::from(self.pos.row) + 1;
+            let push = need.saturating_sub(usize::from(size.rows));
+            for _ in 0..push {
+                let removed = self.rows.remove(0);
+                if self.scrollback_len > 0 {
+                    self.scrollback.push_back(removed);
+                    while self.scrollback.len() > self.scrollback_len {
+                        self.scrollback.pop_front();
+                    }
+                }
+            }
+            self.pos.row = self.pos.row.saturating_sub(push as u16);
+            self.saved_pos.row = self.saved_pos.row.saturating_sub(push as u16);
+            self.rows.truncate(usize::from(size.rows));
         }
         self.rows.resize(usize::from(size.rows), self.new_row());
 

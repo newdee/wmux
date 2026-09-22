@@ -1329,3 +1329,59 @@ i18n 52/52；152 项测试通过。（`winget install --manifest` 要管理员�
 ## 结论（第二十四次验收）
 
 第 2、3、4 轮连续零发现，验收通过。测试 154 → 156（lib 103 / console 4 / e2e 49）。
+
+# 第二十五次验收（2026-09-23）— 修复：恢复后历史丢失、工作目录不跟随（用户报告）
+
+用户报告：关掉 wmux 再打开，只有布局回来了，历史与工作目录都没了。本机查证（用户真实存档 `1-….json`：两 pane 各 ~500 行历史，
+cwd 均为 `C:\Users\stebe`；用户流程 `wmux resume 1`；无 $PROFILE），定位到三个独立原因，全部修复：
+
+1. **工作目录**：cwd 只在 shell 主动上报 OSC 9;9 时更新，`pwsh -NoLogo` 不上报，存的永远是起始目录。
+   - 启动 pwsh/powershell 时自动挂 prompt 钩子（`config::with_shell_integration`，`-NoExit -Command <hook>`）：保留用户原 prompt，
+     在其后追加不可见的 OSC 9;9；带 `-Command/-File/-EncodedCommand`（含 PowerShell 允许的前缀缩写）的不动。
+   - `cmd.exe` 等进程：新模块 `proccwd` 读目标进程 PEB 的 CurrentDirectory（NtQueryInformationProcess + ReadProcessMemory）。
+   - 优先级：shell 上报或 `set-cwd`（`announced`）> 进程目录 > 起始目录。
+   - 顺带修：带引号的 OSC 9;9（Windows Terminal 官方片段的写法）原来会被丢掉。
+2. **历史回放**：原来把存档文本喂进 wmux 自己的 vt100 模型，ConPTY 的缓冲里没有——任何一次重绘/缩放（`startup` 无头 80×24 恢复后
+   再从大终端 attach 就是一次缩放）都会把它冲掉。现在由助手进程 `wmux __replay 文件` 通过 CONOUT$ + WriteConsoleW 把文本**打印进
+   pane 的 ConPTY**（进 conhost 缓冲，之后的重绘、缩放由 ConPTY 自己处理），打完写一个私有 OSC 标记 `ESC]7777;wmux-replayed ESC\`
+   （实测能穿过 ConPTY），server 收到标记后把 shell 起进同一个 ConPTY（助手仍存活，conhost 不会因"第一个进程退出"而关掉），
+   再删文件让助手退出；助手的退出事件用 `HELPER_GEN` 标记与 pane 自身进程区分。
+3. **vt100 缩行丢行**：vendored vt100 的 `set_size` 缩行时从底部截断、扩行只补空行，缩一次少一截。改为缩行把顶部行推入 scrollback
+   （以光标留在屏上为准）；扩行仍只补空行（与 ConPTY 那侧一致，拉回来会被它的重绘盖掉——实测过）。
+
+## 排查过程中的弯路（都记在这）
+
+- 同步等助手退出会死锁：ConPTY 启动进程时先发 `ESC[6n` 等回答，server 线程阻塞就没人回答（单元测试
+  `a_first_process_can_exit_and_a_second_can_follow` 固化了这点）。
+- 助手用 Rust `stdout()` 写不进控制台：portable-pty 把子进程 stdio 句柄设成 INVALID，`stdout()` 静默丢弃 → 改用 CONOUT$。
+- `start_pending` 给 generation +1 会让 reader 线程（带旧 generation）的输出全部被丢 → 不加代。
+- 回放临时文件名 `pid-paneid` 在 e2e（同进程多 server、pane id 各自从 1 起）下互相串 → 加全局序号。
+- 测试里 `current_exe()` 是测试二进制而非 wmux.exe → `WMUX_EXE` 环境变量 / 兄弟目录查找。
+- `.tmux.conf` 那条 e2e 没设 `sessions-dir`，把 `t` session 泄漏到用户真实存档目录（已删两次，已修）。
+- 探针脚本用 `history` 撞了 Get-History 别名、pwsh 7 不能投影 WinRT 类型等，均为脚本问题。
+
+## 第 1～N 轮（不计数）— 上述修复过程中的多轮迭代，每轮以全量测试收口
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制，用户流程）
+
+数据：pwsh pane 打印 30 行、`cd C:\Windows\System32`、存档、kill、无客户端 `resume`，连跑 3 次逐字一致：
+存档 cwd=System32、33 行；恢复后可见 20 行 line-*、滚动区 31；分屏缩小后可见 8、滚动区仍 31；shell 位置 System32。
+cmd pane `cd /d C:\Windows\Fonts` → `pane_current_path`、存档 cwd、恢复后 `cd` 输出均为 Fonts。无残留回放文件、无残留 `__replay` 进程。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：边界
+
+数据：`save-history 0` 不回放、旧行不在；5000 行回放 164 ms 后 shell 可用、5000 行全在、末行为新提示符；
+`remain-on-exit` 下立即退出的程序：回放的 `lived` 与退出提示都在、`pane_dead_status` 3；回放进行中 kill-session：0 残留文件、0 残留进程、server 存活；
+pwsh 进注册表驱动器时目录保持上一个真实目录；含空格与中文的路径正确；`pwsh -Command …` 不注入钩子。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：全量测试 170 项，连续 7 次全过（其中一次指纹不同但未能定位到具体用例，随后把唯一依赖固定 sleep 的
+`proccwd` 测试改成轮询）；README（中英）改为"目录跟着 cd 走、不用配置"，删掉旧的"放进 $PROFILE"片段；
+代码 claim（HELPER_GEN、标记触发、钩子避让、缩行保留、序号文件名、助手等待删除、无调试残留）逐项核对；
+真实存档目录无测试文件；clippy 与 fmt 无输出。
+
+## 结论（第二十五次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 156 → 170（lib 114 / console 4 / e2e 52）。
+用户机器上跑的是 0.5.0（`C:\Program Files\wmux`），需要发新版才能用上。

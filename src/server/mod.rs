@@ -830,7 +830,7 @@ impl Server {
                     let lookup = |id: PaneId| {
                         w.pane(id).map(|p| SavedPane {
                             argv: p.argv.clone(),
-                            cwd: p.cwd.clone(),
+                            cwd: p.current_path(),
                             history: history.get(&id).cloned().unwrap_or_default(),
                         })
                     };
@@ -995,15 +995,16 @@ impl Server {
         for saved in sw.layout.panes() {
             let argv: Vec<String> = saved.argv.clone();
             let cwd = saved.cwd.as_deref().filter(|d| std::path::Path::new(d).is_dir());
-            // Sizes are refitted by relayout; spawn at the window size.
-            let mut pane = self.spawn_pane(&argv, cwd, area.w, area.h)?;
-            // Put the saved output back on the screen before the new shell
-            // starts printing, so a resumed pane looks like it did.
-            if !saved.history.is_empty() {
+            // The saved output goes back into the pane's console before
+            // the new shell starts printing, so a resumed pane looks like
+            // it did and stays that way through repaints and resizes.
+            let replay = (!saved.history.is_empty()).then(|| {
                 let mut text = saved.history.join("\r\n");
                 text.push_str("\r\n");
-                pane.process_output(text.as_bytes());
-            }
+                text
+            });
+            // Sizes are refitted by relayout; spawn at the window size.
+            let pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay)?;
             panes.push(pane);
         }
         let mut ids = panes.iter().map(|p| p.id);
@@ -1243,6 +1244,15 @@ impl Server {
                     let slow = p.pipe_write(&bytes);
                     p.record_write(&bytes);
                     p.process_output(&bytes);
+                    // A resumed pane: its saved output has all been printed
+                    // (the printer's marker arrived); its program starts now,
+                    // in the same console, while the printer still holds it.
+                    if p.is_pending()
+                        && p.replay_done
+                        && let Err(e) = p.start_pending()
+                    {
+                        log::warn!("pane %{id}: cannot start after the replay: {e:#}");
+                    }
                     if let Some(command) = slow {
                         // Say it once per pipe: a command that cannot keep up
                         // loses output, and silence about that is worse.
@@ -1253,6 +1263,19 @@ impl Server {
                 }
             }
             Event::Pane(PaneEvent::Exit(id, generation, code)) => {
+                if generation == crate::server::pane::HELPER_GEN {
+                    // The printer of a resumed pane's saved output is gone.
+                    // Normally its program is already running (started when
+                    // the printer's marker arrived); if the printer died
+                    // before that, the program starts now, unadorned.
+                    if let Some(p) = self.find_pane_mut(id)
+                        && p.is_pending()
+                        && let Err(e) = p.start_pending()
+                    {
+                        log::warn!("pane %{id}: cannot start after the replay: {e:#}");
+                    }
+                    return;
+                }
                 if self.find_pane_mut(id).is_some_and(|p| p.generation != generation) {
                     return; // the previous process of a respawned pane
                 }
@@ -1541,19 +1564,21 @@ impl Server {
             fresh.push(("Bell", true));
         }
         for (what, is_bell) in fresh {
-            self.alert(sid, &format!("{what} in window {index} ({name})"), is_bell);
+            self.alert(sid, Some(pid), &format!("{what} in window {index} ({name})"), is_bell);
         }
     }
 
     /// Tell the clients of a session about an alert: a status-line message
     /// when `visual-bell`/`visual-activity` is on, the terminal bell otherwise.
-    fn alert(&mut self, sid: SessionId, text: &str, is_bell: bool) {
+    fn alert(&mut self, sid: SessionId, pane: Option<PaneId>, text: &str, is_bell: bool) {
         let visual = if is_bell { self.opts.visual_bell } else { self.opts.visual_activity };
         // A window flag only reaches someone who is looking at the terminal;
-        // a notification reaches them when it is behind other windows.
+        // a notification reaches them when it is behind other windows, with
+        // a button that brings them to the pane it is about.
         if self.opts.notify {
             let name = self.session(sid).map(|s| s.name.clone()).unwrap_or_else(|| "wmux".into());
-            crate::notify::notify(&format!("wmux: {name}"), text);
+            let go = pane.map(|p| crate::notify::go_to_pane_url(&self.socket, p));
+            crate::notify::notify_with(&format!("wmux: {name}"), text, go.as_deref());
         }
         let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
         for cid in ids {
@@ -1573,7 +1598,7 @@ impl Server {
         let quiet = Duration::from_secs(self.opts.monitor_silence.max(1));
         let watch_silence = self.opts.monitor_silence > 0;
         let base = self.opts.base_index;
-        let mut alerts: Vec<(SessionId, String)> = Vec::new();
+        let mut alerts: Vec<(SessionId, PaneId, String)> = Vec::new();
         for s in &mut self.sessions {
             let (cur, sid) = (s.cur, s.id);
             for (i, w) in s.windows.iter_mut().enumerate() {
@@ -1585,12 +1610,12 @@ impl Server {
                 }
                 if watch_silence && !w.alert_silence && w.last_output.elapsed() >= quiet {
                     w.alert_silence = true;
-                    alerts.push((sid, format!("Silence in window {} ({})", i + base, w.name)));
+                    alerts.push((sid, w.active, format!("Silence in window {} ({})", i + base, w.name)));
                 }
             }
         }
-        for (sid, text) in alerts {
-            self.alert(sid, &text, false);
+        for (sid, pid, text) in alerts {
+            self.alert(sid, Some(pid), &text, false);
         }
     }
 
@@ -1800,10 +1825,23 @@ impl Server {
     }
 
     fn spawn_pane(&mut self, argv: &[String], cwd: Option<&str>, cols: u16, rows: u16) -> Result<Pane, String> {
+        self.spawn_pane_replaying(argv, cwd, cols, rows, None)
+    }
+
+    /// As `spawn_pane`, with a resumed pane's saved output printed into its
+    /// console first.
+    fn spawn_pane_replaying(
+        &mut self,
+        argv: &[String],
+        cwd: Option<&str>,
+        cols: u16,
+        rows: u16,
+        replay: Option<String>,
+    ) -> Result<Pane, String> {
         let id = self.alloc_id();
         let argv = if argv.is_empty() { resolve_shell(&self.opts) } else { argv.to_vec() };
         let env = self.pane_env(id);
-        Pane::spawn(id, &argv, cwd, cols, rows, self.opts.history_limit, &env, self.pane_tx.clone())
+        Pane::spawn_replaying(id, &argv, cwd, cols, rows, self.opts.history_limit, &env, self.pane_tx.clone(), replay)
             .map_err(|e| format!("{e:#}"))
     }
 
@@ -3550,6 +3588,26 @@ impl Server {
                 c.chooser = Some(Chooser { kind: ChooserKind::Buffers, items, lines, sel: 0, top: 0 });
                 Outcome::Ok
             }
+            Cmd::FocusPane { pane } => {
+                let Some((sid, widx)) = self.window_of_pane(pane) else {
+                    return Outcome::Error(format!("focus-pane: no pane %{pane}"));
+                };
+                let wid = self.session(sid).and_then(|s| s.windows.get(widx)).map(|w| w.id).unwrap_or(0);
+                // Every terminal that is attached anywhere: the one the
+                // notification's reader is looking at is among them.
+                let clients: Vec<ClientId> =
+                    self.clients.values().filter(|c| c.interactive && c.session.is_some()).map(|c| c.id).collect();
+                if clients.is_empty() {
+                    return Outcome::Error("focus-pane: no client attached (`wmux attach` first)".into());
+                }
+                for c in &clients {
+                    self.chooser_go_pane(*c, sid, wid, pane);
+                    if let Some(client) = self.clients.get_mut(c) {
+                        client.send(ServerMsg::Raise);
+                    }
+                }
+                Outcome::Text(format!("{} client(s) switched to pane %{pane}", clients.len()))
+            }
             Cmd::ChooseJobs => {
                 let Some(cid) = cid else { return Outcome::Error("choose-jobs: no client".into()) };
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
@@ -3788,7 +3846,9 @@ impl Server {
                 }
                 match self.find_pane_mut(pid) {
                     Some(p) => {
+                        // Said by the user: final, like a shell's own report.
                         p.cwd = Some(dir);
+                        p.announced = true;
                         Outcome::Ok
                     }
                     None => Outcome::Error("no such pane".into()),
@@ -3984,7 +4044,7 @@ impl Server {
             ctx.pane_title = p.display_title().to_string();
             ctx.pane_command = p.command.clone();
             ctx.pane_start_command = p.argv.join(" ");
-            ctx.pane_path = p.cwd.clone().unwrap_or_default();
+            ctx.pane_path = p.current_path().unwrap_or_default();
             ctx.pane_width = p.cols;
             ctx.pane_height = p.rows;
             ctx.pane_dead = p.exit_code.is_some();

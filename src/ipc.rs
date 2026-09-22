@@ -91,6 +91,9 @@ pub enum ServerMsg {
     /// Whether the console should capture mouse events for wmux (`mouse`
     /// option). When false the host terminal keeps its native selection.
     SetMouse(bool),
+    /// Bring the client's terminal window to the front (`focus-pane`, the
+    /// "Go to pane" button of a notification).
+    Raise,
 }
 
 pub async fn write_frame<W, T>(w: &mut W, msg: &T) -> Result<()>

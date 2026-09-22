@@ -196,15 +196,14 @@ keeps its identity across reinstalls so the font or colours you give it
 stay. Every tab opened from it joins the same session, as `tmux new -A -s
 main` would.
 
-A pane's directory starts as the directory it was created in. Keep it
-current the way terminals do, by letting the shell announce `cd`s (OSC 9;9,
-which Windows Terminal understands too, or OSC 7 from bash/zsh), or set it
-by hand with `wmux set-cwd` (no argument: the directory you run it from):
-
-```powershell
-# PowerShell profile: announce the directory at every prompt
-function prompt { "`e]9;9;$PWD`e\" + "PS $PWD> " }
-```
+A pane's directory follows its shell's `cd`, with nothing to set up:
+PowerShell (pwsh or Windows PowerShell) is started with a prompt hook that
+reports the directory after every prompt (an invisible OSC 9;9; your own
+prompt, oh-my-posh and the like included, is left as it is), and for
+`cmd.exe` and other programs wmux reads the process's own directory. A
+shell that announces its directory itself (OSC 9;9, quoted or not, or OSC 7
+from bash/zsh under WSL) is believed first, and `wmux set-cwd` (no argument:
+the directory you run it from) sets it by hand:
 
 ```bash
 # WSL bash: /mnt/<drive>/... paths map back to Windows drives

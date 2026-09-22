@@ -14,6 +14,16 @@ pub enum PaneEvent {
     Exit(PaneId, u32, u32),
 }
 
+/// What the printer of a resumed pane's saved output (`wmux __replay`)
+/// writes after the text: a private OSC that ConPTY passes through and the
+/// screen model turns into `replay_done`, the cue to start the pane's own
+/// program in that console while the printer still holds it open.
+pub const REPLAY_MARKER: &str = "\x1b]7777;wmux-replayed\x1b\\";
+
+/// The generation tag of the printer's exit event, which is never the
+/// pane's own: its exit is not the pane's program exiting.
+pub const HELPER_GEN: u32 = u32::MAX;
+
 /// vt100 callbacks: collects terminal replies ConPTY expects from a real
 /// terminal, the window title and bells.
 #[derive(Default)]
@@ -23,13 +33,17 @@ pub struct Callbacks {
     pub bell: bool,
     /// Working directory the shell announced (OSC 7 / OSC 9;9), as a Windows path.
     pub cwd: Option<String>,
+    /// The `REPLAY_MARKER` arrived: a resumed pane's saved output is all in.
+    pub replayed: bool,
 }
 
 /// Turn a shell-announced directory into a Windows path usable as a process
 /// working directory: `file:///C:/x`, `file://host/C:/x`, `C:\x`, `/mnt/c/x`
 /// (WSL) all become `C:\x`; other Linux paths are not usable and yield None.
 pub fn windows_path_from_announced(raw: &str) -> Option<String> {
-    let mut s = raw.trim().to_string();
+    // Windows Terminal's own PowerShell snippet quotes the path
+    // (`ESC]9;9;"C:\x"ESC\`); the quotes are not part of it.
+    let mut s = raw.trim().trim_matches('"').trim().to_string();
     if let Some(rest) = s.strip_prefix("file://") {
         // file://host/C:/x or file:///C:/x
         let path = &rest[rest.find('/')?..];
@@ -121,6 +135,10 @@ impl vt100::Callbacks for Callbacks {
         let raw = match params {
             [b"7", p] => Some(*p),
             [b"9", b"9", p] => Some(*p),
+            [b"7777", b"wmux-replayed"] => {
+                self.replayed = true;
+                None
+            }
             _ => None,
         };
         if let Some(raw) = raw
@@ -166,6 +184,12 @@ pub struct Pane {
     /// The command line this pane was started with (for save/restore).
     pub argv: Vec<String>,
     pub cwd: Option<String>,
+    /// `cwd` came from the shell itself (OSC 7 / 9;9), not from where the
+    /// pane was started; from then on the shell's word is final.
+    pub announced: bool,
+    /// A resumed pane's saved output has all been printed (the printer's
+    /// marker came through); the pane's program can start.
+    pub replay_done: bool,
     pub exit_code: Option<u32>,
     /// `clock-mode`: a clock is drawn over this pane until a key arrives.
     pub clock: bool,
@@ -186,6 +210,12 @@ pub struct Pane {
     /// When its program exited, while `remain-on-exit` keeps the pane
     /// (`#{pane_dead_time}`; `jobs` stops the clock there).
     pub died_at: Option<std::time::Instant>,
+    /// The pty's slave side, kept only while a program is still to be
+    /// started in it (a resumed pane printing its saved output first).
+    slave: Option<Box<dyn portable_pty::SlavePty + Send>>,
+    /// That program, started by `start_pending` when the printer exits.
+    pending: Option<PendingStart>,
+    tx: Sender<PaneEvent>,
 }
 
 /// An asciinema v2 recording in progress: a header line, then one JSON
@@ -218,6 +248,99 @@ pub struct Pipe {
     pub dropped: u64,
 }
 
+/// The wmux.exe that runs `__replay`: this executable when it is wmux,
+/// `WMUX_EXE` when set (the tests, whose own binary is not wmux), else the
+/// wmux.exe two directories up from a test binary (cargo's layout).
+fn replay_helper_exe() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("WMUX_EXE").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    let me = std::env::current_exe().ok()?;
+    if me.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("wmux")) {
+        return Some(me);
+    }
+    let sibling = me.parent()?.parent()?.join("wmux.exe");
+    sibling.is_file().then_some(sibling)
+}
+
+/// The command that prints `text` into the pane's console: `wmux __replay
+/// file`, which writes the file's text to the console and removes it.
+fn replay_argv(id: PaneId, text: &str) -> Result<(Vec<String>, std::path::PathBuf)> {
+    let exe = replay_helper_exe().context("no wmux.exe to print the saved output with")?;
+    // Unique per file, not per pane: several servers in one process (the
+    // tests) hand out the same pane ids.
+    static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("wmux-replay-{}-{id}-{n}.txt", std::process::id()));
+    std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
+    Ok((vec![exe.to_string_lossy().into_owned(), "__replay".into(), path.to_string_lossy().into_owned()], path))
+}
+
+/// The program a resumed pane starts once its saved output has been
+/// printed: kept with the pty's slave side until then.
+struct PendingStart {
+    argv: Vec<String>,
+    dir: Option<String>,
+    env: Vec<(String, String)>,
+    /// The printer's file; removing it is what tells the printer to exit.
+    path: std::path::PathBuf,
+}
+
+type Child = Box<dyn portable_pty::Child + Send + Sync>;
+type Killer = Box<dyn ChildKiller + Send + Sync>;
+
+/// Start `run` in the pane's console: the process, its id, a way to kill
+/// it, and the job object that takes its process tree down with it.
+fn launch(
+    slave: &(dyn portable_pty::SlavePty + Send),
+    id: PaneId,
+    run: &[String],
+    dir: Option<&str>,
+    env: &[(String, String)],
+) -> Result<(Child, Option<u32>, Killer, Option<crate::winsec::KillOnCloseJob>)> {
+    let mut cmd = CommandBuilder::new(&run[0]);
+    cmd.args(&run[1..]);
+    if let Some(d) = dir {
+        cmd.cwd(d);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let child = slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", run))?;
+    let pid = child.process_id();
+    let killer = child.clone_killer();
+    let job = match crate::winsec::KillOnCloseJob::new() {
+        Ok(j) => match child.as_raw_handle() {
+            // The handle comes straight from CreateProcessW inside portable-pty.
+            Some(h) => match unsafe { j.assign(h as _) } {
+                Ok(()) => Some(j),
+                Err(e) => {
+                    log::warn!("pane {id}: job assign failed: {e}");
+                    None
+                }
+            },
+            None => None,
+        },
+        Err(e) => {
+            log::warn!("pane {id}: no job object: {e}");
+            None
+        }
+    };
+    Ok((child, pid, killer, job))
+}
+
+/// Report the process's exit as an event, from its own thread.
+fn watch(mut child: Child, id: PaneId, generation: u32, tx: Sender<PaneEvent>) -> Result<()> {
+    std::thread::Builder::new()
+        .name(format!("pane-{id}-wait"))
+        .spawn(move || {
+            let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
+            let _ = tx.send(PaneEvent::Exit(id, generation, code));
+        })
+        .context("spawn waiter thread")?;
+    Ok(())
+}
+
 impl Pane {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
@@ -230,7 +353,24 @@ impl Pane {
         env: &[(String, String)],
         tx: Sender<PaneEvent>,
     ) -> Result<Pane> {
-        Pane::spawn_gen(id, 0, argv, cwd, cols, rows, history, env, tx)
+        Pane::spawn_gen(id, 0, argv, cwd, cols, rows, history, env, tx, None)
+    }
+
+    /// As `spawn`, with `replay` (a resumed pane's saved output) printed
+    /// into the console before the program starts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_replaying(
+        id: PaneId,
+        argv: &[String],
+        cwd: Option<&str>,
+        cols: u16,
+        rows: u16,
+        history: usize,
+        env: &[(String, String)],
+        tx: Sender<PaneEvent>,
+        replay: Option<String>,
+    ) -> Result<Pane> {
+        Pane::spawn_gen(id, 0, argv, cwd, cols, rows, history, env, tx, replay)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -244,46 +384,17 @@ impl Pane {
         history: usize,
         env: &[(String, String)],
         tx: Sender<PaneEvent>,
+        replay: Option<String>,
     ) -> Result<Pane> {
         let cols = cols.max(1);
         let rows = rows.max(1);
         let pty = native_pty_system();
         let pair =
             pty.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).context("CreatePseudoConsole")?;
-        let mut cmd = CommandBuilder::new(&argv[0]);
-        cmd.args(&argv[1..]);
-        if let Some(d) = cwd
-            && std::path::Path::new(d).is_dir()
-        {
-            cmd.cwd(d);
-        }
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-        let mut child = pair.slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", argv))?;
-        let pid = child.process_id();
-        let killer = child.clone_killer();
-        drop(pair.slave);
-        let job = match crate::winsec::KillOnCloseJob::new() {
-            Ok(j) => match child.as_raw_handle() {
-                // The handle comes straight from CreateProcessW inside portable-pty.
-                Some(h) => match unsafe { j.assign(h as _) } {
-                    Ok(()) => Some(j),
-                    Err(e) => {
-                        log::warn!("pane {id}: job assign failed: {e}");
-                        None
-                    }
-                },
-                None => None,
-            },
-            Err(e) => {
-                log::warn!("pane {id}: no job object: {e}");
-                None
-            }
-        };
+        // The reader goes first: what is printed below must be drained
+        // while it is printed, or a long replay fills the pipe and the
+        // printer never finishes.
         let mut reader = pair.master.try_clone_reader().context("pty reader")?;
-        let writer = pair.master.take_writer().context("pty writer")?;
-
         let tx_out = tx.clone();
         std::thread::Builder::new()
             .name(format!("pane-{id}-read"))
@@ -301,15 +412,39 @@ impl Pane {
                 }
             })
             .context("spawn reader thread")?;
-        std::thread::Builder::new()
-            .name(format!("pane-{id}-wait"))
-            .spawn(move || {
-                let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
-                let _ = tx.send(PaneEvent::Exit(id, generation, code));
-            })
-            .context("spawn waiter thread")?;
+        let dir = cwd.filter(|d| std::path::Path::new(d).is_dir()).map(str::to_string);
+        // A resumed pane's saved output is printed into the console by a
+        // helper process first, so it sits in the console's own buffer and
+        // survives every later repaint and resize (ConPTY reflows it), as
+        // text fed to our screen model alone did not. The program itself
+        // starts when the helper exits (`start_pending`, from the exit
+        // event): waiting here would block the server, and with it the
+        // answers ConPTY expects to its own queries while a process starts.
+        //
+        // What runs is the command plus wmux's shell integration (a prompt
+        // hook that reports the directory); what is remembered and shown
+        // is the command as given.
+        let (run, pending) = match replay.filter(|t| !t.is_empty()).map(|t| replay_argv(id, &t)) {
+            Some(Ok((helper, path))) => {
+                (helper, Some(PendingStart { argv: argv.to_vec(), dir: dir.clone(), env: env.to_vec(), path }))
+            }
+            Some(Err(e)) => {
+                log::warn!("pane {id}: replay skipped: {e:#}");
+                (crate::config::with_shell_integration(argv), None)
+            }
+            None => (crate::config::with_shell_integration(argv), None),
+        };
+        let (child, pid, killer, job) = launch(pair.slave.as_ref(), id, &run, dir.as_deref(), env)?;
+        // The printer's exit is tagged apart: it is not the pane's program.
+        watch(child, id, if pending.is_some() { HELPER_GEN } else { generation }, tx.clone())?;
+        // The slave side stays open while a program is still to be started in it.
+        let slave = pending.is_some().then_some(pair.slave);
+        let writer = pair.master.take_writer().context("pty writer")?;
 
         Ok(Pane {
+            slave,
+            pending,
+            tx,
             id,
             generation,
             parser: vt100::Parser::new_with_callbacks(rows, cols, history, Callbacks::default()),
@@ -324,6 +459,8 @@ impl Pane {
                 .unwrap_or_else(|| argv[0].clone()),
             argv: argv.to_vec(),
             cwd: cwd.map(str::to_string),
+            announced: false,
+            replay_done: false,
             exit_code: None,
             clock: false,
             copy: None,
@@ -337,6 +474,32 @@ impl Pane {
             last_output: std::time::Instant::now(),
             died_at: None,
         })
+    }
+
+    /// Whether the process that just ran was the printer of a resumed pane's
+    /// saved output, with the pane's own program still to start.
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Start the pane's program in the same console the printer just
+    /// filled. Same generation: the reader thread tags output with the one
+    /// it was started with, and the printer, having exited, has no more.
+    pub fn start_pending(&mut self) -> Result<()> {
+        let Some(p) = self.pending.take() else { anyhow::bail!("nothing pending") };
+        let Some(slave) = self.slave.take() else { anyhow::bail!("no console to start in") };
+        let run = crate::config::with_shell_integration(&p.argv);
+        let (child, pid, killer, job) = launch(slave.as_ref(), self.id, &run, p.dir.as_deref(), &p.env)?;
+        watch(child, self.id, self.generation, self.tx.clone())?;
+        // The program is in; the printer may go (it waits for this).
+        let _ = std::fs::remove_file(&p.path);
+        self.pid = pid;
+        self.killer = killer;
+        self.job = job;
+        self.exit_code = None;
+        self.died_at = None;
+        self.spawned_at = std::time::Instant::now();
+        Ok(())
     }
 
     /// Start recording this pane's output to `path` as asciinema v2,
@@ -468,6 +631,7 @@ impl Pane {
             history,
             env,
             tx,
+            None,
         )?;
         // Putting the new pane in place drops the old one, whose Drop closes
         // the job object and takes the old process tree with it.
@@ -485,6 +649,11 @@ impl Pane {
         }
         if let Some(d) = cb.cwd.take() {
             self.cwd = Some(d);
+            self.announced = true;
+        }
+        if cb.replayed {
+            cb.replayed = false;
+            self.replay_done = true;
         }
         if cb.bell {
             cb.bell = false;
@@ -637,6 +806,17 @@ impl Pane {
         out
     }
 
+    /// The directory the pane is in: what its shell announced (the
+    /// PowerShell prompt hook, a profile's OSC 7 / 9;9), else the
+    /// program's own current directory read from the process, else where
+    /// it was started.
+    pub fn current_path(&self) -> Option<String> {
+        if self.announced {
+            return self.cwd.clone();
+        }
+        self.pid.filter(|_| self.exit_code.is_none()).and_then(crate::proccwd::process_cwd).or_else(|| self.cwd.clone())
+    }
+
     /// Display name for the status line.
     pub fn display_title(&self) -> &str {
         if self.title.is_empty() { &self.command } else { &self.title }
@@ -678,6 +858,176 @@ mod tests {
             }
         }
         until(pane)
+    }
+
+    /// Two processes one after the other in one ConPTY: the first (a
+    /// printer) exits and the second sees a console with its text in it.
+    /// ConPTY asks the terminal where the cursor is (`ESC[6n`) while a
+    /// process starts and holds it until answered: that answer is what the
+    /// server's screen model gives while it keeps running, and what this
+    /// test gives by hand. (Waiting for the printer on the server thread
+    /// deadlocked exactly there.)
+    #[test]
+    fn a_first_process_can_exit_and_a_second_can_follow() {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::io::{Read as _, Write as _};
+        let pty = native_pty_system();
+        let pair = pty.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let sink = got.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        let mut first = CommandBuilder::new("cmd.exe");
+        first.args(["/d", "/c", "echo hello-from-first"]);
+        let mut child = pair.slave.spawn_command(first).unwrap();
+        let started = std::time::Instant::now();
+        let mut exited = None;
+        let mut answered = false;
+        while started.elapsed() < Duration::from_secs(5) {
+            if !answered && got.lock().unwrap().windows(4).any(|w| w == b"\x1b[6n") {
+                writer.write_all(b"\x1b[1;1R").unwrap();
+                answered = true;
+            }
+            match child.try_wait() {
+                Ok(Some(s)) => {
+                    exited = Some(s.exit_code());
+                    break;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("try_wait: {e}"),
+            }
+        }
+        assert!(answered, "ConPTY asked for the cursor position");
+        assert_eq!(
+            exited,
+            Some(0),
+            "the first process exits ({:?} so far)",
+            String::from_utf8_lossy(&got.lock().unwrap())
+        );
+        let mut second = CommandBuilder::new("cmd.exe");
+        second.args(["/d", "/c", "echo hello-from-second"]);
+        let mut child2 = pair.slave.spawn_command(second).unwrap();
+        let _ = child2.wait();
+        std::thread::sleep(Duration::from_millis(300));
+        let text = String::from_utf8_lossy(&got.lock().unwrap()).to_string();
+        assert!(text.contains("hello-from-first") && text.contains("hello-from-second"), "{text:?}");
+    }
+
+    /// What ConPTY passes through of what a process prints: the marker a
+    /// resumed pane's printer ends with must come out the other side.
+    #[test]
+    fn conpty_passes_the_replay_marker_through() {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::io::{Read as _, Write as _};
+        let pty = native_pty_system();
+        let pair = pty.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let sink = got.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        let text = format!("before{REPLAY_MARKER}after\r\n");
+        let path = std::env::temp_dir().join(format!("wmux-marker-test-{}.txt", std::process::id()));
+        std::fs::write(&path, &text).unwrap();
+        let mut cmd = CommandBuilder::new(replay_helper_exe().expect("wmux.exe (WMUX_EXE or beside the tests)"));
+        cmd.arg("__replay");
+        cmd.arg(&path);
+        cmd.env("WMUX_REPLAY_NO_WAIT", "1");
+        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        let started = std::time::Instant::now();
+        let mut answered = false;
+        while started.elapsed() < Duration::from_secs(10) {
+            if !answered && got.lock().unwrap().windows(4).any(|w| w == b"\x1b[6n") {
+                writer.write_all(b"\x1b[1;1R").unwrap();
+                answered = true;
+            }
+            if let Ok(Some(_)) = child.try_wait() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let out = got.lock().unwrap().clone();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("before") && text.contains("after"), "{text:?}");
+        assert!(
+            out.windows(REPLAY_MARKER.len()).any(|w| w == REPLAY_MARKER.as_bytes()),
+            "marker through ConPTY: {text:?}"
+        );
+    }
+
+    /// The screen model keeps what a resize pushes off the screen: shrunk,
+    /// the top lines go to the scrollback; grown, they come back.
+    #[test]
+    fn shrinking_keeps_lines_in_scrollback_and_growing_brings_them_back() {
+        let mut p = vt100::Parser::new(10, 40, 100);
+        for i in 1..=8 {
+            p.process(format!("line-{i}\r\n").as_bytes());
+        }
+        p.process(b"prompt>");
+        assert_eq!(p.screen().cursor_position(), (8, 7));
+        // 10 -> 4 rows: the cursor (row 8) needs 5 rows above it gone.
+        p.screen_mut().set_size(4, 40);
+        assert_eq!(p.screen().cursor_position(), (3, 7));
+        assert_eq!(p.screen().contents().lines().filter(|l| !l.trim().is_empty()).count(), 4);
+        assert!(p.screen().contents().contains("line-8") && p.screen().contents().contains("prompt>"));
+        {
+            let s = p.screen_mut();
+            s.set_scrollback(usize::MAX);
+            assert_eq!(s.scrollback(), 5, "five lines went to the scrollback, none were lost");
+            s.set_scrollback(0);
+        }
+        {
+            let s = p.screen_mut();
+            s.set_scrollback(5);
+            assert_eq!(s.rows(0, 40).next().unwrap().trim_end(), "line-1", "the oldest line is at the top of it");
+            s.set_scrollback(0);
+            assert_eq!(s.rows(0, 40).next().unwrap().trim_end(), "line-6", "the screen starts where it left off");
+        }
+        // 4 -> 10 rows: blank rows below, as the console behind a ConPTY
+        // does it; nothing is lost, the scrollback keeps the five.
+        p.screen_mut().set_size(10, 40);
+        assert_eq!(p.screen().cursor_position(), (3, 7));
+        assert_eq!(p.screen().rows(0, 40).next().unwrap().trim_end(), "line-6");
+        {
+            let s = p.screen_mut();
+            s.set_scrollback(usize::MAX);
+            assert_eq!(s.scrollback(), 5);
+            s.set_scrollback(0);
+        }
+        // Typing goes on where it left off.
+        p.process(b" typed");
+        assert!(
+            p.screen().contents().lines().nth(3).unwrap().starts_with("prompt> typed"),
+            "{}",
+            p.screen().contents()
+        );
+    }
+
+    #[test]
+    fn announced_paths_may_be_quoted() {
+        // Windows Terminal's PowerShell snippet: ESC]9;9;"C:\Users\me"ESC\
+        assert_eq!(windows_path_from_announced("\"C:\\Users\\me\"").as_deref(), Some("C:\\Users\\me"));
+        assert_eq!(windows_path_from_announced(" \"D:/x\" ").as_deref(), Some("D:\\x"));
+        assert_eq!(windows_path_from_announced("C:\\x").as_deref(), Some("C:\\x"));
+        assert_eq!(windows_path_from_announced("\"\""), None);
     }
 
     #[test]

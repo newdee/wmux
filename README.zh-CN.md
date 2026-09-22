@@ -145,14 +145,7 @@ wmux windows-terminal remove
 
 ### pane 记住自己在哪个目录
 
-每个 pane 一开始记的是创建时的目录。想让它跟着 `cd` 走，有两个办法。
-
-一是让 shell 自己报告。终端界有个通用做法，prompt 里带一段 OSC 9;9 序列（Windows Terminal 也认），wmux 看到就更新，一点开销都没有：
-
-```powershell
-# 放进 $PROFILE
-function prompt { "`e]9;9;$PWD`e\" + "PS $PWD> " }
-```
+pane 的目录跟着 shell 的 `cd` 走，不用你配置：启动 PowerShell（pwsh 或 Windows PowerShell）时 wmux 挂一个 prompt 钩子，每次提示符后面追加一段不可见的 OSC 9;9 上报目录（你自己的 prompt、oh-my-posh 之类照旧）；`cmd.exe` 和其他程序则直接读进程自己的工作目录。shell 自己上报的目录（OSC 9;9，带不带引号都行；WSL 里 bash/zsh 的 OSC 7）优先采信，`wmux set-cwd`（不带参数就是你运行它时所在的目录）可以手动指定：
 
 WSL 里的 bash 用 OSC 7，`/mnt/c/...` 这样的路径会自动映射回 `C:\...`：
 
