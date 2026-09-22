@@ -168,6 +168,21 @@ administrator rights, nothing in Task Scheduler), running the server
 through `conhost --headless` so no console window appears at logon. After a
 reboot, `wmux attach` finds everything as it was.
 
+And to have wmux in the Windows Terminal dropdown:
+
+```powershell
+wmux windows-terminal install    # a "wmux" profile that attaches to (or starts) the session "main"
+wmux windows-terminal status
+wmux windows-terminal remove
+```
+
+This is a profile *fragment*, one JSON file of wmux's own under
+`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wmux\`; Windows
+Terminal merges it in, `settings.json` is never touched, and the profile
+keeps its identity across reinstalls so the font or colours you give it
+stay. Every tab opened from it joins the same session, as `tmux new -A -s
+main` would.
+
 A pane's directory starts as the directory it was created in. Keep it
 current the way terminals do, by letting the shell announce `cd`s (OSC 9;9,
 which Windows Terminal understands too, or OSC 7 from bash/zsh), or set it

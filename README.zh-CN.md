@@ -125,6 +125,16 @@ wmux startup off         # 取消
 
 它只在当前用户的 `Run` 注册表键下写一个值——不需要管理员，不碰任务计划——通过 `conhost --headless` 启动 server，登录时不会闪出控制台窗口。重启之后 `wmux attach` 进去，东西都在。
 
+想让 wmux 出现在 Windows Terminal 的下拉菜单里：
+
+```powershell
+wmux windows-terminal install    # 一个 "wmux" profile，打开就接上（或新建）名为 main 的 session
+wmux windows-terminal status
+wmux windows-terminal remove
+```
+
+这是一个 profile *片段*——wmux 自己的一个 JSON 文件，放在 `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wmux\` 下，Windows Terminal 会把它合并进来，不碰你的 `settings.json`；重装也保持同一个 profile 身份，你给它改的字体、配色都还在。从它开的每个标签页都进同一个 session，和 `tmux new -A -s main` 一样。
+
 ### pane 记住自己在哪个目录
 
 每个 pane 一开始记的是创建时的目录。想让它跟着 `cd` 走，有两个办法。

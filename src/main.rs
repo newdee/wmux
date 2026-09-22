@@ -36,6 +36,7 @@ Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
   startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
+  windows-terminal install|remove|status   (a wmux profile in the Windows Terminal dropdown)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
@@ -90,9 +91,15 @@ fn main() {
         args.push("new-session".into());
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
-    // Starting at logon is about the server, so it is settled without one.
-    if args[0] == "startup" {
-        let code = match wmux::startup::run(&socket, &args[1..]) {
+    // Starting at logon is about the server, and the Windows Terminal
+    // profile is a file of ours: both are settled without a server.
+    let local = match args[0].as_str() {
+        "startup" => Some(wmux::startup::run(&socket, &args[1..])),
+        "windows-terminal" | "wt" => Some(wmux::wt::run(&socket, &args[1..])),
+        _ => None,
+    };
+    if let Some(result) = local {
+        let code = match result {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("wmux: {e:#}");

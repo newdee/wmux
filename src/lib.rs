@@ -14,3 +14,4 @@ pub mod resurrect;
 pub mod server;
 pub mod startup;
 pub mod winsec;
+pub mod wt;

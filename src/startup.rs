@@ -121,6 +121,10 @@ pub fn status(socket: &str) -> Result<Option<String>> {
 /// `wmux startup [on|off|status]`, run on the client side: nothing here
 /// needs a server, and the server is exactly what this is about starting.
 pub fn run(socket: &str, args: &[String]) -> Result<i32> {
+    // One verb and nothing after it: a typo must not look like it worked.
+    if args.len() > 1 {
+        bail!("startup: unexpected argument '{}'", args[1]);
+    }
     match args.first().map(String::as_str) {
         Some("on") | Some("install") | Some("enable") => {
             println!("{}", install(socket)?);
@@ -165,6 +169,8 @@ mod tests {
     fn bad_verb_is_refused_without_touching_the_registry() {
         let e = run("default", &["sideways".to_string()]).unwrap_err().to_string();
         assert!(e.contains("expected on, off or status"), "{e}");
+        let e = run("default", &["on".to_string(), "extra".to_string()]).unwrap_err().to_string();
+        assert!(e.contains("unexpected argument 'extra'"), "{e}");
     }
 
     /// The real key, with a throwaway socket name so nothing of the user's

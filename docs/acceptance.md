@@ -1085,3 +1085,46 @@ README（中英）与对照表都写了 `jobs` 及两个新变量；`Context::va
 ## 结论（第十八次验收）
 
 第 4、5、6 轮连续零发现，验收通过。测试 143 → 145（lib 97 / console 4 / e2e 44）。
+
+# 第十九次验收（2026-09-22）— Windows Terminal 集成
+
+本次新增：
+- `wmux windows-terminal install|remove|status`（别名 `wt`）：往 `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wmux\`
+  写一个 profile 片段（`wmux.json`，非默认 socket 是 `wmux-<socket>.json`），Windows Terminal 自动合并，不碰 `settings.json`。
+  profile 名 `wmux` / `wmux (<socket>)`，命令 `"<exe>" [-L socket] new-session -A -s main`，`startingDirectory` `%USERPROFILE%`。
+  GUID 由 socket 名经两趟 FNV-1a 派生并整成 RFC 4122 v4 形状——重装不换身份，用户改的字体/配色保留。
+  本地执行，不起 server（与 `startup` 同一分支）。
+- 顺手：`startup` 与 `windows-terminal` 都拒绝动词之后的多余参数（原来 `startup on extra` 会照做）。
+
+## 第 1 轮（不计数）— 视角：机制通路（真实目录）
+
+在本机真实 Fragments 目录装/查/卸一遍全部正确；发现 GUID 版本位随机（`c5fe`），改成 v4 + RFC 变体位。
+
+## 第 2 轮（不计数）— 视角：边界
+
+发现 `windows-terminal install extra` 多余参数被无视地执行（探针那一段还把 LOCALAPPDATA 切回了真实目录，
+真装了一次，立即卸掉；脚本改成最后才切回）→ 两个本地命令都拒绝多余参数，单元测试覆盖。
+
+## 第 3 轮（计数 1/3，无发现）— 视角：机制通路（真实目录）
+
+数据：装前 0 个文件、status 退出 1；install 退出 0，文件是合法 JSON，`commandline` 等于 `"<本 exe>" new-session -A -s main`，
+`startingDirectory` `%USERPROFILE%`；重装 GUID 不变 `{ebada516-8620-45fe-90b0-7b3d893a0b99}`，符合 v4/RFC 正则；
+`-L work wt install` 生成 `wmux-work.json`，名字 `wmux (work)`，GUID 不同，命令含 `-L work`；从别的目录执行 status 仍指向本 exe；
+两个都 remove 后目录 0 个文件，status 退出 1，再 remove 报 `not installed`。
+
+## 第 4 轮（计数 2/3，无发现）— 视角：边界（临时 LOCALAPPDATA）
+
+数据：无目录时 status/remove/无动词各自正确；install 自建整条路径；文件损坏时 status 报 `… wmux.json is not JSON: key must be a string …`
+退出 1，reinstall 覆盖成合法；是 JSON 但没有 profile → 视为未安装；socket `a b`、`x.y`、`中文` 生成对应文件名；
+上级路径是文件时 install 报 `cannot create … (os error 183)` 退出 1 不 panic；LOCALAPPDATA 未设置报 `LOCALAPPDATA is not set`；
+`install extra` / `instal` / `startup on extra` 全部拒绝且未写文件；真实目录未被触碰。
+
+## 第 5 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，149 项指纹均为 `CFC906FA4D1E3F08`；`--help` 有 `windows-terminal install|remove|status`；
+README（中英）写了命令与 Fragments 路径，对照表 wmux-only 行有条目；代码只写 `Fragments\wmux` 下、不含 `settings.json`；
+网站 149 tests；main.rs 两个本地命令走同一分支；真实目录无残留；clippy 与 fmt 无输出。
+
+## 结论（第十九次验收）
+
+第 3、4、5 轮连续零发现，验收通过。测试 145 → 149（lib 101 / console 4 / e2e 44）。
