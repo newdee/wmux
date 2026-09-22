@@ -113,7 +113,17 @@ wmux delete-saved old    # 不要了
 wmux save-session -a     # 现在就全存一遍（prefix C-s 存当前这个）
 ```
 
-恢复出来的是布局和每个 pane 的启动命令，程序当时跑到哪、屏幕上有什么，这些是回不来的，tmux-resurrect 也一样。想让 server 一启动就自己恢复，配置里写 `set -g restore-on-start on`；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
+恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行）的输出。程序当时跑到哪是回不来的，谁也做不到。想让 server 一启动就自己恢复，配置里写 `set -g restore-on-start on`；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
+
+想让这一切在开机登录时自动发生：
+
+```powershell
+wmux startup on          # 登录时启动 server，把存过的 session 全恢复出来
+wmux startup status      # 看看注册了什么
+wmux startup off         # 取消
+```
+
+它只在当前用户的 `Run` 注册表键下写一个值——不需要管理员，不碰任务计划——通过 `conhost --headless` 启动 server，登录时不会闪出控制台窗口。重启之后 `wmux attach` 进去，东西都在。
 
 ### pane 记住自己在哪个目录
 
@@ -137,6 +147,8 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 `list-panes` 能看到每个 pane 记的目录，状态栏里用 `#{pane_current_path}` 显示。
 
 ## 配置
+
+没有 `.wmux.conf` 的话，wmux 会直接读你现成的 `~/.tmux.conf`（或 `~/.config/tmux/tmux.conf`）：认识的照做，不认识的（`bind -T copy-mode-vi`、TPM 的 `@plugin`、`%if` 块）跳过并记进 `show-messages`，不会每次 attach 都糊你一脸报错。
 
 配置文件是 `%USERPROFILE%\.wmux.conf`（也可以放 `%USERPROFILE%\.config\wmux\wmux.conf`，或者用 `WMUX_CONFIG` 环境变量指定），一行一条命令，就是 tmux 那种写法：
 

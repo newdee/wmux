@@ -147,11 +147,25 @@ wmux delete-saved old    # forget one
 wmux save-session -a     # save everything right now (prefix C-s saves the current one)
 ```
 
-Resuming recreates the pane tree and starts each pane's original command
-in the pane's last known directory. Like tmux-resurrect, it does not bring
-back what those programs were doing or what was on screen. `set -g
+Resuming recreates the pane tree, puts back the last `save-history` lines
+each pane had on screen (500 by default) and starts each pane's original
+command in the pane's last known directory. What the programs themselves
+were doing does not come back; no multiplexer can do that. `set -g
 restore-on-start on` makes a fresh server restore everything by itself;
 `set -g autosave off` turns saving off; `sessions-dir` moves the files.
+
+To have all of that happen by itself when you log on:
+
+```powershell
+wmux startup on          # start the server at logon and restore every saved session
+wmux startup status      # what is registered
+wmux startup off         # stop doing that
+```
+
+This writes one value under the per-user `Run` registry key (no
+administrator rights, nothing in Task Scheduler), running the server
+through `conhost --headless` so no console window appears at logon. After a
+reboot, `wmux attach` finds everything as it was.
 
 A pane's directory starts as the directory it was created in. Keep it
 current the way terminals do, by letting the shell announce `cd`s (OSC 9;9,
@@ -174,7 +188,12 @@ it on the status line.
 ## Configuration
 
 `%USERPROFILE%\.wmux.conf` (or `%USERPROFILE%\.config\wmux\wmux.conf`, or
-the file named by `WMUX_CONFIG`) holds one command per line, tmux syntax:
+the file named by `WMUX_CONFIG`) holds one command per line, tmux syntax.
+With no wmux config at all, an existing `~/.tmux.conf` (or
+`~/.config/tmux/tmux.conf`) is read instead: what wmux understands is
+applied, and what it cannot use (`bind -T copy-mode-vi`, TPM's `@plugin`
+lines, `%if` blocks) is skipped and listed in `show-messages` rather than
+thrown at you on every attach.
 
 ```tmux
 set -g prefix C-a

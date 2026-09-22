@@ -514,11 +514,26 @@ pub fn config_paths() -> Vec<PathBuf> {
     if let Some(cfg) = dirs::config_dir() {
         v.push(cfg.join("wmux").join("wmux.conf"));
     }
+    // With no wmux config of its own, an existing tmux config is read the
+    // way tmux would read it, skipping what wmux has no equivalent for.
+    if let Some(home) = dirs::home_dir() {
+        v.push(home.join(".tmux.conf"));
+        v.push(home.join(".config").join("tmux").join("tmux.conf"));
+    }
+    if let Some(cfg) = dirs::config_dir() {
+        v.push(cfg.join("tmux").join("tmux.conf"));
+    }
     v
 }
 
 pub fn find_config() -> Option<PathBuf> {
     config_paths().into_iter().find(|p| p.is_file())
+}
+
+/// A config written for tmux rather than wmux: lines it cannot use are
+/// skipped with a note instead of being reported as errors.
+pub fn is_tmux_conf(path: &std::path::Path) -> bool {
+    path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.ends_with("tmux.conf"))
 }
 
 /// Resolve the executable to run for a new pane when no command is given.

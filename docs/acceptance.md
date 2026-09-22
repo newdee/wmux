@@ -870,3 +870,59 @@ clippy 与 `cargo fmt --check` 无输出。
 
 第 3、4、5 轮连续零发现，验收通过。测试 128 → 131（lib 89 / console 4 / e2e 38）。
 桌面通知的视觉效果需要在有桌面的会话里人工确认（开发机跑在 session 0，看不到气泡）。
+
+# 第十五次验收（2026-09-22）— 直读 .tmux.conf、开机自启
+
+本次新增：
+- 没有 `.wmux.conf` 时直接读 `~/.tmux.conf` / `~/.config/tmux/tmux.conf`，按 tmux 的读法：
+  `\` 续行、`%if … %endif` 整块跳过（wmux 不求值 tmux 条件式，两个分支都应用比都不应用更糟）、
+  用不了的行记进 `show-messages`，首次 attach 只给一行汇总。`bind -T` 只认 root / prefix，
+  `copy-mode-vi` 这种表直接拒绝——**修了一个老 bug**：以前 `-T` 非 root 一律当 prefix，
+  `.tmux.conf` 里的 `bind -T copy-mode-vi v …` 会被静默绑到 prefix 表。
+- `wmux startup on|off|status`：登录时拉起 server 并恢复全部 session。用当前用户的 `Run`
+  注册表键（`schtasks` 的 ONLOGON 触发器非管理员建不了，实测 `Access is denied`），
+  命令前面套 `conhost --headless` 所以登录时不闪窗口；server 新增 `--restore` 参数。
+- `server::run_with(RunOptions { force_restore, config })`：测试可以显式指定配置文件，
+  不再通过环境变量——同进程并行的 e2e 曾因 `WMUX_CONFIG` 互相污染挂掉 4 个。
+
+## 第 1 轮（不计数）— 视角：机制通路
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `conhost --headless` 用 `<nul` 喂 stdin 时 server 起不来，误以为机制不可用 | 按登录的真实方式（ShellExecute、不继承句柄）再测：server 起来、session 连输出一起回来、conhost 无窗口。方案没错，测法错了 |
+| 2 | 我之前的临时探测没设 `WMUX_SESSIONS_DIR`，往用户真实 sessions 目录写了 14 个垃圾 session，`--restore` 一跑全冒出来 | 逐个核对名字后删除（全是我的：0/1/2/alpha/b/big/c/doc/k/other/s/t/t1/x），之后的探测脚本全部隔离目录 |
+
+## 第 2 轮（不计数）— 视角：边界与退化输入
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 配置文件 `source-file` 自己 → 无限递归，**server 直接死** | 正在 source 的文件栈（canonical 路径）做环检测，报 `source-file loop`；前面已应用的行保留 |
+| 2 | 没闭合的 `%if` 把后面整个文件静默吞掉 | `logical_lines` 返回未闭合的行号，报 `%if without %endif; the rest of the file was skipped` |
+| 3 | 记事本存的文件带 UTF-8 BOM，第一行变成 `\u{feff}set` 报 unknown command | 读文件先剥 BOM；单元测试覆盖 BOM + CRLF |
+
+## 第 3 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：真实形状的 tmux.conf（含 TPM、copy-mode-vi、`%if`、续行）经 `WMUX_CONFIG` 加载：
+`prefix=C-a mouse=on base-index=1 status=on`；续行拼成的 `| split-window -h -c "#{pane_current_path}"`
+绑定存在；prefix 表里没有 `v`；`show-messages` 里有 copy-mode-vi 与 `@plugin tmux-plugins/tpm` 两条；
+`list-windows` 首行 `1: pwsh*`。`startup on/status/off` 往返，Run 值最终不存在。
+登录链路（隔离目录）：保存 `ops`（2 窗口）→ kill-server → 按登录方式启动 → `ls` 见 `ops: 2 windows`，
+pane 0 里 `survived-the-reboot` 仍在，conhost `MainWindowHandle=0`。
+
+## 第 4 轮（计数 2/3，无发现）— 视角：边界与退化输入
+
+数据（9 份退化配置，server 全部存活）：BOM+CRLF 生效；空文件；只有 `%if` 块；未闭合 `%if`（1 条提示）；
+EOF 处续行；纯垃圾（2 条提示）；`bind -T copy-mode` / `unbind -T copy-mode-vi`（各拒绝 1 条，`-T root` 通过）；
+`%hidden`/`%elif`；自引用 `source-file`（1 条提示，`mouse off` 已生效）。
+`startup` 八种写法：on/install/off/disable 退出码 0，未安装时 status 退出码 1，`weird` 报错。
+
+## 第 5 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，136 项指纹均为 `ADF37BBFA26A6E3D`；配置搜索路径含两个 tmux 位置；
+两份 README、`--help`、对照表都提到 `startup` 与 `.tmux.conf`；
+"登录不闪窗口"由代码里的 `conhost.exe --headless` 支撑，"不需要管理员"由只写 `HKEY_CURRENT_USER` 支撑；
+clippy 与 `cargo fmt --check` 无输出。
+
+## 结论（第十五次验收）
+
+第 3、4、5 轮连续零发现，验收通过。测试 131 → 136（lib 93 / console 4 / e2e 39）。

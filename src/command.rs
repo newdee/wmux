@@ -1225,6 +1225,17 @@ fn bad_flag(name: &str, flag: &str) -> String {
     format!("{name}: unknown flag '{flag}'")
 }
 
+/// `-T table` for bind-key / unbind-key: true for the root table. wmux has
+/// only root and prefix; a `.tmux.conf` line for `copy-mode-vi` must be
+/// refused, not quietly bound under the prefix.
+fn key_table(name: &str, table: &str) -> Result<bool, String> {
+    match table {
+        "root" => Ok(true),
+        "prefix" => Ok(false),
+        other => Err(format!("{name}: key table '{other}' is not supported (wmux has root and prefix)")),
+    }
+}
+
 /// Every command name, for the unambiguous-prefix lookup below.
 pub const COMMANDS: &[&str] = &[
     "attach-session",
@@ -2198,9 +2209,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 match a.next().unwrap() {
                     "-n" => root = true,
                     "-r" => repeat = true,
-                    "-T" => {
-                        root = a.value("-T")? == "root";
-                    }
+                    "-T" => root = key_table(n, a.value("-T")?)?,
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -2214,9 +2223,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-n" => root = true,
-                    "-T" => {
-                        root = a.value("-T")? == "root";
-                    }
+                    "-T" => root = key_table(n, a.value("-T")?)?,
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -2930,6 +2937,13 @@ mod tests {
         assert!(matches!(p("start-s"), Cmd::StartServer));
         // tmux's window-scoped spellings are the same command here.
         assert_eq!(p("setw -g mode-keys vi"), p("set -g mode-keys vi"));
+        // Only the two key tables wmux has; a copy-mode table from a
+        // .tmux.conf is refused rather than bound under the prefix.
+        assert!(matches!(p("bind -T root M-x kill-pane"), Cmd::BindKey { root: true, .. }));
+        assert!(matches!(p("bind -T prefix x kill-pane"), Cmd::BindKey { root: false, .. }));
+        let e = parse_line("bind -T copy-mode-vi v send -X begin-selection").unwrap_err();
+        assert!(e.contains("copy-mode-vi") && e.contains("not supported"), "{e}");
+        assert!(parse_line("unbind -T copy-mode-vi v").is_err());
         assert!(matches!(p("showw -gv mouse"), Cmd::ShowOptions { .. }));
         for name in COMMANDS {
             // Listed means the parser knows it (it may still want arguments)

@@ -432,6 +432,12 @@ pub struct Server {
     had_session: bool,
     started: Instant,
     quit: bool,
+    /// Restore saved sessions at start even with `restore-on-start off`.
+    force_restore: bool,
+    /// A config file given at start, in place of the usual search.
+    config_override: Option<PathBuf>,
+    /// Files being sourced right now, outermost first (loop detection).
+    sourcing: Vec<String>,
     /// Errors from the config file, pending display on the first attach.
     config_errors: Option<Vec<String>>,
     hooks: HashMap<String, Cmd>,
@@ -462,6 +468,22 @@ pub struct Server {
 }
 
 pub async fn run(socket: String) -> Result<()> {
+    run_with(socket, RunOptions::default()).await
+}
+
+/// How a server is started, beyond its socket name.
+#[derive(Default, Clone, Debug)]
+pub struct RunOptions {
+    /// Bring every saved session back at start whatever the config says
+    /// (`wmux __server --restore`, which is what the logon entry runs).
+    pub force_restore: bool,
+    /// Read this config file instead of looking for one. Tests use it so
+    /// that servers sharing a process never share a config through the
+    /// environment.
+    pub config: Option<PathBuf>,
+}
+
+pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     let pipe = crate::ipc::pipe_name(&socket);
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let (pane_tx, pane_rx) = std::sync::mpsc::channel::<PaneEvent>();
@@ -549,6 +571,8 @@ pub async fn run(socket: String) -> Result<()> {
     };
 
     let mut srv = Server::new(pane_tx, socket, tx.clone());
+    srv.force_restore = options.force_restore;
+    srv.config_override = options.config;
     srv.load_config();
     // A persistent interval: a fresh `sleep` per iteration would never fire
     // while events keep arriving, and autosave / idle-exit hang off the tick.
@@ -722,6 +746,9 @@ impl Server {
             had_session: false,
             started: Instant::now(),
             quit: false,
+            force_restore: false,
+            config_override: None,
+            sourcing: Vec::new(),
             config_errors: None,
             hooks: HashMap::new(),
             in_hook: false,
@@ -964,7 +991,7 @@ impl Server {
     }
 
     fn load_config(&mut self) {
-        if let Some(path) = crate::config::find_config() {
+        if let Some(path) = self.config_override.clone().or_else(crate::config::find_config) {
             match self.source_file(&path.to_string_lossy()) {
                 Ok(n) => log::info!("loaded {} ({n} commands)", path.display()),
                 Err(e) => {
@@ -974,7 +1001,7 @@ impl Server {
                 }
             }
         }
-        if self.opts.restore_on_start && self.sessions.is_empty() {
+        if (self.opts.restore_on_start || self.force_restore) && self.sessions.is_empty() {
             let (created, problems) = self.restore_all(80, 24);
             log::info!("restore-on-start: {} session(s)", created.len());
             for p in problems {
@@ -984,21 +1011,44 @@ impl Server {
     }
 
     /// Source a file of wmux commands, then load any `@plugin` it declared.
+    ///
+    /// A file named `*tmux.conf` is one written for tmux: whatever wmux
+    /// cannot use in it (other key tables, TPM, `%if` blocks) is skipped
+    /// with a note in `show-messages`, and the result is a one-line summary
+    /// rather than a wall of errors on every attach.
     fn source_file(&mut self, path: &str) -> Result<usize, String> {
         let path = &expand_home(path);
+        let lenient = crate::config::is_tmux_conf(std::path::Path::new(path));
+        // A file that sources itself (directly or through another) would
+        // recurse until the stack ran out and take the server with it.
+        let canon = std::fs::canonicalize(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path.clone());
+        if self.sourcing.contains(&canon) {
+            return Err(format!("{path}: is already being sourced (a source-file loop)"));
+        }
+        self.sourcing.push(canon);
+        let r = self.source_file_inner(path, lenient);
+        self.sourcing.pop();
+        r
+    }
+
+    fn source_file_inner(&mut self, path: &String, lenient: bool) -> Result<usize, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
         let mut n = 0;
         let mut errors = Vec::new();
-        for (i, line) in text.lines().enumerate() {
-            match crate::command::parse_line(line) {
+        let (lines, unterminated) = logical_lines(&text);
+        if let Some(line_no) = unterminated {
+            errors.push(format!("{path}:{line_no}: %if without %endif; the rest of the file was skipped"));
+        }
+        for (line_no, line) in lines {
+            match crate::command::parse_line(&line) {
                 Ok(None) => {}
                 Ok(Some(cmd)) => {
                     n += 1;
                     if let Outcome::Error(e) = self.exec(cmd, None) {
-                        errors.push(format!("{path}:{}: {e}", i + 1));
+                        errors.push(format!("{path}:{line_no}: {e}"));
                     }
                 }
-                Err(e) => errors.push(format!("{path}:{}: {e}", i + 1)),
+                Err(e) => errors.push(format!("{path}:{line_no}: {e}")),
             }
         }
         let pending = std::mem::take(&mut self.opts.pending_plugins);
@@ -1007,7 +1057,22 @@ impl Server {
                 errors.push(format!("{path}: @plugin {p}: {e}"));
             }
         }
-        if errors.is_empty() { Ok(n) } else { Err(errors.join("\n")) }
+        if errors.is_empty() {
+            return Ok(n);
+        }
+        if lenient {
+            for e in &errors {
+                log::warn!("{e}");
+                self.note_message(&format!("skipped: {e}"));
+            }
+            let short = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned());
+            return Err(format!(
+                "{}: {} lines wmux could not use were skipped (prefix ~ or show-messages lists them)",
+                short.unwrap_or_else(|| path.clone()),
+                errors.len()
+            ));
+        }
+        Err(errors.join("\n"))
     }
 
     /// A plugin is a directory holding `<name>.wmux` or `plugin.wmux`; `name`
@@ -4887,6 +4952,61 @@ impl Server {
     }
 }
 
+/// The lines of a config file the way tmux reads them: a `\` at the end of
+/// a line continues it on the next, and a `%if` ... `%endif` block (tmux's
+/// conditionals, which wmux does not evaluate) is left out whole rather
+/// than having both of its branches applied. Each logical line carries the
+/// number of its first physical line, for error messages. The second value
+/// is the line of a `%if` that was never closed, which swallows everything
+/// after it and must be said rather than silently dropped.
+fn logical_lines(text: &str) -> (Vec<(usize, String)>, Option<usize>) {
+    let mut out = Vec::new();
+    let mut joined = String::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    let mut opened_at = 0usize;
+    // Notepad writes a byte-order mark; without this the first command
+    // would be "\u{feff}set", which is nothing.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    for (i, raw) in text.lines().enumerate() {
+        let n = i + 1;
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with('%') {
+            // %if / %elif / %else / %endif / %hidden: all skipped, and a
+            // block's body with it.
+            let word = trimmed.split_whitespace().next().unwrap_or("");
+            match word {
+                "%if" => {
+                    if depth == 0 {
+                        opened_at = n;
+                    }
+                    depth += 1;
+                }
+                "%endif" => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            joined.clear();
+            continue;
+        }
+        if depth > 0 {
+            continue;
+        }
+        if joined.is_empty() {
+            start = n;
+        }
+        if let Some(head) = raw.strip_suffix('\\') {
+            joined.push_str(head);
+            continue;
+        }
+        joined.push_str(raw);
+        out.push((start, std::mem::take(&mut joined)));
+    }
+    if !joined.is_empty() {
+        out.push((start, joined));
+    }
+    (out, (depth > 0).then_some(opened_at))
+}
+
 /// Expand a leading `~` or `~/` to the user's home directory.
 fn expand_home(path: &str) -> String {
     if (path == "~" || path.starts_with("~/") || path.starts_with("~\\"))
@@ -5394,6 +5514,44 @@ mod tests {
         // caller refuses rather than drawing a broken border.
         let tiny = popup_rect(Rect { x: 0, y: 0, w: 2, h: 2 }, None, None);
         assert!(tiny.w < 3 || tiny.h < 3, "{tiny:?}");
+    }
+
+    /// A config file the way tmux reads it: continuations joined, `%if`
+    /// blocks left out whole, line numbers pointing at where a line began.
+    #[test]
+    fn logical_lines_follow_tmux_rules() {
+        let text = "set -g a 1\n\
+                    bind x \\\n  send-keys \\\n  hi\n\
+                    %if #{==:#{host},box}\n\
+                    set -g never 1\n\
+                    %else\n\
+                    set -g also-never 1\n\
+                    %endif\n\
+                    %hidden foo=1\n\
+                    set -g b 2\n\
+                    last \\";
+        let (got, open) = logical_lines(text);
+        assert_eq!(
+            got,
+            vec![
+                (1, "set -g a 1".to_string()),
+                (2, "bind x   send-keys   hi".to_string()),
+                (11, "set -g b 2".to_string()),
+                (12, "last ".to_string()),
+            ]
+        );
+        assert_eq!(open, None);
+        // Nested blocks come out whole too.
+        let nested = "%if a\n%if b\nx\n%endif\ny\n%endif\nz";
+        assert_eq!(logical_lines(nested).0, vec![(7, "z".to_string())]);
+        assert!(logical_lines("").0.is_empty());
+        // Notepad's BOM and CRLF endings, as a file written on Windows has.
+        let notepad = "\u{feff}set -g a 1\r\nset -g b \\\r\n 2\r\n";
+        assert_eq!(logical_lines(notepad).0, vec![(1, "set -g a 1".to_string()), (2, "set -g b  2".to_string())]);
+        // A %if that never closes swallows the rest, and says where it began.
+        let (lines, open) = logical_lines("set -g a 1\n%if x\nset -g b 2\nset -g c 3\n");
+        assert_eq!(lines, vec![(1, "set -g a 1".to_string())]);
+        assert_eq!(open, Some(2));
     }
 
     #[test]

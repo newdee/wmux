@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `notify` (a desktop notification), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
@@ -169,6 +169,17 @@ Searching: `/` forward (towards the newest line), `?` back through the scrollbac
 
 Missing: `copy-pipe` to a command (`copy-pipe-and-cancel` copies as
 `copy-selection` does), and the jump commands (`jump-to-forward`, `f`/`t`).
+
+## Config file
+
+`~/.wmux.conf` first; with none, `~/.tmux.conf` or
+`~/.config/tmux/tmux.conf` is read as tmux would read it: `\` continues a
+line, a `%if` ... `%endif` block is left out whole (wmux does not evaluate
+tmux's conditionals, and applying both branches would be worse than
+neither), and every line wmux cannot use is skipped with a note in
+`show-messages` plus a one-line count on the first attach. `bind -T` with
+any table other than `root` or `prefix` is refused, so a `copy-mode-vi`
+line never ends up bound under the prefix.
 
 ## Options
 

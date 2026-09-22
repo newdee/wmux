@@ -12,4 +12,5 @@ pub mod logger;
 pub mod notify;
 pub mod resurrect;
 pub mod server;
+pub mod startup;
 pub mod winsec;

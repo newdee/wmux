@@ -33,10 +33,12 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
+  startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
-Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name)
+Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name);
+  with none, ~/.tmux.conf is read and whatever wmux cannot use is skipped.
 Any unambiguous prefix of a command name works: `wmux att`, `wmux lsp`, `wmux splitw -h`.
 Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
 Default prefix: C-b.  Prefix ? lists key bindings, prefix q shows pane numbers.";
@@ -86,13 +88,26 @@ fn main() {
         args.push("new-session".into());
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+    // Starting at logon is about the server, so it is settled without one.
+    if args[0] == "startup" {
+        let code = match wmux::startup::run(&socket, &args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("wmux: {e:#}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     let code = if args[0] == "__server" {
         logger::init("server");
         // The server has no console; a panic would otherwise vanish.
         std::panic::set_hook(Box::new(|info| {
             log::error!("panic: {info}");
         }));
-        match rt.block_on(server::run(socket)) {
+        let restore = args.iter().skip(1).any(|a| a == "--restore");
+        let options = server::RunOptions { force_restore: restore, config: None };
+        match rt.block_on(server::run_with(socket, options)) {
             Ok(()) => 0,
             Err(e) => {
                 log::error!("{e:#}");

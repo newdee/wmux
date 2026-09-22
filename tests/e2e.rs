@@ -2182,6 +2182,102 @@ async fn find_text_looks_through_every_pane() {
     h.cli(&["kill-server"]).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
+    // A config as people actually have them: TPM, copy-mode-vi bindings, a
+    // %if block, continuation lines, options tmux has and wmux does not.
+    let dir = std::env::temp_dir().join(format!("wmux-tmuxconf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let conf = dir.join("tmux.conf");
+    std::fs::write(
+        &conf,
+        "# my tmux.conf\n\
+         set -g prefix C-a\n\
+         unbind C-b\n\
+         set -g mouse on\n\
+         set -g base-index 1\n\
+         setw -g mode-keys vi\n\
+         set -g default-terminal \"screen-256color\"\n\
+         set -ga terminal-overrides \",xterm-256color:Tc\"\n\
+         bind -T copy-mode-vi v send-keys -X begin-selection\n\
+         bind -T copy-mode-vi y send-keys -X copy-selection-and-cancel\n\
+         bind | split-window -h \\\n  -c \"#{pane_current_path}\"\n\
+         %if #{==:#{host},nowhere}\n\
+         set -g status off\n\
+         %endif\n\
+         set -g @plugin 'tmux-plugins/tpm'\n\
+         set -g @plugin 'tmux-plugins/tmux-sensible'\n\
+         set -g status-right '#{pane_current_path}'\n",
+    )
+    .unwrap();
+    // Started by hand with the config given directly: the other tests run
+    // in this same process, so nothing may go through the environment.
+    let socket = format!("test-tmuxconf-{}", std::process::id());
+    let s = socket.clone();
+    let options = wmux::server::RunOptions { force_restore: false, config: Some(conf.clone()) };
+    let server = tokio::spawn(async move {
+        if let Err(e) = wmux::server::run_with(s, options).await {
+            panic!("server: {e:#}");
+        }
+    });
+    let pipe = pipe_name(&socket);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ClientOptions::new().open(&pipe).is_err() {
+        assert!(Instant::now() < deadline, "server did not come up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
+    h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt wmux$g"]).await;
+    h.cli(&["new", "-d", "-s", "t"]).await;
+
+    // What wmux understands is applied...
+    assert_eq!(h.cli(&["show", "-gv", "prefix"]).await.1.trim(), "C-a");
+    assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "on");
+    assert_eq!(h.cli(&["show", "-gv", "base-index"]).await.1.trim(), "1");
+    let (_, keys, _) = h.cli(&["list-keys"]).await;
+    assert!(
+        keys.contains("-T prefix | split-window -h -c \"#{pane_current_path}\""),
+        "the continued line was joined: {keys}"
+    );
+    // ...the copy-mode-vi lines did not leak into the prefix table...
+    assert!(!keys.lines().any(|l| l.contains("-T prefix v ")), "{keys}");
+    assert!(!keys.lines().any(|l| l.contains("-T prefix y ")), "{keys}");
+    // ...the %if block was left alone (status is still on)...
+    assert_eq!(h.cli(&["show", "-gv", "status"]).await.1.trim(), "on");
+    // ...and what was skipped is listed, not thrown at every attach.
+    let (_, msgs, _) = h.cli(&["show-messages"]).await;
+    assert!(msgs.contains("copy-mode-vi"), "the refused table is named: {msgs}");
+    assert!(msgs.contains("@plugin tmux-plugins/tpm"), "the missing plugin is named: {msgs}");
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "t"]).await;
+    c.wait_for("the one-line summary", |s| {
+        let t = s.contents();
+        t.contains("tmux.conf:") && t.contains("lines wmux could not use were skipped")
+    })
+    .await;
+    assert!(!c.text().contains("copy-mode-vi"), "the details stay in show-messages: {}", c.text());
+
+    // A file that sources itself is refused, not recursed into, and one
+    // with an unclosed %if says so instead of quietly dropping the rest.
+    let looping = dir.join("loop.conf");
+    std::fs::write(
+        &looping,
+        format!("set -g mouse off\nsource-file \"{}\"\n", looping.display().to_string().replace('\\', "/")),
+    )
+    .unwrap();
+    let (code, _, err) = h.cli(&["source-file", &looping.to_string_lossy()]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("source-file loop"), "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "off", "the lines before the loop still applied");
+    let open = dir.join("open.conf");
+    std::fs::write(&open, "set -g mouse on\n%if x\nset -g mouse off\n").unwrap();
+    let (code, _, err) = h.cli(&["source-file", &open.to_string_lossy()]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("%if without %endif"), "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "on");
+    h.cli(&["kill-server"]).await;
+}
+
 // Keep the unused-import lint quiet for helper traits used through split().
 #[allow(dead_code)]
 fn _assert_traits<T: AsyncRead + AsyncWrite>() {}
