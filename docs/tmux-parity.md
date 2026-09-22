@@ -85,7 +85,8 @@ Status: **yes** = works, **part** = works with a documented limit,
 | switch-client | yes | `-n`, `-p`, `-l`, `-t` |
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
-| **wmux only** | | `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| start-server | yes | accepted; any command starts the server |
+| **wmux only** | | `find-text` (search what every pane printed), `notify` (a desktop notification), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
@@ -191,6 +192,12 @@ the session file), `autosave`, `restore-on-start`, `sessions-dir`,
 
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`
 and `set -p` are accepted and set the option for the server.
+
+`notify` is a wmux option: with it on, every alert also raises a desktop
+notification (a tray balloon, which Windows 10 and 11 turn into a real
+notification), so a job that finishes while the terminal is behind other
+windows still reaches you. tmux has nothing like it, having no desktop to
+notify.
 
 Two things wmux adds that tmux does not have: an option name may be
 abbreviated as long as it stays unambiguous (`set sync`, `set mon-act on`,

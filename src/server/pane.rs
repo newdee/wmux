@@ -488,6 +488,41 @@ impl Pane {
         (text, wrapped)
     }
 
+    /// Find `needle` in everything this pane has on screen and in its
+    /// scrollback, newest line first, at most `max` hits.
+    ///
+    /// Written as one pass rather than a loop over `line_text` because that
+    /// recomputes the scrollback length for every line, which turns a search
+    /// over a few thousand lines into a few thousand full scans.
+    pub fn search(&mut self, needle: &str, max: usize, case_sensitive: bool) -> Vec<(usize, String)> {
+        let mut hits = Vec::new();
+        if needle.is_empty() || max == 0 {
+            return hits;
+        }
+        let want = if case_sensitive { needle.to_string() } else { needle.to_lowercase() };
+        let total = self.scrollback_len();
+        let rows = self.rows as usize;
+        let cols = self.cols;
+        let s = self.parser.screen_mut();
+        let keep = s.scrollback();
+        // `abs` counts from the oldest scrolled-off line; walk from the
+        // newest so the first hits reported are the ones just printed.
+        for abs in (0..total + rows).rev() {
+            let (offset, row) = if abs < total { (total - abs, 0usize) } else { (0, abs - total) };
+            s.set_scrollback(offset);
+            let Some(text) = s.rows(0, cols).nth(row) else { continue };
+            let hay = if case_sensitive { text.clone() } else { text.to_lowercase() };
+            if hay.contains(&want) {
+                hits.push((abs, text.trim_end().to_string()));
+                if hits.len() >= max {
+                    break;
+                }
+            }
+        }
+        s.set_scrollback(keep);
+        hits
+    }
+
     /// Like `line_text`, but keeping the colours and attributes as escape
     /// sequences (`capture-pane -e`).
     pub fn line_escapes(&mut self, abs: usize) -> String {

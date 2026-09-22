@@ -33,6 +33,9 @@ pub struct Options {
     /// Say it on the status line instead of ringing the terminal bell.
     pub visual_bell: bool,
     pub visual_activity: bool,
+    /// Also raise a desktop notification for an alert, so a job that ends
+    /// while wmux is not on screen still reaches you.
+    pub notify: bool,
     pub base_index: usize,
     /// First pane number shown to the user (tmux pane-base-index).
     pub pane_base_index: usize,
@@ -90,6 +93,7 @@ pub const SHOWABLE: &[&str] = &[
     "monitor-silence",
     "visual-bell",
     "visual-activity",
+    "notify",
     "pane-base-index",
     "display-time",
     "repeat-time",
@@ -118,6 +122,7 @@ impl Default for Options {
             monitor_silence: 0,
             visual_bell: false,
             visual_activity: false,
+            notify: false,
             base_index: 0,
             pane_base_index: 0,
             display_time_ms: 1500,
@@ -219,6 +224,7 @@ pub const KNOWN: &[&str] = &[
     "monitor-bell",
     "monitor-silence",
     "mouse",
+    "notify",
     "pane-active-border-style",
     "pane-base-index",
     "pane-border-style",
@@ -271,6 +277,7 @@ pub const ACCEPTED: &[&str] = &[
 /// Options that are on or off, so `set -g mouse` with no value flips them.
 const BOOLEAN: &[&str] = &[
     "autosave",
+    "notify",
     "monitor-activity",
     "monitor-bell",
     "mouse",
@@ -395,6 +402,7 @@ impl Options {
             "monitor-silence" => self.monitor_silence = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "visual-bell" => self.visual_bell = parse_bool(value)?,
             "visual-activity" => self.visual_activity = parse_bool(value)?,
+            "notify" => self.notify = parse_bool(value)?,
             "pane-base-index" => self.pane_base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "display-time" => self.display_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "repeat-time" => self.repeat_time_ms = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -474,6 +482,7 @@ impl Options {
             "monitor-silence" => self.monitor_silence.to_string(),
             "visual-bell" => onoff(self.visual_bell),
             "visual-activity" => onoff(self.visual_activity),
+            "notify" => onoff(self.notify),
             "pane-base-index" => self.pane_base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
             "repeat-time" => self.repeat_time_ms.to_string(),

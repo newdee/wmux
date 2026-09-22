@@ -2120,6 +2120,68 @@ async fn option_names_take_abbreviations_and_flip() {
     h.cli(&["kill-server"]).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn find_text_looks_through_every_pane() {
+    let h = Harness::start("findtext").await;
+    h.cli(&["new", "-d", "-s", "ft"]).await;
+    h.wait_capture("ft:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["split-window", "-d", "-t", "ft:0"]).await;
+    h.wait_capture("ft:0.1", "second shell", |t| t.contains("wmux>")).await;
+    h.cli(&["new-window", "-d", "-t", "ft", "-n", "build"]).await;
+    h.wait_capture("ft:1", "third shell", |t| t.contains("wmux>")).await;
+
+    h.cli(&["send-keys", "-t", "ft:0.0", "echo REDIS-TIMEOUT-here", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "ft:0.1", "echo nothing-to-see", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "ft:1", "echo compile-failed-badly", "Enter"]).await;
+    h.wait_capture("ft:1", "the third pane's output", |t| t.matches("compile-failed-badly").count() >= 2).await;
+
+    // A pattern is looked for in what every pane printed, and the hit says
+    // which pane and how far back it was.
+    let (code, out, err) = h.cli(&["find-text", "redis-timeout"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.lines().all(|l| l.starts_with("ft:0.0")), "only the first pane has it: {out}");
+    assert!(out.contains("REDIS-TIMEOUT-here"), "{out}");
+    assert!(out.contains("  -"), "each hit says how many lines back: {out}");
+
+    let (_, out, _) = h.cli(&["find-text", "compile-failed"]).await;
+    assert!(out.lines().all(|l| l.starts_with("ft:1.0")), "{out}");
+
+    // -C makes it match case; -t narrows to one window; -n caps the hits.
+    let (code, _, err) = h.cli(&["find-text", "-C", "redis-timeout"]).await;
+    assert_eq!(code, 1, "the text is upper case, so this must miss");
+    assert!(err.contains("no pane has"), "{err}");
+    let (_, out, _) = h.cli(&["find-text", "-C", "REDIS-TIMEOUT"]).await;
+    assert!(out.contains("REDIS-TIMEOUT-here"), "{out}");
+
+    let (_, out, _) = h.cli(&["find-text", "-t", "ft:1", "echo"]).await;
+    assert!(out.lines().all(|l| l.starts_with("ft:1.0")), "-t limits the search: {out}");
+    // -t down to a single pane, and a target that is not there says so
+    // instead of reporting an empty search.
+    let (_, out, _) = h.cli(&["find-text", "-t", "ft:0.1", "echo"]).await;
+    assert!(out.lines().all(|l| l.starts_with("ft:0.1")), "-t takes a pane too: {out}");
+    let (code, _, err) = h.cli(&["find-text", "-t", "ft:99", "echo"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no window 99"), "{err}");
+    let (code, _, err) = h.cli(&["find-text", "-t", "ft:0.9", "echo"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane 9"), "{err}");
+    // Whitespace is not a search.
+    let (code, _, err) = h.cli(&["find-text", " "]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("pattern required"), "{err}");
+    let (_, out, _) = h.cli(&["find-text", "-n", "1", "echo"]).await;
+    assert_eq!(out.lines().count(), 3, "one hit from each of the three panes: {out}");
+
+    // A pattern nobody printed is an error, not an empty success.
+    let (code, _, err) = h.cli(&["find-text", "zzz-nobody-printed-this"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane has"), "{err}");
+    // And the short name works.
+    let (code, _, _) = h.cli(&["findt", "redis"]).await;
+    assert_eq!(code, 0);
+    h.cli(&["kill-server"]).await;
+}
+
 // Keep the unused-import lint quiet for helper traits used through split().
 #[allow(dead_code)]
 fn _assert_traits<T: AsyncRead + AsyncWrite>() {}

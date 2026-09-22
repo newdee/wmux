@@ -304,6 +304,14 @@ Commands a script or a binding reaches for, beyond the obvious ones
 - `send-keys -X <copy-command>` drives copy mode (`search-backward`,
   `begin-selection`, `copy-selection`, ... — the tmux names).
 - `capture-pane -p [-e]` prints a pane, with the colours if asked.
+- `find-text pattern` looks through what **every pane has printed**, not
+  just the window names, and says where each hit is and how far back:
+  `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C` matches case, `-t` narrows to a
+  session or window, `-n` caps the hits per pane. Neither tmux nor
+  `find-window` can do this: `find-window` searches names and titles.
+- `notify [-T title] message` raises a desktop notification, and
+  `set -g notify on` sends one for every alert, so a job that ends while
+  the terminal is behind other windows still reaches you.
 
 Every window and pane command accepts `-t target` as in tmux:
 `session`, `session:window`, `:window`, `session:window.pane`, and the window

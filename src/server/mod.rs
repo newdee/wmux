@@ -1438,6 +1438,12 @@ impl Server {
     /// when `visual-bell`/`visual-activity` is on, the terminal bell otherwise.
     fn alert(&mut self, sid: SessionId, text: &str, is_bell: bool) {
         let visual = if is_bell { self.opts.visual_bell } else { self.opts.visual_activity };
+        // A window flag only reaches someone who is looking at the terminal;
+        // a notification reaches them when it is behind other windows.
+        if self.opts.notify {
+            let name = self.session(sid).map(|s| s.name.clone()).unwrap_or_else(|| "wmux".into());
+            crate::notify::notify(&format!("wmux: {name}"), text);
+        }
         let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
         for cid in ids {
             if visual {
@@ -2189,6 +2195,104 @@ impl Server {
                     lines[0] = "nothing to restore (see list-saved)".into();
                 }
                 Outcome::Text(lines.join("\n"))
+            }
+            // Whoever asked has already started it.
+            Cmd::StartServer => Outcome::Ok,
+            Cmd::FindText { pattern, target, case_sensitive, per_pane } => {
+                // Which panes to look in: everything, or one session (or one
+                // window of it) when -t says so.
+                // No -t at all searches every session. A -t names one
+                // session (`:1` meaning this client's, as everywhere else),
+                // optionally one window of it, optionally one pane of that,
+                // and says so when the target does not exist rather than
+                // reporting an empty search.
+                let (want_session, want_window, want_pane) = match &target {
+                    Some(t) => {
+                        let sid = match self.resolve_session(Some(t), cid) {
+                            Ok(s) => s,
+                            Err(e) => return Outcome::Error(e),
+                        };
+                        let widx = match t.window {
+                            Some(_) => match self.resolve_window(sid, Some(t)) {
+                                Ok(w) => Some(w),
+                                Err(e) => return Outcome::Error(e),
+                            },
+                            None => None,
+                        };
+                        let pid = match t.pane {
+                            Some(_) => {
+                                let w = widx.or_else(|| self.session(sid).map(|s| s.cur)).unwrap_or(0);
+                                match self.resolve_pane(sid, w, Some(t)) {
+                                    Ok(p) => Some(p),
+                                    Err(e) => return Outcome::Error(e),
+                                }
+                            }
+                            None => None,
+                        };
+                        (Some(sid), widx, pid)
+                    }
+                    None => (None, None, None),
+                };
+                let base = self.opts.base_index;
+                let pane_base = self.opts.pane_base_index;
+                // (label, pane id, rows) first, so the panes can be searched
+                // one at a time without holding a borrow of the tree.
+                let mut targets: Vec<(String, PaneId, usize)> = Vec::new();
+                for s in &self.sessions {
+                    if want_session.is_some_and(|w| w != s.id) {
+                        continue;
+                    }
+                    for (widx, w) in s.windows.iter().enumerate() {
+                        if want_window.is_some_and(|i| i != widx) {
+                            continue;
+                        }
+                        for (pidx, pid) in w.layout.panes().iter().enumerate() {
+                            if want_pane.is_some_and(|p| p != *pid) {
+                                continue;
+                            }
+                            let rows = w.pane(*pid).map(|p| p.rows as usize).unwrap_or(0);
+                            targets.push((format!("{}:{}.{}", s.name, widx + base, pidx + pane_base), *pid, rows));
+                        }
+                    }
+                }
+                let mut hits: Vec<(String, usize, String)> = Vec::new();
+                for (label, pid, rows) in targets {
+                    let Some(p) = self.find_pane_mut(pid) else { continue };
+                    let total = p.scrollback_len() + rows;
+                    for (abs, text) in p.search(&pattern, per_pane, case_sensitive) {
+                        // How far back from the newest line, which is what
+                        // says whether this is fresh or ancient.
+                        hits.push((label.clone(), total.saturating_sub(abs + 1), one_line(&text, 120)));
+                    }
+                }
+                if hits.is_empty() {
+                    return Outcome::Error(format!("no pane has: {}", one_line(&pattern, 60)));
+                }
+                // One column each for the pane and how far back it was, so a
+                // list of hits reads down the page.
+                let wide = hits.iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
+                let back_w = hits.iter().map(|(_, b, _)| b.to_string().len()).max().unwrap_or(1);
+                let lines: Vec<String> = hits
+                    .iter()
+                    .map(|(label, back, text)| format!("{label:<wide$}  -{back:>back_w$}  {text}"))
+                    .collect();
+                Outcome::Text(lines.join("\n"))
+            }
+            Cmd::Notify { title, message } => {
+                let title = match (title, cid) {
+                    (Some(t), Some(cid)) => self.expand_format(&t, cid),
+                    (Some(t), None) => t,
+                    (None, _) => "wmux".to_string(),
+                };
+                let message = match cid {
+                    Some(cid) => self.expand_format(&message, cid),
+                    None => message,
+                };
+                if crate::notify::notify(&title, &message) {
+                    Outcome::Ok
+                } else {
+                    Outcome::Error("no desktop to notify (a service, or session 0)".into())
+                }
             }
             Cmd::ListSaved => {
                 let dir = self.sessions_dir();

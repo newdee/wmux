@@ -812,3 +812,61 @@ clippy 与 `cargo fmt --check` 无输出。
 ## 结论（第十三次验收）
 
 第 4、5、6 轮连续零发现，验收通过。测试从 126 增加到 128（lib 87 / console 4 / e2e 37）。
+
+# 第十四次验收（2026-09-22）— 跨 pane 搜索、桌面通知、命令表补漏
+
+起因：查了 psmux（3.5k star，90+ 命令、140+ format 变量、30 hooks、control mode、
+monitor-* 和 remain-on-exit 一应俱全）之后确认，在"追 tmux 兼容"这条路上它已经比
+wmux 全，继续追只是做第二个 psmux。所以改做两边都没有的东西。
+
+本次新增：
+- `find-text [-C] [-n 条数] [-t 目标] 关键词`：在**所有 pane 打印过的内容**里找，
+  输出 `session:窗口.pane  -往回第几行  命中行`。tmux 的 `find-window` 只搜窗口名和
+  标题，psmux 的 copy-mode 搜索只能在单个 pane 里。
+- `notify [-T 标题] 消息` 和 `set -g notify on`：托盘气泡通知（Win10/11 会转成系统
+  通知）。选托盘气泡而不是 WinRT toast，是因为 toast 需要安装快捷方式注册
+  AppUserModelID，免安装 zip 版给不了。
+- 命令表补漏：`copy-mode` / `unbind-key` 能解析却不在 `COMMANDS` 里（`wmux unb` 报
+  unknown，`list-commands` 也看不到）；另补 `setw` / `showw` / `start-server` 三个
+  tmux 用户常打的名字。命令数 85 → 92。
+
+## 第 1 轮（不计数）— 视角：静态一致性
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `copy-mode`、`unbind-key` 在别名表里能解析，却没进 `COMMANDS` 常量：前缀解析不到、`list-commands` 不显示 | 补进常量，并新增单元断言：`COMMANDS` 每一项都必须能被解析且 `resolve_prefix` 解析回自己 |
+
+## 第 2 轮（不计数）— 视角：边界与退化输入
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `find-text " "`（纯空白）被当成有效搜索，会命中几乎所有行 | pattern 去掉首尾空白后为空就报 `pattern required` |
+| 2 | `-t b:99`（不存在的窗口）只报 `no pane has: xxx`，看不出是目标写错了 | 目标按 session → 窗口 → pane 逐层解析，各报各的错（`no window 99` / `no pane 5`） |
+| 3 | `-t b:0.5` 的 **pane 部分被完全忽略**，实际搜了整个窗口 | 解析 pane 并只搜那一个 |
+| 4 | 找不到时把整条 pattern 原样回显，300 字符的 pattern 刷屏 | 错误信息里截断到 60 字符 |
+
+## 第 3 轮（计数 1/3，无发现）— 视角：机制通路 + 性能
+
+数据（release 二进制）：4007 行 scrollback 的 pane 里命中最顶上那行 **17 ms**；
+跨 session 搜索标签与对齐正确（`big:0.1  - 8` / `other:0.0  -20`）；
+`-t big` 限定 session、`-t :1` 解析成当前 session 的窗口 1、`-t nosuch` 报
+`can't find session`；4000 行都匹配的常见 pattern 因 `-n` 默认 3 只返回 3 条，16 ms。
+
+## 第 4 轮（计数 2/3，无发现）— 视角：边界与退化输入
+
+数据：空 pattern / 纯空格都报 `pattern required`；`a.*b[c] \` 按字面匹配（不是正则）；
+中文、日文、emoji 都能命中；`-n abc`、`-x` 报错；200 字符 pattern 的错误信息被截断；
+`-t b:99` → `no window 99`，`-t b:0.5` → `no pane 5`；没有输出的 pane 正常报未命中；
+`notify` 空消息报错、400 字符消息和 200 字符标题都不崩、连发 10 条耗时 165 ms。
+
+## 第 5 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，131 项指纹均为 `BE06DD36FD5D73A4`；
+README 承诺的输出形状 `ft:0.0  -8  text` 用正则对着真实输出校验通过；
+`list-commands` 92 条且含 `find-text` / `notify`；`show -gv notify` 可读；
+clippy 与 `cargo fmt --check` 无输出。
+
+## 结论（第十四次验收）
+
+第 3、4、5 轮连续零发现，验收通过。测试 128 → 131（lib 89 / console 4 / e2e 38）。
+桌面通知的视觉效果需要在有桌面的会话里人工确认（开发机跑在 session 0，看不到气泡）。

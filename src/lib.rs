@@ -9,6 +9,7 @@ pub mod format;
 pub mod ipc;
 pub mod keys;
 pub mod logger;
+pub mod notify;
 pub mod resurrect;
 pub mod server;
 pub mod winsec;

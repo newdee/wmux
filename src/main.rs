@@ -28,6 +28,8 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   set-environment name value   show-environment   refresh-client   select-layout [-n|-p|-E]
   choose-client (prefix D)   display-menu [-T title] name key command ...   (prefix > / <)
   display-popup [-E] [-C] [-w W] [-h H] [-d dir] [command...]   wait-for [-L|-U|-S] channel
+  find-text [-C] [-n hits] [-t target] pattern   (search what every pane printed)
+  notify [-T title] message   (a desktop notification; `set -g notify on` for alerts)
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)

@@ -424,6 +424,27 @@ pub enum Cmd {
     },
     /// `list-saved`: saved sessions, newest first.
     ListSaved,
+    /// `start-server`: the server is already running by the time anything
+    /// reads this, so it only has to be accepted.
+    StartServer,
+    /// `notify [-T title] message`: a desktop notification, so a script can
+    /// reach you when the terminal is not on screen.
+    Notify {
+        title: Option<String>,
+        message: String,
+    },
+    /// `find-text [-C] [-n hits] [-t target] pattern`: look through what
+    /// every pane has printed, not just the window names, and say where the
+    /// matches are.
+    FindText {
+        pattern: String,
+        /// Limit to a session, or to one window of it.
+        target: Option<Target>,
+        /// `-C`: match case, which is otherwise ignored.
+        case_sensitive: bool,
+        /// `-n`: how many hits to report per pane.
+        per_pane: usize,
+    },
     /// `delete-saved name`: forget a saved session.
     DeleteSaved {
         name: String,
@@ -1000,6 +1021,25 @@ impl fmt::Display for Cmd {
             }
             Cmd::ListSaved => f.write_str("list-saved"),
             Cmd::DeleteSaved { name } => write!(f, "delete-saved {}", quote(name)),
+            Cmd::StartServer => f.write_str("start-server"),
+            Cmd::Notify { title, message } => {
+                f.write_str("notify")?;
+                if let Some(t) = title {
+                    write!(f, " -T {}", quote(t))?;
+                }
+                write!(f, " {}", quote(message))
+            }
+            Cmd::FindText { pattern, target, case_sensitive, per_pane } => {
+                f.write_str("find-text")?;
+                if *case_sensitive {
+                    f.write_str(" -C")?;
+                }
+                if *per_pane != 3 {
+                    write!(f, " -n {per_pane}")?;
+                }
+                fmt_target(f, target)?;
+                write!(f, " {}", quote(pattern))
+            }
             Cmd::ClearHistory => f.write_str("clear-history"),
             Cmd::SetCwd { target, dir } => {
                 f.write_str("set-cwd")?;
@@ -1199,6 +1239,7 @@ pub const COMMANDS: &[&str] = &[
     "choose-window",
     "clear-history",
     "command-prompt",
+    "copy-mode",
     "confirm-before",
     "delete-buffer",
     "delete-saved",
@@ -1207,6 +1248,7 @@ pub const COMMANDS: &[&str] = &[
     "display-message",
     "display-popup",
     "display-panes",
+    "find-text",
     "find-window",
     "has-session",
     "if-shell",
@@ -1234,6 +1276,7 @@ pub const COMMANDS: &[&str] = &[
     "new-window",
     "next-layout",
     "next-window",
+    "notify",
     "paste-buffer",
     "pipe-pane",
     "previous-layout",
@@ -1260,16 +1303,20 @@ pub const COMMANDS: &[&str] = &[
     "set-environment",
     "set-hook",
     "set-option",
+    "set-window-option",
     "show-buffer",
     "show-environment",
     "show-hooks",
     "show-messages",
     "show-options",
+    "show-window-options",
     "source-file",
     "split-window",
+    "start-server",
     "swap-pane",
     "swap-window",
     "switch-client",
+    "unbind-key",
     "version",
     "wait-for",
 ];
@@ -1328,6 +1375,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "join-pane" | "joinp" => "join-pane",
         "move-pane" | "movep" => "join-pane",
         "find-window" | "findw" => "find-window",
+        "find-text" | "findt" => "find-text",
         "select-layout" | "selectl" => "select-layout",
         "next-layout" | "nextl" => "next-layout",
         "previous-layout" | "prevl" => "previous-layout",
@@ -1360,10 +1408,16 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "confirm-before" | "confirm" => "confirm-before",
         "bind-key" | "bind" => "bind-key",
         "unbind-key" | "unbind" => "unbind-key",
-        "set-option" | "set" => "set-option",
-        "show-options" | "show-option" | "show" => "show-options",
+        // Window and pane scopes are the server's here, so tmux's window
+        // forms are the same command under another name.
+        "set-option" | "set" | "set-window-option" | "setw" => "set-option",
+        "show-options" | "show-option" | "show" | "show-window-options" | "show-window-option" | "showw" => {
+            "show-options"
+        }
+        "start-server" => "start-server",
         "switch-client" | "switchc" => "switch-client",
         "list-keys" | "lsk" => "list-keys",
+        "notify" => "notify",
         "choose-tree" => "choose-tree",
         "choose-window" => "choose-window",
         "choose-session" => "choose-session",
@@ -2393,6 +2447,50 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::Version
         }
+        "start-server" => {
+            // Any command starts the server; this one does nothing else, so
+            // that a `.tmux.conf` beginning with it still loads.
+            while a.is_flag() {
+                a.next();
+            }
+            a.none_left(n)?;
+            Cmd::StartServer
+        }
+        "find-text" => {
+            let (mut target, mut case_sensitive, mut per_pane) = (None, false, 3usize);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-C" => case_sensitive = true,
+                    "-i" => case_sensitive = false,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-n" => {
+                        per_pane = a.value("-n")?.parse().map_err(|_| "find-text: -n takes a number".to_string())?;
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let pattern = a.rest().join(" ");
+            // Whitespace alone would match most lines of most panes, which
+            // is never what anyone meant to ask for.
+            if pattern.trim().is_empty() {
+                return Err("find-text: pattern required".into());
+            }
+            Cmd::FindText { pattern, target, case_sensitive, per_pane: per_pane.clamp(1, 100) }
+        }
+        "notify" => {
+            let mut title = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-T" => title = Some(a.value("-T")?.to_string()),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let message = a.rest().join(" ");
+            if message.is_empty() {
+                return Err("notify: message required".into());
+            }
+            Cmd::Notify { title, message }
+        }
         _ => unreachable!(),
     };
     Ok(cmd)
@@ -2825,6 +2923,21 @@ mod tests {
         assert!(matches!(p("pipep cat"), Cmd::PipePane { .. }));
         assert!(matches!(p("wait x"), Cmd::WaitFor { .. }));
         assert!(matches!(p("choose-c"), Cmd::ChooseClient));
+        // Commands that exist must be in the table, or a prefix of them is
+        // "unknown" and `list-commands` does not mention them.
+        assert!(matches!(p("copy-m"), Cmd::CopyMode { .. }));
+        assert!(matches!(p("unb x"), Cmd::UnbindKey { .. }));
+        assert!(matches!(p("start-s"), Cmd::StartServer));
+        // tmux's window-scoped spellings are the same command here.
+        assert_eq!(p("setw -g mode-keys vi"), p("set -g mode-keys vi"));
+        assert!(matches!(p("showw -gv mouse"), Cmd::ShowOptions { .. }));
+        for name in COMMANDS {
+            // Listed means the parser knows it (it may still want arguments)
+            // and the name resolves to itself rather than being ambiguous.
+            let err = parse_line(name).err().unwrap_or_default();
+            assert!(!err.contains("unknown command"), "{name}: {err}");
+            assert_eq!(resolve_prefix(name).unwrap(), *name, "{name} does not resolve to itself");
+        }
         // "display" alone is the message command, as in tmux.
         assert!(matches!(p("display hi"), Cmd::DisplayMessage { .. }));
         assert!(parse_line("displ hi").unwrap_err().contains("ambiguous"));
