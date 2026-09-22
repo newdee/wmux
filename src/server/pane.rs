@@ -777,13 +777,16 @@ impl Pane {
     /// kept as escape sequences (`capture-pane -e`, `save-history`). One
     /// pass, for the same reason as `search`: `capture-pane -S -` and
     /// `save-history all` ask for thousands of lines.
-    pub fn lines_from(&mut self, start: usize, escapes: bool) -> Vec<String> {
+    pub fn lines_from(&mut self, start: usize, escapes: bool, join: bool) -> Vec<String> {
         let total = self.scrollback_len();
         let rows = self.rows as usize;
         let cols = self.cols;
         let s = self.parser.screen_mut();
         let keep = s.scrollback();
-        let mut out = Vec::with_capacity((total + rows).saturating_sub(start));
+        let mut out: Vec<String> = Vec::with_capacity((total + rows).saturating_sub(start));
+        // With `join`, a row the terminal wrapped continues the row above
+        // it (`capture-pane -J`): one line, as the program printed it.
+        let mut continues = false;
         for abs in start..total + rows {
             let (offset, row) = if abs < total { (total - abs, 0usize) } else { (0, abs - total) };
             s.set_scrollback(offset);
@@ -792,11 +795,19 @@ impl Pane {
             } else {
                 s.rows(0, cols).nth(row).unwrap_or_default()
             };
-            text.truncate(text.trim_end().len());
-            if text.contains('\x1b') {
+            let wrapped = join && s.row_wrapped(row as u16);
+            if !wrapped {
+                text.truncate(text.trim_end().len());
+            }
+            if text.contains('\x1b') && !wrapped {
                 text.push_str("\x1b[0m"); // never leak a colour into the next line
             }
-            out.push(text);
+            if continues && let Some(last) = out.last_mut() {
+                last.push_str(&text);
+            } else {
+                out.push(text);
+            }
+            continues = wrapped;
         }
         s.set_scrollback(keep);
         // Trailing blank lines are noise; a line that is only a reset is blank too.

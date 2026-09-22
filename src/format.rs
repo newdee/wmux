@@ -58,8 +58,41 @@ pub struct Context {
     pub pane_activity: i64,
     /// Unix time the program exited, 0 while it runs.
     pub pane_dead_time: i64,
+    /// Unix times: the session's last output and last attach.
+    pub session_activity: i64,
+    pub session_last_attached: i64,
+    /// Unix time of the window's last output.
+    pub window_activity_time: i64,
+    /// First / last window of the session.
+    pub window_start: bool,
+    pub window_end: bool,
+    /// The layout preset the window was last given, if any.
+    pub window_layout: String,
+    /// The pane was the active one before the current.
+    pub pane_last: bool,
+    /// The pane's cell rectangle in the window, and which edges it touches.
+    pub pane_top: u16,
+    pub pane_left: u16,
+    pub pane_bottom: u16,
+    pub pane_right: u16,
+    pub pane_at_top: bool,
+    pub pane_at_bottom: bool,
+    pub pane_at_left: bool,
+    pub pane_at_right: bool,
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    /// Lines in the scrollback, and how many it may hold.
+    pub history_size: usize,
+    pub history_limit: usize,
+    /// "copy-mode" while in copy mode, else empty.
+    pub pane_mode: String,
     pub client_width: u16,
     pub client_height: u16,
+    pub client_name: String,
+    pub client_session: String,
+    pub client_created: i64,
+    pub client_activity: i64,
+    pub client_prefix: bool,
     pub host: String,
     pub socket: String,
 }
@@ -171,8 +204,33 @@ impl Context {
                     self.pane_dead_time.to_string()
                 }
             }
+            "session_activity" => self.session_activity.to_string(),
+            "session_last_attached" => self.session_last_attached.to_string(),
+            "window_activity" => self.window_activity_time.to_string(),
+            "window_start_flag" => flag(self.window_start),
+            "window_end_flag" => flag(self.window_end),
+            "window_layout" => self.window_layout.clone(),
+            "pane_last" => flag(self.pane_last),
+            "pane_top" => self.pane_top.to_string(),
+            "pane_left" => self.pane_left.to_string(),
+            "pane_bottom" => self.pane_bottom.to_string(),
+            "pane_right" => self.pane_right.to_string(),
+            "pane_at_top" => flag(self.pane_at_top),
+            "pane_at_bottom" => flag(self.pane_at_bottom),
+            "pane_at_left" => flag(self.pane_at_left),
+            "pane_at_right" => flag(self.pane_at_right),
+            "cursor_x" => self.cursor_x.to_string(),
+            "cursor_y" => self.cursor_y.to_string(),
+            "history_size" => self.history_size.to_string(),
+            "history_limit" => self.history_limit.to_string(),
+            "pane_mode" => self.pane_mode.clone(),
             "client_width" => self.client_width.to_string(),
             "client_height" => self.client_height.to_string(),
+            "client_name" => self.client_name.clone(),
+            "client_session" => self.client_session.clone(),
+            "client_created" => self.client_created.to_string(),
+            "client_activity" => self.client_activity.to_string(),
+            "client_prefix" => flag(self.client_prefix),
             "host" | "H" => self.host.clone(),
             "host_short" | "h" => self.host.split('.').next().unwrap_or("").to_string(),
             "socket_path" => self.socket.clone(),
@@ -241,9 +299,11 @@ pub fn expand(
                     let name = name.trim();
                     if let Some(rest) = name.strip_prefix('?') {
                         // The chosen branch is a format in its own right.
-                        let branch = conditional(rest, ctx);
+                        let branch = conditional(rest, ctx, cache, now);
                         flush(&mut out, &mut text, style);
                         out.append(&mut expand(&branch, ctx, cache, style, now));
+                    } else if let Some(v) = compare(name, ctx, cache, now) {
+                        text.push_str(&v);
                     } else if let Some(v) = ctx.var(name) {
                         text.push_str(&v);
                     }
@@ -284,20 +344,88 @@ pub fn expand(
 /// `var!=value`. A bare name is true when it is neither empty nor "0".
 /// Either branch may itself contain `#{...}` and `#[...]` pieces, which the
 /// caller expands, so only the text is chosen here.
-fn conditional(spec: &str, ctx: &Context) -> String {
+fn conditional(spec: &str, ctx: &Context, cache: &mut ShellCache, now: chrono::DateTime<chrono::Local>) -> String {
     let parts = split_top_level(spec);
     let cond = parts.first().map(String::as_str).unwrap_or("");
     let yes = parts.get(1).cloned().unwrap_or_default();
     let no = parts.get(2).cloned().unwrap_or_default();
-    let truth = if let Some((name, want)) = cond.split_once("==") {
+    let truth = if cond.contains("#{") {
+        // A format as the condition (`#{?#{==:#{host},box},…}`): its
+        // expansion decides.
+        truthy(&plain_text(cond, ctx, cache, now))
+    } else if let Some((name, want)) = cond.split_once("==") {
         ctx.var(name.trim()).unwrap_or_default() == want.trim()
     } else if let Some((name, want)) = cond.split_once("!=") {
         ctx.var(name.trim()).unwrap_or_default() != want.trim()
     } else {
-        let v = ctx.var(cond.trim()).unwrap_or_default();
-        !v.is_empty() && v != "0"
+        truthy(&ctx.var(cond.trim()).unwrap_or_default())
     };
     if truth { yes } else { no }
+}
+
+/// tmux's idea of true for a format's value: something, and not "0".
+fn truthy(v: &str) -> bool {
+    !v.is_empty() && v != "0"
+}
+
+/// A format expanded to plain text.
+fn plain_text(f: &str, ctx: &Context, cache: &mut ShellCache, now: chrono::DateTime<chrono::Local>) -> String {
+    expand(f, ctx, cache, Style::default(), now).into_iter().map(|s| s.text).collect()
+}
+
+/// tmux's comparison and matching forms, each operand a format:
+/// `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}`
+/// (numbers compared as numbers when both are), `#{&&:a,b}` `#{||:a,b}`
+/// (by truth), `#{m:pattern,string}` (a glob with `*` and `?`; `m/i:`
+/// ignores case). The answer is "1" or "0"; None for anything else.
+fn compare(name: &str, ctx: &Context, cache: &mut ShellCache, now: chrono::DateTime<chrono::Local>) -> Option<String> {
+    let (op, rest) = name.split_once(':')?;
+    let (op, flags) = op.split_once('/').unwrap_or((op, ""));
+    if !matches!(op, "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||" | "m") {
+        return None;
+    }
+    let parts = split_top_level(rest);
+    let a = plain_text(parts.first().map(String::as_str).unwrap_or(""), ctx, cache, now);
+    let b = plain_text(parts.get(1).map(String::as_str).unwrap_or(""), ctx, cache, now);
+    let numbers = a.trim().parse::<f64>().ok().zip(b.trim().parse::<f64>().ok());
+    let answer = match op {
+        "==" => a == b,
+        "!=" => a != b,
+        "<" | ">" | "<=" | ">=" => {
+            let ord = match numbers {
+                Some((x, y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                None => a.cmp(&b),
+            };
+            match op {
+                "<" => ord.is_lt(),
+                ">" => ord.is_gt(),
+                "<=" => ord.is_le(),
+                _ => ord.is_ge(),
+            }
+        }
+        "&&" => truthy(&a) && truthy(&b),
+        "||" => truthy(&a) || truthy(&b),
+        _ => glob_matches(&a, &b, flags.contains('i')),
+    };
+    Some(if answer { "1".into() } else { "0".into() })
+}
+
+/// `*` any run, `?` any one character, everything else itself.
+fn glob_matches(pattern: &str, text: &str, ignore_case: bool) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = if ignore_case {
+        (pattern.to_lowercase().chars().collect(), text.to_lowercase().chars().collect())
+    } else {
+        (pattern.chars().collect(), text.chars().collect())
+    };
+    fn go(p: &[char], t: &[char]) -> bool {
+        match p.first() {
+            None => t.is_empty(),
+            Some('*') => (0..=t.len()).any(|i| go(&p[1..], &t[i..])),
+            Some('?') => !t.is_empty() && go(&p[1..], &t[1..]),
+            Some(c) => t.first() == Some(c) && go(&p[1..], &t[1..]),
+        }
+    }
+    go(&p, &t)
 }
 
 /// Split on commas that are not inside `#{...}`, `#(...)` or `#[...]`.
@@ -467,6 +595,99 @@ mod tests {
         chrono::Local.with_ymd_and_hms(2026, 9, 12, 18, 30, 0).unwrap()
     }
     use chrono::TimeZone;
+
+    #[test]
+    fn the_newer_variables_answer_from_their_fields() {
+        let c = Context {
+            session_activity: 10,
+            session_last_attached: 11,
+            window_activity_time: 12,
+            window_start: true,
+            window_end: false,
+            window_layout: "tiled".into(),
+            pane_last: true,
+            pane_top: 1,
+            pane_left: 2,
+            pane_bottom: 3,
+            pane_right: 4,
+            pane_at_top: false,
+            pane_at_bottom: true,
+            pane_at_left: true,
+            pane_at_right: false,
+            cursor_x: 5,
+            cursor_y: 6,
+            history_size: 7,
+            history_limit: 8,
+            pane_mode: "copy-mode".into(),
+            client_name: "client-9".into(),
+            client_session: "s".into(),
+            client_created: 13,
+            client_activity: 14,
+            client_prefix: true,
+            ..Default::default()
+        };
+        let want = [
+            ("session_activity", "10"),
+            ("session_last_attached", "11"),
+            ("window_activity", "12"),
+            ("window_start_flag", "1"),
+            ("window_end_flag", "0"),
+            ("window_layout", "tiled"),
+            ("pane_last", "1"),
+            ("pane_top", "1"),
+            ("pane_left", "2"),
+            ("pane_bottom", "3"),
+            ("pane_right", "4"),
+            ("pane_at_top", "0"),
+            ("pane_at_bottom", "1"),
+            ("pane_at_left", "1"),
+            ("pane_at_right", "0"),
+            ("cursor_x", "5"),
+            ("cursor_y", "6"),
+            ("history_size", "7"),
+            ("history_limit", "8"),
+            ("pane_mode", "copy-mode"),
+            ("client_name", "client-9"),
+            ("client_session", "s"),
+            ("client_created", "13"),
+            ("client_activity", "14"),
+            ("client_prefix", "1"),
+        ];
+        for (name, value) in want {
+            assert_eq!(c.var(name).as_deref(), Some(value), "{name}");
+        }
+        assert!(c.var("t:client_created").is_some(), "times take the t: modifier");
+    }
+
+    #[test]
+    fn comparisons_answer_one_or_zero() {
+        let mut cache = ShellCache::default();
+        let c = Context { session: "work".into(), window_index: 3, host: "box.lan".into(), ..Default::default() };
+        let mut t = |f: &str| plain_text(f, &c, &mut cache, now());
+        assert_eq!(t("#{==:#{session_name},work}"), "1");
+        assert_eq!(t("#{==:#{session_name},home}"), "0");
+        assert_eq!(t("#{!=:#{session_name},home}"), "1");
+        // Numbers as numbers, text as text.
+        assert_eq!(t("#{<:#{window_index},10}"), "1");
+        assert_eq!(t("#{>:#{window_index},10}"), "0");
+        assert_eq!(t("#{>=:3,3}"), "1");
+        assert_eq!(t("#{<:abc,abd}"), "1");
+        assert_eq!(t("#{&&:1,#{==:a,a}}"), "1");
+        assert_eq!(t("#{&&:1,0}"), "0");
+        assert_eq!(t("#{||:0,#{session_name}}"), "1");
+        assert_eq!(t("#{m:box*,#{host}}"), "1");
+        assert_eq!(t("#{m:BOX*,#{host}}"), "0");
+        assert_eq!(t("#{m/i:BOX?lan,#{host}}"), "1");
+        assert_eq!(t("#{m:*.com,#{host}}"), "0");
+        // Inside a conditional, and a comma inside the second operand.
+        assert_eq!(t("#{?#{==:#{host},box.lan},yes,no}"), "yes");
+        assert_eq!(t("#{?#{==:#{host},nope},yes,no}"), "no");
+        assert_eq!(t("#{==:a,b,c}"), "0");
+        assert_eq!(t("#{==:a}"), "0");
+        // Not a comparison: left to the variables.
+        assert_eq!(t("#{=3:session_name}"), "wor");
+        assert_eq!(t("#{nonsense:x,y}"), "");
+    }
 
     #[test]
     fn conditionals_pick_a_branch() {

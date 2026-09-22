@@ -79,6 +79,11 @@ enum PromptKind {
     Search {
         back: bool,
     },
+    /// `f` in a picker: the input filters its lines as it is typed;
+    /// Escape puts `prev` back.
+    Filter {
+        prev: String,
+    },
 }
 
 struct Prompt {
@@ -99,7 +104,7 @@ struct Drag {
 /// rebuilt from the live sessions at every render; the selection follows the
 /// item's identity, so windows appearing or vanishing meanwhile do not move it.
 /// What one line of the picker stands for.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChooserItem {
     /// A session line, or one of its windows.
     Tree(SessionId, Option<WindowId>),
@@ -145,9 +150,30 @@ struct Chooser {
     lines: Vec<String>,
     sel: usize,
     top: usize,
+    /// Only lines holding this (case-insensitively) are shown; empty shows all.
+    filter: String,
+    /// Items marked with `t`, which `x` (and `r`) act on instead of the
+    /// current one. Kept by identity, so a live rebuild does not lose them.
+    tagged: Vec<ChooserItem>,
 }
 
 impl Chooser {
+    fn new(kind: ChooserKind, items: Vec<ChooserItem>, lines: Vec<String>, sel: usize) -> Chooser {
+        Chooser { kind, items, lines, sel, top: 0, filter: String::new(), tagged: Vec::new() }
+    }
+
+    fn is_tagged(&self, item: &ChooserItem) -> bool {
+        self.tagged.contains(item)
+    }
+
+    /// The items an action key works on: the tagged ones, else the current.
+    fn targets(&self) -> Vec<ChooserItem> {
+        if !self.tagged.is_empty() {
+            return self.tagged.clone();
+        }
+        self.items.get(self.sel).copied().into_iter().collect()
+    }
+
     fn step(&mut self, delta: i64) {
         let last = self.items.len().saturating_sub(1) as i64;
         let from = self.sel;
@@ -226,6 +252,10 @@ struct Client {
     pending: std::collections::VecDeque<ServerMsg>,
     /// Status-line column ranges of the window labels last drawn (clicks).
     window_hits: Vec<(u16, u16)>,
+    /// When the client connected, and when it last sent a key
+    /// (`#{client_created}`, `#{client_activity}`).
+    created: Instant,
+    last_activity: Instant,
 }
 
 impl Client {
@@ -863,7 +893,7 @@ impl Server {
         for id in ids {
             let Some(p) = self.find_pane_mut(id) else { continue };
             let total = p.scrollback_len() + p.rows as usize;
-            let lines = p.lines_from(total.saturating_sub(want), true);
+            let lines = p.lines_from(total.saturating_sub(want), true, false);
             if !lines.is_empty() {
                 out.insert(id, lines);
             }
@@ -1076,7 +1106,7 @@ impl Server {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
         let mut n = 0;
         let mut errors = Vec::new();
-        let (lines, unterminated) = logical_lines(&text);
+        let (lines, unterminated) = logical_lines(&text, &|cond| self.config_condition(cond));
         if let Some(line_no) = unterminated {
             errors.push(format!("{path}:{line_no}: %if without %endif; the rest of the file was skipped"));
         }
@@ -1338,11 +1368,16 @@ impl Server {
                         pending_bell: false,
                         pending: std::collections::VecDeque::new(),
                         window_hits: Vec::new(),
+                        created: Instant::now(),
+                        last_activity: Instant::now(),
                     },
                 );
             }
             Event::Gone(id) => {
-                self.clients.remove(&id);
+                let was_in = self.clients.remove(&id).and_then(|c| c.session);
+                if let Some(sid) = was_in {
+                    self.fit_session(sid, None); // smallest/largest: one client fewer
+                }
                 // A client that went away while waiting must not hold a
                 // `wait-for` lock, or nothing could ever take it again.
                 let mut freed: Vec<String> = Vec::new();
@@ -1437,7 +1472,7 @@ impl Server {
                 c.rows = rows.max(1);
                 c.last_grid = None;
                 if let Some(sid) = c.session {
-                    self.resize_session(sid, cols, rows);
+                    self.fit_session(sid, Some(cid));
                 }
             }
             ClientMsg::Detach => self.detach(cid, "detached"),
@@ -1472,7 +1507,6 @@ impl Server {
             }
             Outcome::Pending => {}
             Outcome::Attach(sid) => {
-                let (cols, rows) = (c.cols, c.rows);
                 let name = self.sessions.iter().find(|s| s.id == sid).map(|s| s.name.clone()).unwrap_or_default();
                 let mouse = self.opts.mouse;
                 let config_errors = self.config_errors.take();
@@ -1492,7 +1526,9 @@ impl Server {
                 c.swallow_up.clear();
                 c.send(ServerMsg::Attached { session: name });
                 c.send(ServerMsg::SetMouse(mouse));
-                self.resize_session(sid, cols, rows);
+                // `window-size manual` keeps the size the session has (its
+                // saved or `-x/-y` one); the rest take it from the clients.
+                self.fit_session(sid, Some(cid));
                 if let Some(s) = self.session_mut(sid) {
                     s.last_used = Instant::now();
                 }
@@ -1621,11 +1657,12 @@ impl Server {
 
     fn detach(&mut self, cid: ClientId, reason: &str) {
         if let Some(c) = self.clients.get_mut(&cid)
-            && c.session.take().is_some()
+            && let Some(sid) = c.session.take()
         {
             c.last_grid = None;
             c.popup = None; // its program goes with the client that opened it
             c.send(ServerMsg::Detached { reason: reason.to_string() });
+            self.fit_session(sid, None); // smallest/largest: one client fewer
             self.fire_hook("client-detached", None);
         }
     }
@@ -1764,6 +1801,25 @@ impl Server {
             for w in &mut s.windows {
                 w.relayout(area, border);
             }
+        }
+    }
+
+    /// Size a session from its attached clients the way `window-size` says:
+    /// `latest` takes the client that was used last (`latest` here, when it
+    /// is attached), `smallest` and `largest` fold every attached client,
+    /// and `manual` leaves the size to `resize-window`.
+    fn fit_session(&mut self, sid: SessionId, latest: Option<ClientId>) {
+        let sizes = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| (c.cols, c.rows));
+        let pick = match self.opts.window_size.as_str() {
+            "smallest" => sizes.reduce(|a, b| (a.0.min(b.0), a.1.min(b.1))),
+            "largest" => sizes.reduce(|a, b| (a.0.max(b.0), a.1.max(b.1))),
+            "manual" => None,
+            _ => {
+                latest.and_then(|id| self.clients.get(&id)).filter(|c| c.session == Some(sid)).map(|c| (c.cols, c.rows))
+            }
+        };
+        if let Some((cols, rows)) = pick {
+            self.resize_session(sid, cols, rows);
         }
     }
 
@@ -2806,7 +2862,13 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::SelectPane { sel } => {
-                let (sid, widx, _) = match self.resolve(None, cid) {
+                // A full target names the window too; anything else is in
+                // the client's current window.
+                let target = match &sel {
+                    PaneSel::Target(t) => Some(t.clone()),
+                    _ => None,
+                };
+                let (sid, widx, named) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
@@ -2833,6 +2895,7 @@ impl Server {
                     PaneSel::Prev => order.get((cur + order.len().max(1) - 1) % order.len().max(1)).copied(),
                     PaneSel::Last => w.last_pane.filter(|l| w.pane(*l).is_some()),
                     PaneSel::Index(i) => order.get(i.wrapping_sub(pane_base)).copied(),
+                    PaneSel::Target(_) => Some(named),
                 };
                 match next {
                     Some(id) if id != w.active => {
@@ -3109,7 +3172,7 @@ impl Server {
                         if let Some(c) = self.clients.get_mut(&cid) {
                             c.prompt = None;
                             c.overlay = None;
-                            c.chooser = Some(Chooser { kind: ChooserKind::Found, items, lines, sel: 0, top: 0 });
+                            c.chooser = Some(Chooser::new(ChooserKind::Found, items, lines, 0));
                         }
                         Outcome::Ok
                     }
@@ -3322,8 +3385,8 @@ impl Server {
                 }
                 Outcome::Ok
             }
-            Cmd::CopyMode { page_up } => {
-                let (_, _, pid) = match self.resolve(None, cid) {
+            Cmd::CopyMode { page_up, target } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
@@ -3563,11 +3626,11 @@ impl Server {
                     return Outcome::Ok;
                 }
                 let c = self.clients.get_mut(&cid).unwrap();
-                let (cols, rows) = (c.cols, c.rows);
                 c.last_session = Some(cur);
                 c.session = Some(sid);
                 c.last_grid = None;
-                self.resize_session(sid, cols, rows);
+                self.fit_session(sid, Some(cid));
+                self.fit_session(cur, None); // one client fewer there
                 if let Some(s) = self.session_mut(sid) {
                     s.last_used = Instant::now();
                 }
@@ -3585,7 +3648,7 @@ impl Server {
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { kind: ChooserKind::Buffers, items, lines, sel: 0, top: 0 });
+                c.chooser = Some(Chooser::new(ChooserKind::Buffers, items, lines, 0));
                 Outcome::Ok
             }
             Cmd::FocusPane { pane } => {
@@ -3625,7 +3688,7 @@ impl Server {
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { kind: ChooserKind::Jobs, items, lines, sel, top: 0 });
+                c.chooser = Some(Chooser::new(ChooserKind::Jobs, items, lines, sel));
                 Outcome::Ok
             }
             Cmd::ChooseClient => {
@@ -3637,7 +3700,7 @@ impl Server {
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { kind: ChooserKind::Clients, items, lines, sel: 0, top: 0 });
+                c.chooser = Some(Chooser::new(ChooserKind::Clients, items, lines, 0));
                 Outcome::Ok
             }
             Cmd::DisplayMenu { title, items: entries } => {
@@ -3666,7 +3729,7 @@ impl Server {
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
-                let mut ch = Chooser { kind: ChooserKind::Menu(entries), items, lines, sel: 0, top: 0 };
+                let mut ch = Chooser::new(ChooserKind::Menu(entries), items, lines, 0);
                 ch.settle(1);
                 c.chooser = Some(ch);
                 Outcome::Ok
@@ -3806,7 +3869,7 @@ impl Server {
                 // replaces it, or its keys would go to an invisible prompt.
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser { kind, items, lines, sel, top: 0 });
+                c.chooser = Some(Chooser::new(kind, items, lines, sel));
                 Outcome::Ok
             }
             Cmd::ListKeys => {
@@ -3854,14 +3917,14 @@ impl Server {
                     None => Outcome::Error("no such pane".into()),
                 }
             }
-            Cmd::CapturePane { target, history, escapes } => {
+            Cmd::CapturePane { target, history, escapes, join } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
                 let from = p.scrollback_len().saturating_sub(history);
-                Outcome::Text(p.lines_from(from, escapes).join("\n"))
+                Outcome::Text(p.lines_from(from, escapes, join).join("\n"))
             }
             Cmd::ClearHistory => {
                 let (_, _, pid) = match self.resolve(None, cid) {
@@ -3969,6 +4032,26 @@ impl Server {
         self.expand_with_shells(s, &ctx, pid)
     }
 
+    /// A `%if` condition of the config file: a format, true when it expands
+    /// to something other than nothing or "0". The server-wide variables
+    /// (host, socket, version) are what there is; a config is read before
+    /// there are sessions. `#(command)` pieces are not run for it.
+    fn config_condition(&self, cond: &str) -> bool {
+        let ctx = crate::format::Context {
+            host: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            socket: self.socket.clone(),
+            ..Default::default()
+        };
+        let mut cache = crate::format::ShellCache::default();
+        let text: String =
+            crate::format::expand(cond, &ctx, &mut cache, render::Style::default(), chrono::Local::now())
+                .into_iter()
+                .map(|s| s.text)
+                .collect();
+        let text = text.trim();
+        !text.is_empty() && text != "0"
+    }
+
     /// `s` expanded for `ctx` as text, for a one-shot answer
     /// (`display-message -p`, `jobs -F`): a `#(command)` the status line has
     /// not run yet is run here, with a short leash, since tmux waits for it
@@ -4010,15 +4093,24 @@ impl Server {
             socket: self.socket.clone(),
             ..Default::default()
         };
+        let now = chrono::Local::now().timestamp();
+        let unix = |i: Instant| now - i.elapsed().as_secs() as i64;
         let Some(sess) = self.session(sid) else { return ctx };
         ctx.session = sess.name.clone();
         ctx.session_id = sess.id;
         ctx.session_windows = sess.windows.len();
         ctx.session_attached = self.clients.values().filter(|c| c.session == Some(sid)).count();
         ctx.session_created = sess.created_at;
+        ctx.session_activity = sess.windows.iter().map(|w| unix(w.last_output)).max().unwrap_or(sess.created_at);
+        ctx.session_last_attached = unix(sess.last_used);
         if let Some(c) = cid.and_then(|c| self.clients.get(&c)) {
             ctx.client_width = c.cols;
             ctx.client_height = c.rows;
+            ctx.client_name = format!("client-{}", c.id);
+            ctx.client_session = c.session.and_then(|s| self.session(s)).map(|s| s.name.clone()).unwrap_or_default();
+            ctx.client_created = unix(c.created);
+            ctx.client_activity = unix(c.last_activity);
+            ctx.client_prefix = c.prefix;
         }
         let Some(w) = sess.windows.get(widx) else { return ctx };
         ctx.window = w.name.clone();
@@ -4034,6 +4126,10 @@ impl Server {
         ctx.window_activity = w.alert_activity;
         ctx.window_silence = w.alert_silence;
         ctx.flags = w.flags(widx == sess.cur, Some(w.id) == sess.last);
+        ctx.window_activity_time = unix(w.last_output);
+        ctx.window_start = widx == 0;
+        ctx.window_end = widx + 1 == sess.windows.len();
+        ctx.window_layout = w.layout_preset.map(|p| p.name().to_string()).unwrap_or_default();
         let pid = pid.unwrap_or(w.active);
         let order = w.layout.panes();
         ctx.pane_index = order.iter().position(|p| *p == pid).unwrap_or(0) + self.opts.pane_base_index;
@@ -4051,10 +4147,27 @@ impl Server {
             ctx.pane_dead_status = p.exit_code;
             ctx.pane_in_mode = p.copy.is_some();
             ctx.pane_pid = p.pid;
-            let now = chrono::Local::now().timestamp();
-            ctx.pane_start_time = now - p.spawned_at.elapsed().as_secs() as i64;
-            ctx.pane_activity = now - p.last_output.elapsed().as_secs() as i64;
-            ctx.pane_dead_time = p.died_at.map(|d| now - d.elapsed().as_secs() as i64).unwrap_or(0);
+            ctx.pane_start_time = unix(p.spawned_at);
+            ctx.pane_activity = unix(p.last_output);
+            ctx.pane_dead_time = p.died_at.map(unix).unwrap_or(0);
+            ctx.pane_last = w.last_pane == Some(pid);
+            ctx.pane_mode = if p.copy.is_some() { "copy-mode".into() } else { String::new() };
+            let (cy, cx) = p.parser.screen().cursor_position();
+            ctx.cursor_x = cx;
+            ctx.cursor_y = cy;
+            ctx.history_size = p.parser.screen().scrollback_rows();
+            ctx.history_limit = self.opts.history_limit;
+        }
+        if let Some(r) = w.rect_of(pid) {
+            let area = self.window_area(sess.cols, sess.rows);
+            ctx.pane_top = r.y.saturating_sub(area.y);
+            ctx.pane_left = r.x.saturating_sub(area.x);
+            ctx.pane_bottom = (r.y + r.h).saturating_sub(area.y + 1);
+            ctx.pane_right = (r.x + r.w).saturating_sub(area.x + 1);
+            ctx.pane_at_top = r.y <= area.y;
+            ctx.pane_at_left = r.x <= area.x;
+            ctx.pane_at_bottom = r.y + r.h >= area.y + area.h;
+            ctx.pane_at_right = r.x + r.w >= area.x + area.w;
         }
         ctx
     }
@@ -4062,8 +4175,19 @@ impl Server {
     // ------------------------------------------------------------------ keys
 
     fn handle_key(&mut self, cid: ClientId, rec: KeyRecord) {
-        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
+        // `window-size latest`: the client typing is the one used last, so
+        // the session takes its size when another client had set it.
+        let (ccols, crows) = (c.cols, c.rows);
+        if rec.down
+            && self.opts.window_size == "latest"
+            && self.session(sid).is_some_and(|s| (s.cols, s.rows) != (ccols, crows))
+        {
+            self.fit_session(sid, Some(cid));
+        }
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        c.last_activity = Instant::now();
         if !rec.down && c.swallow_up.remove(&rec.vk) {
             return;
         }
@@ -4273,84 +4397,101 @@ impl Server {
                     self.reply(cid, out);
                 }
             }
-            PromptKind::Command { .. } | PromptKind::Search { .. } => match (k.code, k.ctrl, k.alt) {
-                (KeyCode::Escape, _, _) | (KeyCode::Char('c'), true, _) | (KeyCode::Char('g'), true, _) => {
-                    c.prompt = None;
-                }
-                (KeyCode::Enter, _, _) if matches!(p.kind, PromptKind::Search { .. }) => {
-                    let prompt = c.prompt.take().unwrap();
-                    let PromptKind::Search { back } = prompt.kind else { unreachable!() };
-                    let pid = self
-                        .clients
-                        .get(&cid)
-                        .and_then(|c| c.session)
-                        .and_then(|sid| self.session(sid))
-                        .and_then(|s| s.window())
-                        .map(|w| w.active);
-                    if let Some(pid) = pid {
-                        self.search_in_copy_mode(cid, pid, &prompt.input, back, true);
-                    }
-                }
-                (KeyCode::Enter, _, _) => {
-                    let prompt = c.prompt.take().unwrap();
-                    let PromptKind::Command { template } = prompt.kind else { unreachable!() };
-                    let line = match template {
-                        Some(t) => t.replace("%%", &crate::command::quote(&prompt.input)),
-                        None => prompt.input,
-                    };
-                    match crate::command::parse_line(&line) {
-                        Ok(Some(cmd)) => {
-                            let out = self.exec(cmd, Some(cid));
-                            self.reply(cid, out);
+            PromptKind::Command { .. } | PromptKind::Search { .. } | PromptKind::Filter { .. } => {
+                match (k.code, k.ctrl, k.alt) {
+                    (KeyCode::Escape, _, _) | (KeyCode::Char('c'), true, _) | (KeyCode::Char('g'), true, _) => {
+                        // A cancelled filter prompt puts the old filter back.
+                        if let Some(Prompt { kind: PromptKind::Filter { prev }, .. }) = c.prompt.take()
+                            && let Some(ch) = c.chooser.as_mut()
+                        {
+                            ch.filter = prev;
                         }
-                        Ok(None) => {}
-                        Err(e) => self.message(cid, &e),
                     }
-                }
-                (KeyCode::BSpace, false, false) | (KeyCode::Char('h'), true, _) => {
-                    if p.cursor > 0 {
-                        p.cursor -= 1;
+                    (KeyCode::Enter, _, _) if matches!(p.kind, PromptKind::Filter { .. }) => {
+                        c.prompt = None; // the list already follows the input
+                    }
+                    (KeyCode::Enter, _, _) if matches!(p.kind, PromptKind::Search { .. }) => {
+                        let prompt = c.prompt.take().unwrap();
+                        let PromptKind::Search { back } = prompt.kind else { unreachable!() };
+                        let pid = self
+                            .clients
+                            .get(&cid)
+                            .and_then(|c| c.session)
+                            .and_then(|sid| self.session(sid))
+                            .and_then(|s| s.window())
+                            .map(|w| w.active);
+                        if let Some(pid) = pid {
+                            self.search_in_copy_mode(cid, pid, &prompt.input, back, true);
+                        }
+                    }
+                    (KeyCode::Enter, _, _) => {
+                        let prompt = c.prompt.take().unwrap();
+                        let PromptKind::Command { template } = prompt.kind else { unreachable!() };
+                        let line = match template {
+                            Some(t) => t.replace("%%", &crate::command::quote(&prompt.input)),
+                            None => prompt.input,
+                        };
+                        match crate::command::parse_line(&line) {
+                            Ok(Some(cmd)) => {
+                                let out = self.exec(cmd, Some(cid));
+                                self.reply(cid, out);
+                            }
+                            Ok(None) => {}
+                            Err(e) => self.message(cid, &e),
+                        }
+                    }
+                    (KeyCode::BSpace, false, false) | (KeyCode::Char('h'), true, _) => {
+                        if p.cursor > 0 {
+                            p.cursor -= 1;
+                            let idx = char_index(&p.input, p.cursor);
+                            p.input.remove(idx);
+                        }
+                    }
+                    (KeyCode::DC, _, _) | (KeyCode::Char('d'), true, _) => {
+                        if p.cursor < p.input.chars().count() {
+                            let idx = char_index(&p.input, p.cursor);
+                            p.input.remove(idx);
+                        }
+                    }
+                    (KeyCode::Left, _, _) | (KeyCode::Char('b'), true, _) => p.cursor = p.cursor.saturating_sub(1),
+                    (KeyCode::Right, _, _) | (KeyCode::Char('f'), true, _) => {
+                        p.cursor = (p.cursor + 1).min(p.input.chars().count())
+                    }
+                    (KeyCode::Home, _, _) | (KeyCode::Char('a'), true, _) => p.cursor = 0,
+                    (KeyCode::End, _, _) | (KeyCode::Char('e'), true, _) => p.cursor = p.input.chars().count(),
+                    (KeyCode::Char('u'), true, _) => {
                         let idx = char_index(&p.input, p.cursor);
-                        p.input.remove(idx);
+                        p.input = p.input[idx..].to_string();
+                        p.cursor = 0;
                     }
-                }
-                (KeyCode::DC, _, _) | (KeyCode::Char('d'), true, _) => {
-                    if p.cursor < p.input.chars().count() {
+                    (KeyCode::Char('k'), true, _) => {
                         let idx = char_index(&p.input, p.cursor);
-                        p.input.remove(idx);
+                        p.input.truncate(idx);
                     }
+                    (KeyCode::Char('w'), true, _) => {
+                        let idx = char_index(&p.input, p.cursor);
+                        let head = &p.input[..idx];
+                        let trimmed = head.trim_end();
+                        let cut = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
+                        let removed = head[cut..].chars().count();
+                        p.input = format!("{}{}", &head[..cut], &p.input[idx..]);
+                        p.cursor -= removed;
+                    }
+                    (KeyCode::Char(ch), false, false) => {
+                        let idx = char_index(&p.input, p.cursor);
+                        p.input.insert(idx, ch);
+                        p.cursor += 1;
+                    }
+                    _ => {}
                 }
-                (KeyCode::Left, _, _) | (KeyCode::Char('b'), true, _) => p.cursor = p.cursor.saturating_sub(1),
-                (KeyCode::Right, _, _) | (KeyCode::Char('f'), true, _) => {
-                    p.cursor = (p.cursor + 1).min(p.input.chars().count())
-                }
-                (KeyCode::Home, _, _) | (KeyCode::Char('a'), true, _) => p.cursor = 0,
-                (KeyCode::End, _, _) | (KeyCode::Char('e'), true, _) => p.cursor = p.input.chars().count(),
-                (KeyCode::Char('u'), true, _) => {
-                    let idx = char_index(&p.input, p.cursor);
-                    p.input = p.input[idx..].to_string();
-                    p.cursor = 0;
-                }
-                (KeyCode::Char('k'), true, _) => {
-                    let idx = char_index(&p.input, p.cursor);
-                    p.input.truncate(idx);
-                }
-                (KeyCode::Char('w'), true, _) => {
-                    let idx = char_index(&p.input, p.cursor);
-                    let head = &p.input[..idx];
-                    let trimmed = head.trim_end();
-                    let cut = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
-                    let removed = head[cut..].chars().count();
-                    p.input = format!("{}{}", &head[..cut], &p.input[idx..]);
-                    p.cursor -= removed;
-                }
-                (KeyCode::Char(ch), false, false) => {
-                    let idx = char_index(&p.input, p.cursor);
-                    p.input.insert(idx, ch);
-                    p.cursor += 1;
-                }
-                _ => {}
-            },
+            }
+        }
+        // A filter prompt drives the picker's list as it is typed.
+        if let Some(c) = self.clients.get_mut(&cid)
+            && let Some(Prompt { kind: PromptKind::Filter { .. }, input, .. }) = c.prompt.as_ref()
+            && let Some(ch) = c.chooser.as_mut()
+        {
+            ch.filter = input.clone();
         }
     }
 
@@ -4459,16 +4600,18 @@ impl Server {
         ]
     }
 
+    /// The items and bare lines of a live picker; `chooser_view` filters
+    /// and numbers them. None for the fixed lists (`find-window` hits, a
+    /// menu), which are built where they are opened.
     fn chooser_lines(&self, kind: &ChooserKind) -> Option<(Vec<ChooserItem>, Vec<String>)> {
         let mut items = Vec::new();
         let mut lines = Vec::new();
-        let tag = |n: usize| if n < 10 { format!("({n}) ") } else { "    ".to_string() };
         let expand = match kind {
             ChooserKind::Tree { expand } => *expand,
             ChooserKind::Buffers => {
                 for (i, (name, data)) in self.buffers.iter().enumerate() {
                     items.push(ChooserItem::Buffer(i));
-                    lines.push(format!("{}{name}: {} bytes: {}", tag(i), data.len(), one_line(data, 60)));
+                    lines.push(format!("{name}: {} bytes: {}", data.len(), one_line(data, 60)));
                 }
                 return Some((items, lines));
             }
@@ -4480,7 +4623,7 @@ impl Server {
                     let Some(c) = self.clients.get(&id) else { continue };
                     let session = c.session.and_then(|s| self.session(s)).map(|s| s.name.as_str()).unwrap_or("-");
                     items.push(ChooserItem::Client(id));
-                    lines.push(format!("{}client-{id}: {session} [{}x{}]", tag(lines.len()), c.cols, c.rows));
+                    lines.push(format!("client-{id}: {session} [{}x{}]", c.cols, c.rows));
                 }
                 return Some((items, lines));
             }
@@ -4495,10 +4638,7 @@ impl Server {
                     let wid = self.session(*sid).and_then(|s| s.windows.get(*widx)).map(|w| w.id).unwrap_or(0);
                     items.push(ChooserItem::Job(*sid, wid, *pid));
                 }
-                for (i, line) in align_columns(&rows).into_iter().enumerate() {
-                    // Jump tags count items, and the header is item 0.
-                    lines.push(format!("{}{line}", if i == 0 { "    ".to_string() } else { tag(i) }));
-                }
+                lines = align_columns(&rows);
                 return Some((items, lines));
             }
             ChooserKind::Found | ChooserKind::Menu(_) => return None,
@@ -4507,8 +4647,7 @@ impl Server {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
             items.push(ChooserItem::Tree(s.id, None));
             lines.push(format!(
-                "{}{} {}: {} windows{}",
-                tag(lines.len()),
+                "{} {}: {} windows{}",
                 if expand { "-" } else { "+" },
                 s.name,
                 s.windows.len(),
@@ -4528,8 +4667,7 @@ impl Server {
                 let title = w.active_pane().map(|p| p.title.as_str()).unwrap_or("");
                 items.push(ChooserItem::Tree(s.id, Some(w.id)));
                 lines.push(format!(
-                    "{}  - {}: {}{} ({} panes) \"{}\"",
-                    tag(lines.len()),
+                    "  - {}: {}{} ({} panes) \"{}\"",
                     i + self.opts.base_index,
                     w.name,
                     flag,
@@ -4539,6 +4677,24 @@ impl Server {
             }
         }
         Some((items, lines))
+    }
+
+    /// What a live picker shows right now: its lines through the filter
+    /// (a session stays when one of its windows matches, and its windows
+    /// stay when it does), numbered for the digit keys, tagged ones marked.
+    fn chooser_view(&self, ch: &Chooser) -> Option<(Vec<ChooserItem>, Vec<String>)> {
+        let (items, lines) = self.chooser_lines(&ch.kind)?;
+        let keep = chooser_filter(&items, &lines, &ch.filter);
+        let mut out_items = Vec::new();
+        let mut out_lines = Vec::new();
+        for (item, line) in items.into_iter().zip(lines).zip(keep).filter(|(_, k)| *k).map(|(p, _)| p) {
+            let n = out_items.len();
+            let number = if n < 10 && item != ChooserItem::Separator { format!("({n})") } else { "   ".to_string() };
+            let mark = if ch.is_tagged(&item) { '*' } else { ' ' };
+            out_lines.push(format!("{number}{mark}{line}"));
+            out_items.push(item);
+        }
+        Some((out_items, out_lines))
     }
 
     fn chooser_key(&mut self, cid: ClientId, k: Key) {
@@ -4579,18 +4735,79 @@ impl Server {
             (KeyCode::PPage, _, _) | (KeyCode::Char('b'), true, _) => ch.step(-page),
             (KeyCode::Char('d'), true, _) => ch.step(page / 2),
             (KeyCode::Char('u'), true, _) => ch.step(-(page / 2)),
-            // The task board acts on the pane under the cursor and stays
-            // open (the list is live, so the row changes in place).
-            (KeyCode::Char(key @ ('x' | 'r')), false, false) if matches!(ch.kind, ChooserKind::Jobs) => {
-                if let Some(ChooserItem::Job(sid, wid, pid)) = ch.items.get(ch.sel).copied() {
-                    let Some(target) = self.pane_target(sid, wid, pid) else {
-                        self.message(cid, "pane is gone");
-                        return;
-                    };
-                    let cmd = if key == 'x' {
-                        Cmd::KillPane { target: Some(target), all_but: false }
-                    } else {
-                        Cmd::RespawnPane { target: Some(target), kill: true, argv: Vec::new(), window: false }
+            // Tags: `t` marks the line and moves on, `T` clears them; an
+            // action key then works on the tagged lines instead of the
+            // current one.
+            (KeyCode::Char('t'), false, false) if ch.kind.live() => {
+                if let Some(item) = ch.items.get(ch.sel).copied()
+                    && item != ChooserItem::Separator
+                {
+                    match ch.tagged.iter().position(|t| *t == item) {
+                        Some(i) => {
+                            ch.tagged.remove(i);
+                        }
+                        None => ch.tagged.push(item),
+                    }
+                    ch.step(1);
+                }
+            }
+            (KeyCode::Char('T'), false, false) if ch.kind.live() => ch.tagged.clear(),
+            // `f` types a filter on the status line; the list follows it as
+            // it is typed, Enter keeps it, Escape puts the old one back.
+            (KeyCode::Char('f'), false, false) if ch.kind.live() => {
+                let prev = ch.filter.clone();
+                let cursor = prev.chars().count();
+                c.prompt = Some(Prompt {
+                    kind: PromptKind::Filter { prev: prev.clone() },
+                    label: "(filter) ".into(),
+                    input: prev,
+                    cursor,
+                });
+            }
+            // The task board and the tree act on the tagged lines, else the
+            // one under the cursor, and stay open (the list is live, so the
+            // rows change in place).
+            (KeyCode::Char(key @ ('x' | 'r')), false, false)
+                if matches!(ch.kind, ChooserKind::Jobs)
+                    || (key == 'x' && matches!(ch.kind, ChooserKind::Tree { .. })) =>
+            {
+                let targets = ch.targets();
+                ch.tagged.clear();
+                // Each target is looked up by identity just before its
+                // command runs: killing one window renumbers the rest.
+                for item in targets {
+                    let cmd = match item {
+                        ChooserItem::Job(sid, wid, pid) => match self.pane_target(sid, wid, pid) {
+                            Some(target) if key == 'x' => Cmd::KillPane { target: Some(target), all_but: false },
+                            Some(target) => {
+                                Cmd::RespawnPane { target: Some(target), kill: true, argv: Vec::new(), window: false }
+                            }
+                            None => {
+                                self.message(cid, "pane is gone");
+                                continue;
+                            }
+                        },
+                        ChooserItem::Tree(sid, wid) => {
+                            let Some(s) = self.session(sid) else {
+                                self.message(cid, "session is gone");
+                                continue;
+                            };
+                            let mut target = Target { session: Some(s.name.clone()), ..Default::default() };
+                            match wid {
+                                None => Cmd::KillSession { target: Some(target), all_but: false },
+                                Some(w) => match s.windows.iter().position(|x| x.id == w) {
+                                    Some(i) => {
+                                        target.window = Some((i + self.opts.base_index).to_string());
+                                        Cmd::KillWindow { target: Some(target), all_but: false }
+                                    }
+                                    None => {
+                                        self.message(cid, "window is gone");
+                                        continue;
+                                    }
+                                },
+                            }
+                        }
+                        _ => continue,
                     };
                     if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
                         self.message(cid, &e);
@@ -5173,7 +5390,7 @@ impl Server {
         // find-window hits, a menu) is left alone.
         let fresh = match c.chooser.as_ref() {
             Some(ch) if ch.kind.live() => {
-                self.chooser_lines(&ch.kind).map(|(i, l)| (i, l, ch.items.get(ch.sel).copied(), ch.sel))
+                self.chooser_view(ch).map(|(i, l)| (i, l, ch.items.get(ch.sel).copied(), ch.sel))
             }
             _ => None,
         };
@@ -5183,6 +5400,7 @@ impl Server {
                 want.and_then(|w| items.iter().position(|i| *i == w)).unwrap_or(sel.min(items.len().saturating_sub(1)));
             ch.items = items;
             ch.lines = lines;
+            ch.settle(1); // a filter may have taken the selected line away
         }
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else { return };
         let pane_base_index = self.opts.pane_base_index;
@@ -5341,12 +5559,20 @@ impl Server {
                 ch.top = ch.sel + 1 - body_h;
             }
             let actions = match ch.kind {
-                ChooserKind::Jobs => "Enter go  x kill  r restart",
-                ChooserKind::Clients => "Enter detach",
-                ChooserKind::Buffers => "Enter paste",
+                ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
+                ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter",
+                ChooserKind::Clients => "Enter detach  f filter",
+                ChooserKind::Buffers => "Enter paste  f filter",
                 _ => "Enter select",
             };
-            render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions);
+            let mut status = Vec::new();
+            if !ch.tagged.is_empty() {
+                status.push(format!("[{} tagged]", ch.tagged.len()));
+            }
+            if !ch.filter.trim().is_empty() {
+                status.push(format!("[filter: {}]", ch.filter.trim()));
+            }
+            render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions, &status.join(" "));
             cursor = None;
         }
         // An overlay (a hook's message, a `run-shell` result) draws over the
@@ -5375,42 +5601,69 @@ impl Server {
 }
 
 /// The lines of a config file the way tmux reads them: a `\` at the end of
-/// a line continues it on the next, and a `%if` ... `%endif` block (tmux's
-/// conditionals, which wmux does not evaluate) is left out whole rather
-/// than having both of its branches applied. Each logical line carries the
+/// a line continues it on the next, and `%if` / `%elif` / `%else` /
+/// `%endif` pick branches by their condition, which `eval` decides (a
+/// format, as in tmux). Each logical line carries the
 /// number of its first physical line, for error messages. The second value
 /// is the line of a `%if` that was never closed, which swallows everything
 /// after it and must be said rather than silently dropped.
-fn logical_lines(text: &str) -> (Vec<(usize, String)>, Option<usize>) {
+fn logical_lines(text: &str, eval: &dyn Fn(&str) -> bool) -> (Vec<(usize, String)>, Option<usize>) {
     let mut out = Vec::new();
     let mut joined = String::new();
     let mut start = 0;
-    let mut depth = 0usize;
-    let mut opened_at = 0usize;
+    // One frame per open %if: whether its current branch is being read,
+    // whether any branch of it has been taken yet, and where it began.
+    struct Frame {
+        active: bool,
+        taken: bool,
+        opened_at: usize,
+    }
+    let mut frames: Vec<Frame> = Vec::new();
     // Notepad writes a byte-order mark; without this the first command
     // would be "\u{feff}set", which is nothing.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for (i, raw) in text.lines().enumerate() {
         let n = i + 1;
         let trimmed = raw.trim_start();
+        let reading = frames.last().is_none_or(|f| f.active);
         if trimmed.starts_with('%') {
-            // %if / %elif / %else / %endif / %hidden: all skipped, and a
-            // block's body with it.
-            let word = trimmed.split_whitespace().next().unwrap_or("");
+            // %if / %elif / %else / %endif, as tmux reads them: the
+            // condition is a format, true when it expands to something
+            // other than nothing or "0". %hidden is not ours.
+            let (word, cond) = match trimmed.split_once(char::is_whitespace) {
+                Some((w, c)) => (w, c.trim()),
+                None => (trimmed, ""),
+            };
             match word {
                 "%if" => {
-                    if depth == 0 {
-                        opened_at = n;
-                    }
-                    depth += 1;
+                    let active = reading && eval(cond);
+                    frames.push(Frame { active, taken: active, opened_at: n });
                 }
-                "%endif" => depth = depth.saturating_sub(1),
+                "%elif" => {
+                    if !frames.is_empty() {
+                        let parent = frames.len() < 2 || frames[frames.len() - 2].active;
+                        let f = frames.last_mut().unwrap();
+                        f.active = parent && !f.taken && eval(cond);
+                        f.taken |= f.active;
+                    }
+                }
+                "%else" => {
+                    if !frames.is_empty() {
+                        let parent = frames.len() < 2 || frames[frames.len() - 2].active;
+                        let f = frames.last_mut().unwrap();
+                        f.active = parent && !f.taken;
+                        f.taken = true;
+                    }
+                }
+                "%endif" => {
+                    frames.pop();
+                }
                 _ => {}
             }
             joined.clear();
             continue;
         }
-        if depth > 0 {
+        if !reading {
             continue;
         }
         if joined.is_empty() {
@@ -5426,7 +5679,7 @@ fn logical_lines(text: &str) -> (Vec<(usize, String)>, Option<usize>) {
     if !joined.is_empty() {
         out.push((start, joined));
     }
-    (out, (depth > 0).then_some(opened_at))
+    (out, frames.first().map(|f| f.opened_at))
 }
 
 /// Expand a leading `~` or `~/` to the user's home directory.
@@ -5502,6 +5755,34 @@ fn align_columns(rows: &[Vec<String>]) -> Vec<String> {
             line.trim_end().to_string()
         })
         .collect()
+}
+
+/// Which picker lines a filter keeps: those holding it, case-insensitively,
+/// plus title lines. In the tree a session line stays when one of its
+/// windows matches, and its windows stay when the session line does, so
+/// filtering by a session name shows the whole session.
+fn chooser_filter(items: &[ChooserItem], lines: &[String], filter: &str) -> Vec<bool> {
+    let needle = filter.trim().to_lowercase();
+    if needle.is_empty() {
+        return vec![true; items.len()];
+    }
+    let hit: Vec<bool> = lines.iter().map(|l| l.to_lowercase().contains(&needle)).collect();
+    let mut keep = hit.clone();
+    let mut parent: Option<usize> = None;
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            ChooserItem::Separator => keep[i] = true,
+            ChooserItem::Tree(_, None) => parent = Some(i),
+            ChooserItem::Tree(_, Some(_)) => {
+                if let Some(p) = parent {
+                    keep[i] |= hit[p];
+                    keep[p] |= hit[i];
+                }
+            }
+            _ => {}
+        }
+    }
+    keep
 }
 
 const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -5871,6 +6152,8 @@ mod tests {
             pending_bell: false,
             pending: std::collections::VecDeque::new(),
             window_hits: Vec::new(),
+            created: Instant::now(),
+            last_activity: Instant::now(),
         };
         (c, rx)
     }
@@ -5915,13 +6198,8 @@ mod tests {
             ChooserItem::Separator,
             ChooserItem::Menu(1),
         ];
-        let mut ch = Chooser {
-            kind: ChooserKind::Menu(Vec::new()),
-            lines: vec!["t".into(), "a".into(), "-".into(), "b".into()],
-            items,
-            sel: 0,
-            top: 0,
-        };
+        let mut ch =
+            Chooser::new(ChooserKind::Menu(Vec::new()), items, vec!["t".into(), "a".into(), "-".into(), "b".into()], 0);
         ch.settle(1);
         assert_eq!(ch.sel, 1, "opening a menu lands on the first real entry");
         ch.step(1);
@@ -5937,15 +6215,51 @@ mod tests {
         assert_eq!(ch.sel, 1, "and never onto the title");
 
         // A list of nothing but separators leaves the selection alone.
-        let mut empty = Chooser {
-            kind: ChooserKind::Menu(Vec::new()),
-            items: vec![ChooserItem::Separator; 3],
-            lines: vec!["-".into(); 3],
-            sel: 1,
-            top: 0,
-        };
+        let mut empty =
+            Chooser::new(ChooserKind::Menu(Vec::new()), vec![ChooserItem::Separator; 3], vec!["-".into(); 3], 1);
         empty.step(1);
         assert_eq!(empty.sel, 1);
+    }
+
+    #[test]
+    fn a_picker_filter_keeps_a_session_with_its_matching_windows() {
+        let items = vec![
+            ChooserItem::Separator,
+            ChooserItem::Tree(1, None),
+            ChooserItem::Tree(1, Some(10)),
+            ChooserItem::Tree(1, Some(11)),
+            ChooserItem::Tree(2, None),
+            ChooserItem::Tree(2, Some(20)),
+            ChooserItem::Buffer(0),
+        ];
+        let lines: Vec<String> =
+            ["HEAD", "- alpha", "  - 0: cmd", "  - 1: Beta", "- gamma", "  - 0: cmd", "beta: 3 bytes"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        assert_eq!(chooser_filter(&items, &lines, ""), vec![true; 7], "no filter keeps everything");
+        assert_eq!(
+            chooser_filter(&items, &lines, "beta"),
+            vec![true, true, false, true, false, false, true],
+            "case-insensitive; the title stays, a session stays for its window"
+        );
+        assert_eq!(
+            chooser_filter(&items, &lines, "gamma"),
+            vec![true, false, false, false, true, true, false],
+            "a session's windows stay with it"
+        );
+        assert_eq!(chooser_filter(&items, &lines, "zzz"), vec![true, false, false, false, false, false, false]);
+    }
+
+    #[test]
+    fn tagged_lines_are_what_an_action_key_works_on() {
+        let items = vec![ChooserItem::Tree(1, None), ChooserItem::Tree(1, Some(10)), ChooserItem::Tree(2, None)];
+        let mut ch = Chooser::new(ChooserKind::Tree { expand: true }, items, vec!["a".into(); 3], 1);
+        assert_eq!(ch.targets(), vec![ChooserItem::Tree(1, Some(10))], "nothing tagged: the current line");
+        ch.tagged.push(ChooserItem::Tree(2, None));
+        ch.tagged.push(ChooserItem::Tree(1, None));
+        assert_eq!(ch.targets(), vec![ChooserItem::Tree(2, None), ChooserItem::Tree(1, None)], "tagged, in tag order");
+        assert!(ch.is_tagged(&ChooserItem::Tree(2, None)) && !ch.is_tagged(&ChooserItem::Tree(1, Some(10))));
     }
 
     #[test]
@@ -5968,6 +6282,35 @@ mod tests {
         assert!(tiny.w < 3 || tiny.h < 3, "{tiny:?}");
     }
 
+    /// The reading with every `%if` false: blocks left out whole.
+    fn lines_skipping(text: &str) -> (Vec<(usize, String)>, Option<usize>) {
+        logical_lines(text, &|_| false)
+    }
+
+    /// `%if` / `%elif` / `%else` pick branches by their condition, nested
+    /// blocks included; only what is in a taken branch is read.
+    #[test]
+    fn if_blocks_pick_their_branch() {
+        let text = "a\n%if yes\nb\n%elif yes\nc\n%else\nd\n%endif\n\
+                    %if no\ne\n%elif no\nf\n%elif yes\ng\n%else\nh\n%endif\n\
+                    %if no\ni\n%else\nj\n%endif\n\
+                    %if yes\n%if no\nk\n%else\nl\n%endif\nm\n%endif\n\
+                    %if no\n%if yes\nn\n%endif\no\n%endif\np\n";
+        let (got, open) = logical_lines(text, &|c| c == "yes");
+        let names: Vec<&str> = got.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "g", "j", "l", "m", "p"]);
+        assert_eq!(open, None);
+        // The condition is handed over as written, spaces trimmed.
+        let seen = std::cell::RefCell::new(Vec::new());
+        let _ = logical_lines("%if  #{==:#{host},box} \nx\n%endif\n", &|c| {
+            seen.borrow_mut().push(c.to_string());
+            true
+        });
+        assert_eq!(seen.into_inner(), vec!["#{==:#{host},box}"]);
+        // %elif/%else with no %if open are ignored, not a crash.
+        assert_eq!(logical_lines("%else\nx\n%elif y\nz\n%endif\n", &|_| true).0.len(), 2);
+    }
+
     /// A config file the way tmux reads it: continuations joined, `%if`
     /// blocks left out whole, line numbers pointing at where a line began.
     #[test]
@@ -5977,31 +6320,33 @@ mod tests {
                     %if #{==:#{host},box}\n\
                     set -g never 1\n\
                     %else\n\
-                    set -g also-never 1\n\
+                    set -g on-other-hosts 1\n\
                     %endif\n\
                     %hidden foo=1\n\
                     set -g b 2\n\
                     last \\";
-        let (got, open) = logical_lines(text);
+        // Every condition false here: the %else branch is the one read.
+        let (got, open) = lines_skipping(text);
         assert_eq!(
             got,
             vec![
                 (1, "set -g a 1".to_string()),
                 (2, "bind x   send-keys   hi".to_string()),
+                (8, "set -g on-other-hosts 1".to_string()),
                 (11, "set -g b 2".to_string()),
                 (12, "last ".to_string()),
             ]
         );
         assert_eq!(open, None);
-        // Nested blocks come out whole too.
+        // Nested blocks with no branch taken come out whole.
         let nested = "%if a\n%if b\nx\n%endif\ny\n%endif\nz";
-        assert_eq!(logical_lines(nested).0, vec![(7, "z".to_string())]);
-        assert!(logical_lines("").0.is_empty());
+        assert_eq!(lines_skipping(nested).0, vec![(7, "z".to_string())]);
+        assert!(lines_skipping("").0.is_empty());
         // Notepad's BOM and CRLF endings, as a file written on Windows has.
         let notepad = "\u{feff}set -g a 1\r\nset -g b \\\r\n 2\r\n";
-        assert_eq!(logical_lines(notepad).0, vec![(1, "set -g a 1".to_string()), (2, "set -g b  2".to_string())]);
+        assert_eq!(lines_skipping(notepad).0, vec![(1, "set -g a 1".to_string()), (2, "set -g b  2".to_string())]);
         // A %if that never closes swallows the rest, and says where it began.
-        let (lines, open) = logical_lines("set -g a 1\n%if x\nset -g b 2\nset -g c 3\n");
+        let (lines, open) = lines_skipping("set -g a 1\n%if x\nset -g b 2\nset -g c 3\n");
         assert_eq!(lines, vec![(1, "set -g a 1".to_string())]);
         assert_eq!(open, Some(2));
     }

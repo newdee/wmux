@@ -77,6 +77,10 @@ pub struct Options {
     pub restore_on_start: bool,
     /// Directory holding one file per saved session (`sessions-dir`); empty = default.
     pub sessions_dir: String,
+    /// Which attached client a session takes its size from (tmux
+    /// `window-size`): "latest" (the one used last), "smallest", "largest"
+    /// or "manual" (only `resize-window` changes it).
+    pub window_size: String,
 }
 
 /// Options `show-options` can print, in display order.
@@ -115,6 +119,7 @@ pub const SHOWABLE: &[&str] = &[
     "autosave",
     "restore-on-start",
     "sessions-dir",
+    "window-size",
 ];
 
 impl Default for Options {
@@ -160,6 +165,7 @@ impl Default for Options {
             autosave: true,
             restore_on_start: false,
             sessions_dir: String::new(),
+            window_size: "latest".into(),
         }
     }
 }
@@ -269,6 +275,7 @@ pub const KNOWN: &[&str] = &[
     "synchronize-panes",
     "visual-activity",
     "visual-bell",
+    "window-size",
     "window-status-current-format",
     "window-status-format",
     "window-status-separator",
@@ -465,6 +472,12 @@ impl Options {
             "autosave" => self.autosave = parse_bool(value)?,
             "restore-on-start" => self.restore_on_start = parse_bool(value)?,
             "sessions-dir" => self.sessions_dir = value.to_string(),
+            "window-size" => {
+                self.window_size = match value.trim() {
+                    v @ ("latest" | "smallest" | "largest" | "manual") => v.to_string(),
+                    v => return Err(format!("bad window-size '{v}' (latest, smallest, largest or manual)")),
+                }
+            }
             "@plugin" => {
                 self.pending_plugins.push(value.to_string());
                 self.user.push(("@plugin".into(), value.to_string()));
@@ -550,6 +563,7 @@ impl Options {
                     self.sessions_dir.clone()
                 }
             }
+            "window-size" => self.window_size.clone(),
             _ => return None,
         })
     }
@@ -829,6 +843,22 @@ mod tests {
             assert_eq!(o.get("window-status-separator").as_deref(), Some(sep));
         }
         assert_eq!(o.set("s-j", "right").map(|_| o.status_justify.clone()).unwrap(), "right", "abbreviates");
+    }
+
+    #[test]
+    fn window_size_takes_the_four_tmux_words() {
+        let mut o = Options::default();
+        assert_eq!(o.get("window-size").as_deref(), Some("latest"));
+        for v in ["smallest", "largest", "manual", " latest "] {
+            o.set("window-size", v).unwrap();
+            assert_eq!(o.get("window-size").as_deref(), Some(v.trim()), "{v}");
+        }
+        for bad in ["", "Smallest", "biggest", "0"] {
+            let e = o.set("window-size", bad).unwrap_err();
+            assert!(e.contains("latest, smallest, largest or manual"), "{bad}: {e}");
+        }
+        assert!(o.set("window-si", "largest").is_ok(), "abbreviates");
+        assert!(SHOWABLE.contains(&"window-size") && KNOWN.contains(&"window-size"));
     }
 
     #[test]

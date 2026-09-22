@@ -43,6 +43,8 @@ pub enum PaneSel {
     Next,
     Prev,
     Last,
+    /// A pane named in full (`session:window.pane`), in whatever window.
+    Target(Target),
     Index(usize),
 }
 
@@ -221,6 +223,8 @@ pub enum Cmd {
     },
     CopyMode {
         page_up: bool,
+        /// `-t`: the pane, else the client's current one.
+        target: Option<Target>,
     },
     /// `display-panes`: show each pane's number for `display-time`; a digit
     /// pressed while they are up selects that pane.
@@ -484,6 +488,8 @@ pub enum Cmd {
         history: usize,
         /// `-e`: keep the colours and attributes as escape sequences.
         escapes: bool,
+        /// `-J`: join the rows of a wrapped line back into one line.
+        join: bool,
     },
     /// `set-cwd [-t target] [dir]`: record a pane's working directory (used
     /// by save/resume and `#{pane_current_path}`); no `dir` means the
@@ -701,6 +707,7 @@ impl fmt::Display for Cmd {
                     PaneSel::Prev => f.write_str(" -t prev"),
                     PaneSel::Last => f.write_str(" -l"),
                     PaneSel::Index(i) => write!(f, " -t {i}"),
+                    PaneSel::Target(t) => fmt_target(f, &Some(t.clone())),
                 }
             }
             Cmd::PaneTitle { target, title, mark, unmark } => {
@@ -799,7 +806,10 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::CopyMode { page_up } => f.write_str(if *page_up { "copy-mode -u" } else { "copy-mode" }),
+            Cmd::CopyMode { page_up, target } => {
+                f.write_str(if *page_up { "copy-mode -u" } else { "copy-mode" })?;
+                fmt_target(f, target)
+            }
             Cmd::DisplayPanes => f.write_str("display-panes"),
             Cmd::ClockMode { target } => {
                 f.write_str("clock-mode")?;
@@ -1103,10 +1113,13 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::CapturePane { target, history, escapes } => {
+            Cmd::CapturePane { target, history, escapes, join } => {
                 f.write_str("capture-pane -p")?;
                 if *escapes {
                     f.write_str(" -e")?;
+                }
+                if *join {
+                    f.write_str(" -J")?;
                 }
                 if *history > 0 {
                     write!(f, " -S -{history}")?;
@@ -1778,6 +1791,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                             "next" | ":.+" | "+" => Some(PaneSel::Next),
                             "prev" | "previous" | ":.-" | "-" => Some(PaneSel::Prev),
                             "last" | ":.!" | "!" => Some(PaneSel::Last),
+                            // A full name reaches into any window; a bare
+                            // number is a pane of the current one.
+                            other if other.contains(':') || other.contains('.') => {
+                                Some(PaneSel::Target(Target::parse(other)))
+                            }
                             other => other.trim_start_matches('%').parse().ok().map(PaneSel::Index),
                         };
                     }
@@ -2012,16 +2030,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SendKeys { target, keys: a.rest(), literal }
         }
         "copy-mode" => {
-            let mut page_up = false;
+            let (mut page_up, mut target) = (false, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-u" => page_up = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
                     "-e" | "-M" => {}
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::CopyMode { page_up }
+            Cmd::CopyMode { page_up, target }
         }
         "paste-buffer" => {
             let (mut name, mut target, mut bracketed) = (None, None, false);
@@ -2520,7 +2539,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SetCwd { target, dir }
         }
         "capture-pane" => {
-            let (mut target, mut history, mut escapes) = (None, 0usize, false);
+            let (mut target, mut history, mut escapes, mut join) = (None, 0usize, false, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
@@ -2534,12 +2553,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                         };
                     }
                     "-e" => escapes = true,
-                    "-p" | "-J" => {} // always printed; wrapped lines stay split
+                    "-J" => join = true,
+                    "-p" => {} // always printed
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::CapturePane { target, history, escapes }
+            Cmd::CapturePane { target, history, escapes, join }
         }
         "source-file" => {
             let path = a.next().ok_or("source-file: path required")?.to_string();
@@ -2988,6 +3008,7 @@ mod tests {
             "copy-mode -u",
             "command-prompt -p (rename-window) -I \"#W\" \"rename-window -- %%\"",
             "capture-pane -p -e -t w:1",
+            "capture-pane -p -e -J -t w:1",
             "select-layout -E -t w:1",
             "choose-client",
             "pipe-pane -o -t w:1 \"cat > log\"",
@@ -3062,6 +3083,14 @@ mod tests {
         assert!(matches!(p("choose-c"), Cmd::ChooseClient));
         assert!(matches!(p("choose-j"), Cmd::ChooseJobs));
         assert!(matches!(p("focus-pane %7"), Cmd::FocusPane { pane: 7 }));
+        // select-pane takes a full target as well as a bare pane number.
+        assert!(matches!(p("select-pane -t 2"), Cmd::SelectPane { sel: PaneSel::Index(2) }));
+        match p("select-pane -t v:0.1") {
+            Cmd::SelectPane { sel: PaneSel::Target(t) } => assert_eq!(t, Target::parse("v:0.1")),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(p("select-pane -t v:0.1").to_string(), "select-pane -t v:0.1");
+        assert!(matches!(p("select-pane -t :.1"), Cmd::SelectPane { sel: PaneSel::Target(_) }));
         assert!(matches!(p("focusp 7"), Cmd::FocusPane { pane: 7 }));
         assert_eq!(p("focus-pane 7").to_string(), "focus-pane %7");
         assert!(parse_line("focus-pane").unwrap_err().contains("pane id required"));

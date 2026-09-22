@@ -18,16 +18,16 @@ Status: **yes** = works, **part** = works with a documented limit,
 | attach-session | yes | |
 | bind-key | yes | `-n`, `-r`, `-T root/prefix`; no other key tables |
 | break-pane | yes | `-t`; no `-W` |
-| capture-pane | part | `-p`, `-S`, `-e`; no buffer output (`-b`) |
+| capture-pane | part | `-p`, `-S`, `-e`, `-J`; no buffer output (`-b`) |
 | choose-buffer | yes | `prefix =`; Enter pastes |
 | choose-client | yes | `prefix D`; Enter detaches the client picked |
-| choose-tree | part | `-s`, `-w`; no tagging, filter or per-session collapse |
+| choose-tree | part | `-s`, `-w`; `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged; no per-session collapse |
 | clear-history | yes | |
 | clear-prompt-history | no | wmux keeps no prompt history |
 | clock-mode | yes | `prefix t`, any key leaves |
 | command-prompt | part | `-p`, `-I`, `%%` template; no `-k`, no numbered `%1` |
 | confirm-before | yes | `-p` |
-| copy-mode | yes | `-u` |
+| copy-mode | yes | `-u`, `-t` |
 | customize-mode | no | a whole options UI; `show-options` covers the need |
 | delete-buffer | yes | `prefix -` |
 | detach-client | yes | `-a`, `-s`, `-t` |
@@ -65,7 +65,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | rotate-window | yes | `prefix C-o`, `M-o` |
 | run-shell | yes | `-b`, `-t` |
 | select-layout | part | five named layouts and `-E`; no layout strings |
-| select-pane | yes | direction, `next`/`last`/index, `-T`, `-m`, `-M` |
+| select-pane | yes | direction, `next`/`last`/index, `-t session:window.pane`, `-T`, `-m`, `-M` |
 | select-window | yes | index, name, `+`, `-`, `!` |
 | send-keys | part | key names, `-l`, `-X` copy commands; no `-H` (hex) |
 | send-prefix | yes | |
@@ -175,9 +175,10 @@ Missing: `copy-pipe` to a command (`copy-pipe-and-cancel` copies as
 
 `~/.wmux.conf` first; with none, `~/.tmux.conf` or
 `~/.config/tmux/tmux.conf` is read as tmux would read it: `\` continues a
-line, a `%if` ... `%endif` block is left out whole (wmux does not evaluate
-tmux's conditionals, and applying both branches would be worse than
-neither), and every line wmux cannot use is skipped with a note in
+line, `%if` / `%elif` / `%else` / `%endif` pick their branch by the
+condition (a format, true when it expands to something other than nothing
+or `0`; `#{==:#{host},box}` and the other comparisons work), and every line
+wmux cannot use is skipped with a note in
 `show-messages` plus a one-line count on the first attach. `bind -T` with
 any table other than `root` or `prefix` is refused, so a `copy-mode-vi`
 line never ends up bound under the prefix.
@@ -194,7 +195,8 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `pane-active-border-style`, `base-index`, `pane-base-index`,
 `display-time`, `repeat-time`, `remain-on-exit`, `monitor-activity`,
 `monitor-bell`, `monitor-silence`, `visual-bell`, `visual-activity`,
-`pane-border-status`, `pane-border-format`.
+`pane-border-status`, `pane-border-format`, `window-size` (`latest`,
+`smallest`, `largest`, `manual`: which attached client sizes the session).
 
 ## Formats
 
@@ -206,8 +208,13 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `window_flags`), the pane (`pane_index` `pane_id` `pane_title`
 `pane_current_command` `pane_start_command` `pane_current_path`
 `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status`
-`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time`), the client
-(`client_width` `client_height`) and the server (`host` `host_short`
+`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time`
+`pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom`
+`pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`), the session and window
+times and flags (`session_activity` `session_last_attached` `window_activity` `window_start_flag`
+`window_end_flag` `window_layout`), the client
+(`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity`
+`client_prefix`) and the server (`host` `host_short`
 `socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
 #H #F #D #h`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.
 Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`, `#{?name!=value,…}`.
@@ -252,6 +259,7 @@ line instead of ringing the terminal. Not there: `bell-action`,
 
 Nothing from tmux 3.5's command table is outstanding; what is left are the
 limits marked **part** above. The largest of them: no per-client viewport
-(`refresh-client -U`/`-D`, `S-`arrows), no layout strings for
-`select-layout`, `choose-tree` without tagging or a filter, `pipe-pane`
-without `-I`, and `display-popup` without placement flags.
+(`refresh-client -U`/`-D`, `S-`arrows; `window-size` says which client
+sizes the session), no layout strings for `select-layout`, `choose-tree`
+without per-session collapse, `pipe-pane` without `-I`, and `display-popup`
+without placement flags.

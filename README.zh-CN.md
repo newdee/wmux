@@ -99,7 +99,7 @@ wmux kill-server
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
 | `d` | 脱离 |
 | `?` | 列出所有按键 |
-| `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消 |
+| `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消；`f` 输入子串过滤（边打边筛，`Enter` 留下，`Esc` 还原），`t` 给当前行打标记（`T` 清掉），`x` 杀掉标记的行（没标记就是当前行） |
 | `(` / `)` | 切到上一个 / 下一个 session |
 | `D` | 列出连着的客户端，挑一个踢下线 |
 | `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
@@ -216,7 +216,7 @@ source-file ~/.wmux/themes/nord.conf
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
 ```
 
-能用的变量：`session_name` `session_id` `session_windows` `session_attached` `session_created`、`window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`、`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time`、`client_width` `client_height`、`host` `host_short` `socket_path` `version` `pid`。修饰符和 tmux 一样：`#{=10:pane_title}` 取前 10 个字符，`#{=-10:…}` 取后 10 个，`#{b:pane_current_path}` 取文件名部分，`#{d:…}` 取目录部分，`#{t:session_created}` 把时间戳显示成时间，`#{s/foo/bar/:…}` 替换，可以套着用（`#{=8:b:pane_current_path}`）。
+能用的变量：`session_name` `session_id` `session_windows` `session_attached` `session_created`、`window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`、`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`、`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`、`host` `host_short` `socket_path` `version` `pid`，另有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。比较写法和 tmux 一样：`#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}`、`#{m:通配符,文本}`（`m/i:` 忽略大小写）得到 `1` 或 `0`，可以做 `#{?…}` 的条件，也可以做配置文件里 `%if` 的条件。修饰符和 tmux 一样：`#{=10:pane_title}` 取前 10 个字符，`#{=-10:…}` 取后 10 个，`#{b:pane_current_path}` 取文件名部分，`#{d:…}` 取目录部分，`#{t:session_created}` 把时间戳显示成时间，`#{s/foo/bar/:…}` 替换，可以套着用（`#{=8:b:pane_current_path}`）。
 
 ## 插件
 
@@ -253,7 +253,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 - `display-menu [-T 标题] 名字 键 命令 ...`：在窗口上弹个菜单，名字给空字符串就是一条分隔线。`display-popup [-E] [-w 宽] [-h 高] [-d 目录] [命令]` 是在窗口上开个小框跑程序（`-E` 程序退出就关，`-C` 从外面关掉）。
 - `choose-client`：列出连着的客户端，选一个踢下线。
 - `send-keys -X <copy 命令>`：用脚本开 copy mode 干活（`search-backward`、`begin-selection`、`copy-selection` ……名字和 tmux 一样）。
-- `capture-pane -p [-e]`：把 pane 的内容打出来，`-e` 连颜色一起。
+- `capture-pane -p [-e] [-J] [-S -N]`：把 pane 的内容打出来，`-e` 连颜色一起，`-J` 把被折行的长行拼回一行，`-S -N` 带上 N 行回滚（`-S -` 全部）。
 - `find-text 关键词`：在**所有 pane 打印过的内容**里找（不是找窗口名），告诉你在哪个 pane、往回第几行：`ft:0.0  -8  REDIS-TIMEOUT-here`。`-C` 区分大小写，`-t` 限定 session 或窗口，`-n` 限制每个 pane 最多几条。tmux 的 `find-window` 只搜名字和标题，搜不了内容。
 - `jobs`：任务板。整个 server 上每个 pane 一行——程序还在跑还是已经退出（退出码多少）、跑了多久、多久没有输出、pid、命令、目录。`-t session` 只看一个 session；`-F 格式` 自己定输出（`#{pane_start_time}`、`#{pane_activity}`、`#{pane_dead_time}` 是原始时间戳）。`prefix B`（`choose-jobs`）是同一张板的可操作版：`Enter` 跳到那个 pane，`x` 杀掉，`r` 重启，开着的时候行会原地刷新。
 
@@ -289,6 +289,6 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（以最后接入的为准，没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`swap-window` 只在同一个 session 内生效（`move-window` 可以跨 session）；`choose-tree` 只有列表，不能单独折叠某个 session、不能打标记、不能过滤；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；`select-layout` 只有那五种命名布局加 `-E`，不支持 tmux 的布局字符串；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口；`pipe-pane` 只能把 pane 的输出灌给命令，没有反方向的 `-I`；`display-popup` 永远居中（没有 `-x` / `-y`），而且前缀键还是 wmux 的，不会进到弹窗里的程序。
+和 tmux 比：`synchronize-panes` 只作用于当前窗口，不支持 `-t`；多个客户端接同一个 session 时看到的尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`；没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`swap-window` 只在同一个 session 内生效（`move-window` 可以跨 session）；`choose-tree` 不能单独折叠某个 session（过滤是按子串，不是 tmux 的格式串）；`swap-pane` 只能和上一个/下一个交换（`-U` / `-D`，`-s` 和 `-t` 都是指“要交换的那个 pane”，没有 tmux 那种成对指定）；`select-layout` 只有那五种命名布局加 `-E`，不支持 tmux 的布局字符串；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`list-panes -a` / `-s` 只列目标窗口；`pipe-pane` 只能把 pane 的输出灌给命令，没有反方向的 `-I`；`display-popup` 永远居中（没有 `-x` / `-y`），而且前缀键还是 wmux 的，不会进到弹窗里的程序。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。

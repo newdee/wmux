@@ -125,7 +125,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...) |
 | `d` | detach |
 | `?` | list key bindings |
-| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels) |
+| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one) |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -303,8 +303,18 @@ Variables: `session_name` `session_id` `session_windows` `session_attached`
 `pane_current_command` `pane_start_command` `pane_current_path` `pane_width`
 `pane_height` `pane_active` `pane_dead` `pane_dead_status`
 `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time`
-`pane_activity` `pane_dead_time`, `client_width`
-`client_height`, `host` `host_short` `socket_path` `version` `pid`.
+`pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top`
+`pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom`
+`pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size`
+`history_limit`, `client_width` `client_height` `client_name`
+`client_session` `client_created` `client_activity` `client_prefix`, `host`
+`host_short` `socket_path` `version` `pid`; also `session_activity`
+`session_last_attached` `window_activity` `window_start_flag`
+`window_end_flag` `window_layout`. Comparisons as in tmux: `#{==:a,b}`
+`#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}`
+`#{||:a,b}` and `#{m:pattern,text}` (a glob; `m/i:` ignores case) answer
+`1` or `0`, and can be the condition of `#{?…}` or of a `%if` in the config
+file.
 Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
 `#{=-10:…}` (last 10), `#{b:pane_current_path}` (basename), `#{d:…}`
 (dirname), `#{t:session_created}` (a time as a clock), `#{s/foo/bar/:…}`
@@ -374,7 +384,9 @@ Commands a script or a binding reaches for, beyond the obvious ones
 - `choose-client` lists the attached clients and detaches the one picked.
 - `send-keys -X <copy-command>` drives copy mode (`search-backward`,
   `begin-selection`, `copy-selection`, ... — the tmux names).
-- `capture-pane -p [-e]` prints a pane, with the colours if asked.
+- `capture-pane -p [-e] [-J] [-S -N]` prints a pane, with the colours if
+  asked (`-e`), wrapped lines joined back into one (`-J`), N lines of
+  scrollback above it (`-S -N`, `-S -` for all of it).
 - `find-text pattern` looks through what **every pane has printed**, not
   just the window names, and says where each hit is and how far back:
   `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C` matches case, `-t` narrows to a
@@ -459,11 +471,14 @@ covered without a human at the keyboard.
 ## Not (yet) implemented
 
 Relative to tmux: `synchronize-panes` applies to the current window (no
-`-t`), multiple clients on the same session see the same size (last attach
-wins, no per-client viewport, so `refresh-client -U`/`-D` do nothing), only
-the hooks listed above, `swap-window` works inside one session (`move-window`
-crosses sessions), `bind -r` has no per-key repeat count, `choose-tree`
-without per-session collapsing, tagging or a filter, `swap-pane` swaps with
+`-t`), multiple clients on the same session see the same size (`window-size
+latest|smallest|largest|manual` picks which client sets it: the one used
+last, the smallest, the largest, or none but `resize-window`; there is no
+per-client viewport, so `refresh-client -U`/`-D` do nothing), only the hooks
+listed above,
+`swap-window` works inside one session (`move-window` crosses sessions),
+`bind -r` has no per-key repeat count, `choose-tree` has no per-session
+collapsing (its filter is a substring, not a format), `swap-pane` swaps with
 the previous or next pane (`-U` / `-D`; `-s` and `-t` both name the pane to
 swap, there is no pair form), `select-layout` has the five named layouts and
 `-E` but not tmux's layout strings, `list-panes -a`/`-s` always list the

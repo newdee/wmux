@@ -1385,3 +1385,54 @@ pwsh 进注册表驱动器时目录保持上一个真实目录；含空格与中
 
 A、B、C 三轮连续零发现，验收通过。测试 156 → 170（lib 114 / console 4 / e2e 52）。
 用户机器上跑的是 0.5.0（`C:\Program Files\wmux`），需要发新版才能用上。
+
+# 第二十六次验收（2026-09-23）— C-10 收尾：`%if` 求值、比较运算、`capture-pane -J`、25 个新变量、完整 target、`window-size`、picker 过滤/标记
+
+## 做了什么
+
+1. `%if` / `%elif` / `%else` / `%endif` 真正求值（条件是格式串，非空且非 `0` 为真；server 级上下文，不跑 `#()`），
+   原先是整块跳过。新增比较运算 `#{==:}` `#{!=:}` `#{<:}` `#{>:}` `#{<=:}` `#{>=:}` `#{&&:}` `#{||:}` `#{m:pat,s}`（`m/i:` 忽略大小写），操作数本身也是格式串。
+2. `capture-pane -J` 把软换行拼回一行（按 vt100 的 `row_wrapped`）。
+3. 25 个新格式变量（session_activity / last_attached、window_activity / start / end / layout、pane_last、pane 四边坐标、
+   cursor_x/y、history_size / limit、pane_mode、client_* 等），全部从活树取值。
+4. `select-pane -t s:w.p` 完整 target；`copy-mode -t`。
+5. `window-size latest|smallest|largest|manual`：session 尺寸听哪个客户端（默认 latest = 最后接入/改尺寸/敲键的那个；
+   smallest / largest 在接入、改尺寸、脱离、客户端断线时重算；manual 只认 `resize-window`）。
+6. `choose-tree` / `choose-jobs` / `choose-buffer` / `choose-client`：`f` 输入子串过滤（边打边筛，`Enter` 留下，`Esc` 还原；
+   树里 session 与其窗口互相带上），`t` 打标记（行首 `*`，光标下移）、`T` 清标记，`x` 杀掉标记的行（树里是 session / 窗口，
+   任务板里是 pane；`r` 重启同理）。提示行右端显示 `[n tagged] [filter: xx]`，窄屏时覆盖静态提示。
+
+## 修复过程中的发现（不计数）
+
+- e2e `choose_tree_picker` 用 `x` 当"未绑定键"，现在 `x` 会杀东西 → 改用 `z`。
+- 提示行加上过滤/标记状态后超过 80 列被截断 → 状态改为右对齐覆盖。
+- 过滤串只含空白时不筛但提示行显示 `[filter:  ]` → 按 trim 后判断。
+- 探针脚本：`new -x 1 -y 1` 在解析阶段就被拒（≥10×3），是脚本假设错，代码没问题。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制 + 全量测试）
+
+数据：配置文件里 `set -g window-size smallest` 生效、`%if #{==:...}` 未命中时 mouse 保持 on、config notes 为空；
+`set` 四个值逐个回读一致，`window-si` 缩写命中，`sideways` 退出码 1 并列出四个合法值，`win` 报歧义（4 个候选）；
+无客户端的 `-x 100 -y 30` session 在四种模式下都保持 100x30；`show-options -g` 列出 `window-size`。
+全量测试 180 项（lib 120 / console 4 / e2e 56）全过，clippy 无 warning，`cargo fmt --check` 退出码 0。
+e2e `window_size_picks_which_client_sizes_the_session`：两客户端 80x24 / 60x20，latest 下 Resize → 60x20、大客户端敲键 → 80x24；
+smallest → 60x20 且敲键不变；largest → 80x24，大客户端脱离 → 60x20；manual 下 Resize 70x22 + 敲键仍 60x20。
+e2e `choose_tree_filters_and_tags`：`beta` 过滤剩 2 行（session 行跟着留）、`Esc` 回到 5 行、`GAMMA` 大小写不敏感且 `Enter` 后过滤留下、
+`C-u`+`Enter` 清掉；打 3 个标记再取消 1 个 → `[2 tagged]`；`x` 后 `ls` 只剩 `alpha: 1 windows`，`T` 清标记。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：两条新 e2e（连同另外 3 条 picker e2e）与 3 条相关单元测试连跑 3 次，去掉耗时后输出行完全一致（distinct = 1）：
+e2e 5 passed / lib 3 passed，每次相同。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界 + 静态一致性
+
+数据：默认值 `latest`；空值退出码 1；` largest ` 带空白存为 `largest`；`LATEST` 大小写敏感被拒；
+`new -x 10 -y 3`（解析器接受的最小值）在四种模式下都是 10x3；无客户端 server 下 `split-window` 后仍 80x24；
+`window-size` 是全局选项，存档文件里 0 处出现。文档核对：README（中英）picker 按键行、"还没做的"段（改为 `window-size` 决定听谁、
+过滤是子串）、parity 表 choose-tree / copy-mode `-t` / select-pane 完整 target / `%if` 段落 / 选项列表 / Still to do；
+`docs/index.html` 测试数 170 → 180。`chooser_filter` 单元测试覆盖：无过滤全留、大小写不敏感、标题行常留、session 与窗口互相带上、无命中只剩标题。
+
+## 结论（第二十六次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 175 → 180（lib 120 / console 4 / e2e 56）。

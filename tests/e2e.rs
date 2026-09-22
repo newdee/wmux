@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use wmux::ipc::{ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame};
-use wmux::keys::{LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_RETURN};
+use wmux::keys::{LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_ESCAPE, VK_RETURN};
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -866,7 +866,7 @@ async fn choose_tree_picker() {
     c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
     c.wait_for("G", |s| s.contents().contains("[5/5]")).await;
     c.type_str("j").await;
-    c.key(b'X' as u16, 'x', 0).await; // unbound key: ignored, picker stays
+    c.key(b'Z' as u16, 'z', 0).await; // unbound key: ignored, picker stays
     c.wait_for("clamped", |s| s.contents().contains("[5/5]")).await;
     c.key(b'1' as u16, '1', 0).await;
     c.wait_for("digit", |s| s.contents().contains("[2/5]")).await;
@@ -2218,6 +2218,10 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
          bind | split-window -h \\\n  -c \"#{pane_current_path}\"\n\
          %if #{==:#{host},nowhere}\n\
          set -g status off\n\
+         %elif #{==:#{host},#{host}}\n\
+         set -g display-time 4321\n\
+         %else\n\
+         set -g display-time 1\n\
          %endif\n\
          set -g @plugin 'tmux-plugins/tpm'\n\
          set -g @plugin 'tmux-plugins/tmux-sensible'\n\
@@ -2258,8 +2262,10 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     // ...the copy-mode-vi lines did not leak into the prefix table...
     assert!(!keys.lines().any(|l| l.contains("-T prefix v ")), "{keys}");
     assert!(!keys.lines().any(|l| l.contains("-T prefix y ")), "{keys}");
-    // ...the %if block was left alone (status is still on)...
+    // ...the %if chain is evaluated: the host is not "nowhere" (status
+    // stays on), it is itself (display-time 4321), the %else is not taken...
     assert_eq!(h.cli(&["show", "-gv", "status"]).await.1.trim(), "on");
+    assert_eq!(h.cli(&["show", "-gv", "display-time"]).await.1.trim(), "4321");
     // ...and what was skipped is listed, not thrown at every attach.
     let (_, msgs, _) = h.cli(&["show-messages"]).await;
     assert!(msgs.contains("copy-mode-vi"), "the refused table is named: {msgs}");
@@ -2285,11 +2291,18 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     assert_eq!(code, 1);
     assert!(err.contains("source-file loop"), "{err}");
     assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "off", "the lines before the loop still applied");
+    // (`x` is a format that expands to "x", which is true, so the branch is
+    // read up to where the file ends; the missing %endif is still said.)
     let open = dir.join("open.conf");
     std::fs::write(&open, "set -g mouse on\n%if x\nset -g mouse off\n").unwrap();
     let (code, _, err) = h.cli(&["source-file", &open.to_string_lossy()]).await;
     assert_eq!(code, 1);
     assert!(err.contains("%if without %endif"), "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "off");
+    // A false condition with no %endif: nothing after it is read.
+    std::fs::write(&open, "set -g mouse on\n%if #{==:1,2}\nset -g mouse off\n").unwrap();
+    let (code, _, _) = h.cli(&["source-file", &open.to_string_lossy()]).await;
+    assert_eq!(code, 1);
     assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "on");
     h.cli(&["kill-server"]).await;
 }
@@ -2659,6 +2672,146 @@ async fn a_resumed_session_keeps_its_saved_size() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn window_size_picks_which_client_sizes_the_session() {
+    let h = Harness::start("winsize").await;
+    async fn size(h: &Harness) -> String {
+        h.cli(&["display-message", "-p", "-t", "sz:0", "#{window_width}x#{window_height}"]).await.1.trim().to_string()
+    }
+    let mut big = h.connect().await;
+    big.attach(&["new", "-s", "sz"]).await;
+    big.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    assert_eq!(size(&h).await, "80x24");
+    let mut small = h.connect().await;
+    small.attach(&["attach", "-t", "sz"]).await;
+    small.send(ClientMsg::Resize { cols: 60, rows: 20 }).await;
+    // latest (the default): the client that attached or resized last.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size(&h).await != "60x20" {
+        assert!(Instant::now() < deadline, "latest: {}", size(&h).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // ...and the one that types: a key from the big client takes it back.
+    big.type_str("x").await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size(&h).await != "80x24" {
+        assert!(Instant::now() < deadline, "latest after a key: {}", size(&h).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // smallest: the small client wins whoever types.
+    let (code, _, err) = h.cli(&["set", "-g", "window-size", "smallest"]).await;
+    assert_eq!(code, 0, "{err}");
+    big.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size(&h).await != "60x20" {
+        assert!(Instant::now() < deadline, "smallest: {}", size(&h).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    big.type_str("x").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(size(&h).await, "60x20", "a key does not change smallest");
+    // largest: the big one; and when it goes, the small one is all there is.
+    h.cli(&["set", "-g", "window-size", "largest"]).await;
+    small.send(ClientMsg::Resize { cols: 60, rows: 20 }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size(&h).await != "80x24" {
+        assert!(Instant::now() < deadline, "largest: {}", size(&h).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    big.send(ClientMsg::Detach).await;
+    assert_eq!(big.wait_detached().await, "detached");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size(&h).await != "60x20" {
+        assert!(Instant::now() < deadline, "largest after a detach: {}", size(&h).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // manual: nothing a client does moves it; resize-window does.
+    h.cli(&["set", "-g", "window-size", "manual"]).await;
+    small.send(ClientMsg::Resize { cols: 70, rows: 22 }).await;
+    small.type_str("x").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(size(&h).await, "60x20", "manual ignores the client");
+    let (code, _, err) = h.cli(&["set", "-g", "window-size", "sideways"]).await;
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("bad window-size"), "{err}");
+    assert_eq!(h.cli(&["show-options", "-gv", "window-size"]).await.1.trim(), "manual");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_filters_and_tags() {
+    let h = Harness::start("treetags").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "alpha"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    h.cli(&["new-window", "-d", "-t", "alpha", "-n", "beta"]).await;
+    h.cli(&["new", "-d", "-s", "gamma"]).await;
+    h.wait_capture("gamma:0", "shell prompt", |t| t.contains("wmux>")).await;
+    c.prefix('w').await;
+    // The cursor starts on the current window, alpha:0 (line 2 of 5).
+    c.wait_for("picker", |s| s.contents().contains("[2/5] j/k move")).await;
+    // f types a filter; the list follows it, and a session stays with its
+    // matching window. Escape puts the old (empty) filter back.
+    c.type_str("f").await;
+    c.wait_for("filter prompt", |s| s.contents().contains("(filter)")).await;
+    c.type_str("beta").await;
+    c.wait_for("filtered", |s| s.contents().contains("/2] j/k move") && s.contents().contains("[filter: beta]")).await;
+    let text = c.text();
+    assert!(text.contains("(0) - alpha: 2 windows (attached)"), "{text}");
+    assert!(text.contains("(1)   - 1: beta"), "{text}");
+    assert!(!text.contains("gamma"), "{text}");
+    assert!(text.contains("[filter: beta]"), "{text}");
+    c.key(VK_ESCAPE, '\x1b', 0).await;
+    c.wait_for("filter cancelled", |s| s.contents().contains("/5] j/k move") && !s.contents().contains("[filter"))
+        .await;
+    // A filter by session name keeps its windows; Enter keeps the filter.
+    c.type_str("f").await;
+    c.wait_for("filter prompt", |s| s.contents().contains("(filter)")).await;
+    c.type_str("GAMMA").await;
+    c.wait_for("filtered", |s| s.contents().contains("/2] j/k move") && s.contents().contains("[filter: GAMMA]")).await;
+    c.enter().await;
+    c.wait_for("filter kept", |s| {
+        let t = s.contents();
+        !t.contains("(filter)") && t.contains("[filter: GAMMA]") && t.contains("(1)   - 0: cmd*")
+    })
+    .await;
+    c.type_str("f").await;
+    c.wait_for("filter prompt", |s| s.contents().contains("(filter)")).await;
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await; // C-u: clear the input
+    c.enter().await;
+    c.wait_for("no filter", |s| s.contents().contains("/5] j/k move") && !s.contents().contains("[filter")).await;
+    // t tags a line (marked *) and moves down; x kills every tagged line.
+    c.type_str("g").await; // alpha
+    c.type_str("j").await; // alpha:0
+    c.type_str("j").await; // alpha:1 (beta)
+    c.wait_for("on beta", |s| s.contents().contains("[3/5] j/k move")).await;
+    c.type_str("t").await;
+    c.wait_for("tagged", |s| s.contents().contains("(2)*  - 1: beta") && s.contents().contains("[1 tagged]")).await;
+    c.type_str("t").await; // gamma (session)
+    c.wait_for("two tagged", |s| s.contents().contains("(3)*- gamma") && s.contents().contains("[2 tagged]")).await;
+    c.type_str("t").await; // gamma's window (the last line: the cursor stays)
+    c.wait_for("three", |s| s.contents().contains("[3 tagged]")).await;
+    c.type_str("t").await; // ...and untag it again
+    c.wait_for("back to two", |s| s.contents().contains("[2 tagged]") && s.contents().contains("(4)   - 0: cmd*"))
+        .await;
+    c.key(b'X' as u16, 'x', 0).await;
+    c.wait_for("killed", |s| {
+        let t = s.contents();
+        t.contains("/2] j/k move") && !t.contains("beta") && !t.contains("gamma") && !t.contains("tagged]")
+    })
+    .await;
+    let (_, out, _) = h.cli(&["ls"]).await;
+    assert!(out.contains("alpha: 1 windows") && !out.contains("gamma"), "{out}");
+    // T clears the tags without acting.
+    c.type_str("t").await;
+    c.wait_for("tagged", |s| s.contents().contains("[1 tagged]")).await;
+    c.key(b'T' as u16, 'T', SHIFT_PRESSED).await;
+    c.wait_for("cleared", |s| !s.contents().contains("tagged]")).await;
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn choose_jobs_is_the_board_you_can_act_on() {
     let h = Harness::start("choosejobs").await;
     h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
@@ -2885,5 +3038,79 @@ async fn a_resumed_pane_keeps_its_history_through_a_resize() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (_, out, _) = h.cli(&["capture-pane", "-p", "-S", "-", "-t", "r:0.0"]).await;
     assert_eq!(out.lines().filter(|l| l.trim_end().starts_with("keep-")).count(), 40, "after the grow: {out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn capture_pane_dash_j_joins_wrapped_lines() {
+    let h = Harness::start("joinlines").await;
+    h.cli(&["new", "-d", "-s", "j", "-x", "30", "-y", "10"]).await;
+    h.wait_capture("j:0", "prompt", |t| t.contains("wmux>")).await;
+    // 50 x's in a 30-column pane: two screen rows, one line.
+    let long = "x".repeat(50);
+    h.cli(&["send-keys", "-t", "j:0", &format!("echo {long}"), "Enter"]).await;
+    h.wait_capture("j:0", "the echo", |t| t.matches("xxxxxxxxxx").count() >= 4).await;
+    let (_, split, _) = h.cli(&["capture-pane", "-p", "-t", "j:0"]).await;
+    let (_, joined, _) = h.cli(&["capture-pane", "-p", "-J", "-t", "j:0"]).await;
+    assert!(split.lines().any(|l| l.trim_end() == "x".repeat(30)), "wrapped at 30: {split}");
+    assert!(split.lines().any(|l| l.trim_end() == "x".repeat(20)), "the rest on the next row: {split}");
+    assert!(joined.lines().any(|l| l.trim_end() == long), "joined back: {joined}");
+    assert!(!joined.lines().any(|l| l.trim_end() == "x".repeat(20)), "{joined}");
+    // The typed command wrapped too (prompt + 55 chars), and comes back whole.
+    assert!(joined.lines().any(|l| l.trim_end() == format!("wmux>echo {long}")), "{joined}");
+    // -J and -e together: the reset goes at the end of the joined line only.
+    let (_, coloured, _) = h.cli(&["capture-pane", "-p", "-J", "-e", "-S", "-", "-t", "j:0"]).await;
+    assert!(coloured.lines().any(|l| l.trim_end().trim_end_matches("\x1b[0m") == long), "{coloured:?}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_newer_variables_come_from_the_live_tree() {
+    let h = Harness::start("morevars").await;
+    h.cli(&["new", "-d", "-s", "v"]).await;
+    h.wait_capture("v:0", "prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["split-window", "-d", "-t", "v:0"]).await;
+    h.cli(&["new-window", "-d", "-t", "v"]).await;
+    let ask = |t: &'static str, f: &'static str| {
+        let h = &h;
+        async move { h.cli(&["display-message", "-p", "-t", t, f]).await.1.trim().to_string() }
+    };
+    // Two panes one above the other in 23 rows: the top one touches the top
+    // and left and right edges but not the bottom; rows 0..10.
+    assert_eq!(ask("v:0.0", "#{pane_at_top}#{pane_at_bottom}#{pane_at_left}#{pane_at_right}").await, "1011");
+    assert_eq!(ask("v:0.1", "#{pane_at_top}#{pane_at_bottom}").await, "01");
+    assert_eq!(ask("v:0.0", "#{pane_top},#{pane_left},#{pane_bottom},#{pane_right}").await, "0,0,10,79");
+    assert_eq!(ask("v:0.1", "#{pane_top}").await, "12");
+    // The window flags: first of two, not last; the second the other way.
+    assert_eq!(ask("v:0", "#{window_start_flag}#{window_end_flag}").await, "10");
+    assert_eq!(ask("v:1", "#{window_start_flag}#{window_end_flag}").await, "01");
+    // A layout given by name is remembered by name.
+    assert_eq!(ask("v:0", "[#{window_layout}]").await, "[]");
+    h.cli(&["select-layout", "-t", "v:0", "even-horizontal"]).await;
+    assert_eq!(ask("v:0", "#{window_layout}").await, "even-horizontal");
+    // The cursor sits after the prompt; the scrollback grows with output.
+    h.wait_capture("v:1", "prompt", |t| t.contains("wmux>")).await;
+    assert_eq!(ask("v:1", "#{cursor_x},#{history_size},#{history_limit}").await, "5,0,5000");
+    h.cli(&["send-keys", "-t", "v:1", "for /l %i in (1,1,40) do @echo hs-%i", "Enter"]).await;
+    h.wait_capture("v:1", "the loop", |t| t.contains("hs-40")).await;
+    let n: usize = ask("v:1", "#{history_size}").await.parse().unwrap();
+    assert!(n >= 18, "40 lines in a 22-row pane leave some in the scrollback: {n}");
+    // pane_last: the pane active before the current one.
+    h.cli(&["select-pane", "-t", "v:0.1"]).await;
+    assert_eq!(ask("v:0.0", "#{pane_last}").await, "1");
+    assert_eq!(ask("v:0.1", "#{pane_last}").await, "0");
+    // pane_mode says copy-mode while in it.
+    assert_eq!(ask("v:0.1", "[#{pane_mode}]").await, "[]");
+    h.cli(&["copy-mode", "-t", "v:0.1"]).await;
+    assert_eq!(ask("v:0.1", "#{pane_mode}").await, "copy-mode");
+    // Times are unix seconds around now; session_activity is the newest output.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    for f in ["#{session_activity}", "#{session_last_attached}", "#{window_activity}"] {
+        let t: i64 = ask("v:1", f).await.parse().unwrap_or(0);
+        assert!((now - t).abs() < 120, "{f} = {t} vs now {now}");
+    }
+    // A script's client has a name and no session; client_prefix is 0.
+    let (_, out, _) = h.cli(&["display-message", "-p", "#{client_name}|[#{client_session}]|#{client_prefix}"]).await;
+    assert!(out.trim().starts_with("client-") && out.trim().ends_with("|[]|0"), "{out}");
     h.cli(&["kill-server"]).await;
 }

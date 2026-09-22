@@ -114,6 +114,12 @@ impl Screen {
         self.grid_mut().set_scrollback(rows);
     }
 
+    /// (wmux) How many lines the scrollback holds, without moving through it.
+    #[must_use]
+    pub fn scrollback_rows(&self) -> usize {
+        self.grid().scrollback_rows()
+    }
+
     /// Returns the current position in the scrollback.
     ///
     /// This position indicates the offset from the top of the screen, and is

@@ -63,6 +63,11 @@ impl Grid {
         self.size
     }
 
+    /// (wmux) How many lines the scrollback holds, without moving through it.
+    pub fn scrollback_rows(&self) -> usize {
+        self.scrollback.len()
+    }
+
     pub fn set_size(&mut self, size: Size) {
         if size.cols != self.size.cols {
             for row in &mut self.rows {
