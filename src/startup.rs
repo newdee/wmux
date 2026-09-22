@@ -10,8 +10,8 @@
 use anyhow::{Context, Result, bail};
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW,
-    RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+    RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -35,11 +35,37 @@ fn wide(s: &str) -> Vec<u16> {
 struct Key(HKEY);
 
 impl Key {
-    fn open(access: u32) -> Result<Key> {
+    /// The Run key, or None when the profile has none yet (a fresh user
+    /// has never had a program register itself, so nothing is installed).
+    fn open(path: &str, access: u32) -> Result<Option<Key>> {
         let mut h: HKEY = std::ptr::null_mut();
-        let rc = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), 0, access, &mut h) };
+        let rc = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide(path).as_ptr(), 0, access, &mut h) };
+        match rc {
+            0 => Ok(Some(Key(h))),
+            rc if rc == ERROR_FILE_NOT_FOUND => Ok(None),
+            rc => bail!("cannot open HKCU\\{path} (error {rc})"),
+        }
+    }
+
+    /// The Run key, made when it is missing: installing must work on a
+    /// profile nothing has registered itself in before.
+    fn create(path: &str) -> Result<Key> {
+        let mut h: HKEY = std::ptr::null_mut();
+        let rc = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide(path).as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                std::ptr::null(),
+                &mut h,
+                std::ptr::null_mut(),
+            )
+        };
         if rc != 0 {
-            bail!("cannot open HKCU\\{RUN_KEY} (error {rc})");
+            bail!("cannot open or create HKCU\\{path} (error {rc})");
         }
         Ok(Key(h))
     }
@@ -57,7 +83,7 @@ pub fn install(socket: &str) -> Result<String> {
     let exe = exe.to_string_lossy().into_owned();
     let name = value_name(socket);
     let cmd = command_line(&exe, socket);
-    let key = Key::open(KEY_SET_VALUE)?;
+    let key = Key::create(RUN_KEY)?;
     let data = wide(&cmd);
     let rc = unsafe {
         RegSetValueExW(key.0, wide(&name).as_ptr(), 0, REG_SZ, data.as_ptr() as *const u8, (data.len() * 2) as u32)
@@ -75,7 +101,9 @@ pub fn install(socket: &str) -> Result<String> {
 
 pub fn remove(socket: &str) -> Result<String> {
     let name = value_name(socket);
-    let key = Key::open(KEY_SET_VALUE)?;
+    let Some(key) = Key::open(RUN_KEY, KEY_SET_VALUE)? else {
+        return Ok(format!("{name}: not installed"));
+    };
     let rc = unsafe { RegDeleteValueW(key.0, wide(&name).as_ptr()) };
     match rc {
         0 => Ok(format!("{name}: removed; wmux will not start at logon")),
@@ -87,7 +115,7 @@ pub fn remove(socket: &str) -> Result<String> {
 /// The command that runs at logon, or None when there is none.
 pub fn status(socket: &str) -> Result<Option<String>> {
     let name = value_name(socket);
-    let key = Key::open(KEY_QUERY_VALUE)?;
+    let Some(key) = Key::open(RUN_KEY, KEY_QUERY_VALUE)? else { return Ok(None) };
     let mut kind = 0u32;
     let mut size = 0u32;
     let name_w = wide(&name);
@@ -171,6 +199,25 @@ mod tests {
         assert!(e.contains("expected on, off or status"), "{e}");
         let e = run("default", &["on".to_string(), "extra".to_string()]).unwrap_err().to_string();
         assert!(e.contains("unexpected argument 'extra'"), "{e}");
+    }
+
+    /// A profile with no Run key at all (a fresh user, a CI runner): opening
+    /// says "none" rather than failing, creating makes it. A throwaway key
+    /// of wmux's own stands in for the real one, and is deleted after.
+    #[test]
+    fn a_missing_key_reads_as_nothing_installed_and_is_made_on_install() {
+        use windows_sys::Win32::System::Registry::RegDeleteKeyW;
+        let path = format!("Software\\wmux-unit-test-{}\\Run", std::process::id());
+        let parent = path.rsplit_once('\\').unwrap().0.to_string();
+        assert!(Key::open(&path, KEY_QUERY_VALUE).unwrap().is_none(), "nothing there yet");
+        assert!(Key::open(&path, KEY_SET_VALUE).unwrap().is_none());
+        drop(Key::create(&path).unwrap());
+        assert!(Key::open(&path, KEY_QUERY_VALUE).unwrap().is_some(), "made by create");
+        drop(Key::create(&path).unwrap()); // and creating it again is fine
+        for p in [path.as_str(), parent.as_str()] {
+            assert_eq!(unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, wide(p).as_ptr()) }, 0, "cleanup {p}");
+        }
+        assert!(Key::open(&path, KEY_QUERY_VALUE).unwrap().is_none(), "gone again");
     }
 
     /// The real key, with a throwaway socket name so nothing of the user's

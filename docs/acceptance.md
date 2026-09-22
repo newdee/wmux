@@ -1436,3 +1436,35 @@ e2e 5 passed / lib 3 passed，每次相同。
 ## 结论（第二十六次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 175 → 180（lib 120 / console 4 / e2e 56）。
+
+# 第二十七次验收（2026-09-23）— 发布 0.7.0 时 CI 暴露：Run 键不存在则 `startup` 全挂
+
+## 发现
+
+v0.7.0 的 release 工作流在 test 步骤失败：`startup::tests::install_status_remove_round_trip` 报
+`cannot open HKCU\Software\Microsoft\Windows\CurrentVersion\Run (error 2)`。runner 的用户 profile 里根本没有 Run 键
+（v0.6.0 时的镜像有，这次换了 Node 24 镜像后没有）。代码只 `RegOpenKeyExW` 不创建——一个从没有程序登记过自启动的新用户
+跑 `wmux startup on` 也会这样失败，`status` / `off` 也会报错而不是说"未安装"。本地全绿是因为开发机上这个键一直在。
+
+## 修复
+
+`Key::open(path, access)` 缺键返回 `None`（`status` → 未安装，`off` → "not installed"），`install` 改用 `RegCreateKeyExW`
+（非易失、KEY_SET_VALUE）。键路径变成参数，单元测试用 `HKCU\Software\wmux-unit-test-<pid>\Run` 这个自己的临时键复现
+"缺键 → None → create 后有 → 再 create 无害 → 删掉后又 None"，测完删键。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路 + 全量
+
+数据：4 条 startup 单元测试全过（新测试覆盖缺键路径），`reg query HKCU\Software` 无 `wmux-unit-test` 残留；
+全量 181 项（lib 121 / console 4 / e2e 56）全过；clippy 无 warning，fmt 干净。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：startup 4 条连跑 3 次结果一致（4 passed ×3）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：真实缺键环境（CI runner）
+
+数据：见下方 release 结果——v0.7.0 tag 移到修复提交后重跑，test 步骤通过即为证据。
+
+## 结论（第二十七次验收）
+
+三轮零发现。测试 180 → 181。`docs/index.html` 计数同步。
