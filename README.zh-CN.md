@@ -113,7 +113,7 @@ wmux delete-saved old    # 不要了
 wmux save-session -a     # 现在就全存一遍（prefix C-s 存当前这个）
 ```
 
-恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行）的输出。程序当时跑到哪是回不来的，谁也做不到。想让 server 一启动就自己恢复，配置里写 `set -g restore-on-start on`；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
+恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行；`set -g save-history all` 把整段 scrollback 连颜色一起存下来）的输出。程序当时跑到哪是回不来的，谁也做不到。想让 server 一启动就自己恢复，配置里写 `set -g restore-on-start on`；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
 
 想让这一切在开机登录时自动发生：
 
@@ -166,7 +166,7 @@ set -g pane-base-index 1
 set -g repeat-time 500            # `bind -r` 的键在多久之内还能接着按；0 就是关掉
 
 set -g remain-on-exit on          # 程序退出后 pane 留着，告诉你它是怎么没的
-set -g save-history 500           # 每个 pane 存多少行给 `resume` 用；0 就是不存
+set -g save-history 500           # 每个 pane 存多少行给 `resume` 用；0 就是不存，all 是整段 scrollback
 set -g monitor-activity on        # 后台窗口有输出就在状态栏标 `#`
 set -g monitor-bell on            # 响铃标 `!`；默认就是开的
 set -g monitor-silence 60         # 60 秒没动静标 `~`；0 是关掉

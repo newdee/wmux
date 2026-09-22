@@ -32,7 +32,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | delete-buffer | yes | `prefix -` |
 | detach-client | yes | `-a`, `-s`, `-t` |
 | display-menu | part | `-T` title, name/key/command triples, `""` separators; always drawn over the window (no `-x`/`-y`) |
-| display-message | yes | `-p`, formats |
+| display-message | yes | `-p`, `-t`, formats |
 | display-panes | yes | `prefix q`, digit selects |
 | display-popup | part | `-E`, `-C`, `-w`, `-h`, `-d`; always centred, and the prefix key stays wmux's |
 | find-window | yes | `prefix f`; one hit jumps, several open the picker |
@@ -51,7 +51,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | load-buffer / save-buffer | yes | |
 | lock-client / lock-server / lock-session | no | no equivalent of a Unix screen lock here |
 | move-window | yes | inside a session and across sessions; a free index is taken as given |
-| new-session | yes | `-s`, `-n`, `-c`, `-d`, `-A` |
+| new-session | yes | `-s`, `-n`, `-c`, `-d`, `-A`, `-x`, `-y` |
 | new-window | yes | `-n`, `-c`, `-d`, `-t` |
 | next-layout / previous-layout | yes | also `select-layout -n` / `-p`, `prefix Space` |
 | next-window / previous-window | yes | `-t`, `-a` (next window with an alert) |
@@ -218,7 +218,7 @@ Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
 `allow-rename`, `automatic-rename`, `window-status-current-style`,
 `mode-keys`, `aggressive-resize`, `set-titles`, `set-titles-string`,
 `history-file`. wmux only: `save-history` (lines of each pane written into
-the session file), `autosave`, `restore-on-start`, `sessions-dir`,
+the session file, colours kept; `all` for the whole scrollback), `autosave`, `restore-on-start`, `sessions-dir`,
 `plugin-path`, and `@user` options.
 
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`

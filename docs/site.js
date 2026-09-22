@@ -42,7 +42,7 @@ const ZH = {
   "c3.p1":
     "<b>重启也一样。</b> 每个 session 的形状一变就存一次盘，所以 <code>wmux resume</code> 能把窗口、分屏布局、每块跑的命令和所在目录都带回来。",
   "c3.p2":
-    "<b>连打印过的东西一起。</b> <code>save-history</code>（默认 500 行）也进那个文件，所以恢复出来的 pane 屏幕上是原来的输出，不是一个空提示符。",
+    "<b>连打印过的东西一起。</b> <code>save-history</code>（默认 500 行，<code>all</code> 就是整段 scrollback，颜色也在）也进那个文件，所以恢复出来的 pane 屏幕上是原来的输出，不是一个空提示符。",
   "c3.p3":
     "<b>按 session 来。</b> <code>wmux list-saved</code> 看有哪些能恢复，<code>wmux resume work</code> 只恢复其中一个。",
 

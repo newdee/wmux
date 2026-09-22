@@ -148,7 +148,8 @@ wmux save-session -a     # save everything right now (prefix C-s saves the curre
 ```
 
 Resuming recreates the pane tree, puts back the last `save-history` lines
-each pane had on screen (500 by default) and starts each pane's original
+each pane had on screen (500 by default; `set -g save-history all` keeps
+the whole scrollback, colours included) and starts each pane's original
 command in the pane's last known directory. What the programs themselves
 were doing does not come back; no multiplexer can do that. `set -g
 restore-on-start on` makes a fresh server restore everything by itself;
@@ -210,7 +211,7 @@ set -g pane-base-index 1
 set -g repeat-time 500            # how long a `bind -r` key keeps working; 0 disables
 
 set -g remain-on-exit on          # keep a pane whose program exited, showing why
-set -g save-history 500           # lines of each pane saved for `resume`; 0 saves none
+set -g save-history 500           # lines of each pane saved for `resume`; 0 saves none, all saves the whole scrollback
 set -g monitor-activity on        # flag a background window that prints (`#` on the status line)
 set -g monitor-bell on            # and one that rings the bell (`!`); on by default
 set -g monitor-silence 60         # flag one that has said nothing for 60s (`~`); 0 disables

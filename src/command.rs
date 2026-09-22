@@ -65,6 +65,9 @@ pub enum Cmd {
         argv: Vec<String>,
         /// `-A`: attach to the session instead if it already exists.
         attach_existing: bool,
+        /// `-x cols -y rows`: the size of a session made with `-d` (or from
+        /// a script), which has no terminal to take it from.
+        size: (Option<u16>, Option<u16>),
     },
     AttachSession {
         target: Option<Target>,
@@ -329,6 +332,8 @@ pub enum Cmd {
     },
     DisplayMessage {
         msg: String,
+        /// `-t`: the pane the format is expanded for (default: the client's).
+        target: Option<Target>,
     },
     ConfirmBefore {
         prompt: Option<String>,
@@ -480,7 +485,7 @@ pub enum Cmd {
 impl fmt::Display for Cmd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing } => {
+            Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 f.write_str("new-session")?;
                 if let Some(n) = name {
                     write!(f, " -s {}", quote(n))?;
@@ -496,6 +501,12 @@ impl fmt::Display for Cmd {
                 }
                 if *attach_existing {
                     f.write_str(" -A")?;
+                }
+                if let Some(x) = size.0 {
+                    write!(f, " -x {x}")?;
+                }
+                if let Some(y) = size.1 {
+                    write!(f, " -y {y}")?;
                 }
                 for a in argv {
                     write!(f, " {}", quote(a))?;
@@ -928,7 +939,11 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::DisplayMessage { msg } => write!(f, "display-message {}", quote(msg)),
+            Cmd::DisplayMessage { msg, target } => {
+                f.write_str("display-message")?;
+                fmt_target(f, target)?;
+                write!(f, " {}", quote(msg))
+            }
             Cmd::ConfirmBefore { prompt, cmd } => {
                 f.write_str("confirm-before")?;
                 if let Some(p) = prompt {
@@ -1470,6 +1485,14 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "new-session" => {
             let (mut name, mut window_name, mut cwd, mut detached, mut attach_existing) =
                 (None, None, None, false, false);
+            let mut size = (None, None);
+            // Small enough to be a mistake rather than a wish.
+            let dim = |flag: &str, v: &str, min: u16| -> Result<u16, String> {
+                match v.parse::<u16>() {
+                    Ok(n) if n >= min => Ok(n),
+                    _ => Err(format!("new-session: {flag} wants a number of at least {min}, not '{v}'")),
+                }
+            };
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-s" => name = Some(a.value("-s")?.to_string()),
@@ -1481,10 +1504,12 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                         attach_existing = true;
                         detached = true;
                     }
+                    "-x" => size.0 = Some(dim("-x", a.value("-x")?, 10)?),
+                    "-y" => size.1 = Some(dim("-y", a.value("-y")?, 3)?),
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            Cmd::NewSession { name, window_name, cwd, detached, argv: a.rest(), attach_existing }
+            Cmd::NewSession { name, window_name, cwd, detached, argv: a.rest(), attach_existing, size }
         }
         "attach-session" => {
             let (mut target, mut detach_others) = (None, false);
@@ -2202,10 +2227,20 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::CommandPrompt { prompt, initial, template }
         }
         "display-message" => {
+            let mut target = None;
             while a.is_flag() {
-                a.next();
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    // -c names a client; there is one per connection here.
+                    "-c" => {
+                        a.value("-c")?;
+                    }
+                    // -p (print), -d (delay), -I (stdin): every message is
+                    // printed to a script and shown to a terminal.
+                    _ => {}
+                }
             }
-            Cmd::DisplayMessage { msg: a.rest().join(" ") }
+            Cmd::DisplayMessage { msg: a.rest().join(" "), target }
         }
         "confirm-before" => {
             let mut prompt = None;
@@ -2593,6 +2628,7 @@ mod tests {
                 detached: true,
                 argv: vec!["wsl.exe".into(), "-d".into(), "Ubuntu".into()],
                 attach_existing: false,
+                size: (None, None),
             }
         );
         assert_eq!(
@@ -2603,11 +2639,20 @@ mod tests {
                 cwd: None,
                 detached: false,
                 argv: vec![],
-                attach_existing: false
+                attach_existing: false,
+                size: (None, None),
             }
         );
         assert!(matches!(p("new -A -s x"), Cmd::NewSession { attach_existing: true, detached: false, .. }));
         assert!(matches!(p("new -Ad -s x"), Cmd::NewSession { attach_existing: true, detached: true, .. }));
+        // -x/-y size a detached session; either alone is fine, nonsense is not.
+        assert!(matches!(p("new -d -x 20 -y 4"), Cmd::NewSession { size: (Some(20), Some(4)), .. }));
+        assert!(matches!(p("new -d -y 50"), Cmd::NewSession { size: (None, Some(50)), .. }));
+        let err = parse_line("new -d -x 2").unwrap_err();
+        assert!(err.contains("at least 10"), "{err}");
+        let err = parse_line("new -d -y big").unwrap_err();
+        assert!(err.contains("at least 3"), "{err}");
+        assert_eq!(p("new -d -x 20 -y 4").to_string(), "new-session -d -x 20 -y 4");
     }
 
     #[test]
@@ -2982,6 +3027,16 @@ mod tests {
         }
         // "display" alone is the message command, as in tmux.
         assert!(matches!(p("display hi"), Cmd::DisplayMessage { .. }));
+        // -t names the pane the format is answered for; -p and -c x are
+        // taken (with -c's value) and never end up in the message.
+        match p("display-message -p -c c0 -t small:0 '#{pane_width}'") {
+            Cmd::DisplayMessage { msg, target: Some(t) } => {
+                assert_eq!(msg, "#{pane_width}");
+                assert_eq!(t, Target::parse("small:0"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(parse_line("display-message -t").unwrap_err().contains("-t"));
         assert!(parse_line("displ hi").unwrap_err().contains("ambiguous"));
     }
 

@@ -596,26 +596,38 @@ impl Pane {
         hits
     }
 
-    /// Like `line_text`, but keeping the colours and attributes as escape
-    /// sequences (`capture-pane -e`).
-    pub fn line_escapes(&mut self, abs: usize) -> String {
-        let max = self.scrollback_len();
+    /// Every line from absolute line `start` to the bottom of the screen,
+    /// trailing blanks dropped; with `escapes`, colours and attributes are
+    /// kept as escape sequences (`capture-pane -e`, `save-history`). One
+    /// pass, for the same reason as `search`: `capture-pane -S -` and
+    /// `save-history all` ask for thousands of lines.
+    pub fn lines_from(&mut self, start: usize, escapes: bool) -> Vec<String> {
+        let total = self.scrollback_len();
         let rows = self.rows as usize;
         let cols = self.cols;
-        let (offset, row) = if abs < max { (max - abs, 0usize) } else { (0, abs - max) };
-        if row >= rows {
-            return String::new();
-        }
         let s = self.parser.screen_mut();
-        let cur = s.scrollback();
-        s.set_scrollback(offset);
-        let bytes = s.rows_formatted(0, cols).nth(row).unwrap_or_default();
-        s.set_scrollback(cur);
-        let mut text = String::from_utf8_lossy(&bytes).into_owned();
-        if text.contains('\x1b') {
-            text.push_str("\x1b[0m"); // never leak a colour into the next line
+        let keep = s.scrollback();
+        let mut out = Vec::with_capacity((total + rows).saturating_sub(start));
+        for abs in start..total + rows {
+            let (offset, row) = if abs < total { (total - abs, 0usize) } else { (0, abs - total) };
+            s.set_scrollback(offset);
+            let mut text = if escapes {
+                String::from_utf8_lossy(&s.rows_formatted(0, cols).nth(row).unwrap_or_default()).into_owned()
+            } else {
+                s.rows(0, cols).nth(row).unwrap_or_default()
+            };
+            text.truncate(text.trim_end().len());
+            if text.contains('\x1b') {
+                text.push_str("\x1b[0m"); // never leak a colour into the next line
+            }
+            out.push(text);
         }
-        text
+        s.set_scrollback(keep);
+        // Trailing blank lines are noise; a line that is only a reset is blank too.
+        while out.last().is_some_and(|l| l.is_empty() || l == "\x1b[0m") {
+            out.pop();
+        }
+        out
     }
 
     /// Display name for the status line.

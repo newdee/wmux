@@ -2347,6 +2347,13 @@ async fn pane_border_status_reserves_a_row_for_its_text() {
     // Two panes side by side: each gets its own text on its own columns.
     c.prefix('%').await;
     c.wait_for("two border texts", |s| s.rows(0, COLS).next().unwrap().matches("] ").count() == 2).await;
+    // Splitting while the border row is on divides the layout cell, not the
+    // drawn rect, so the halves come out even: the 23-row cell -> 11 + 1 + 11,
+    // less a border row each = 10 + 10 of content (not 11 + 9).
+    h.cli(&["split-window", "-v", "-d", "-t", "b:0.1"]).await;
+    let (_, a, _) = h.cli(&["display-message", "-p", "-t", "b:0.1", "#{pane_height}"]).await;
+    let (_, b, _) = h.cli(&["display-message", "-p", "-t", "b:0.2", "#{pane_height}"]).await;
+    assert_eq!((a.trim(), b.trim()), ("10", "10"), "even halves with a border row each");
 
     // bottom: the row just above the status line.
     h.cli(&["set", "-g", "pane-border-status", "bottom"]).await;
@@ -2406,3 +2413,62 @@ async fn format_variables_answer_from_the_live_tree() {
 // Keep the unused-import lint quiet for helper traits used through split().
 #[allow(dead_code)]
 fn _assert_traits<T: AsyncRead + AsyncWrite>() {}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn save_history_all_keeps_the_whole_scrollback_with_colours() {
+    let h = Harness::start("savehist").await;
+    h.cli(&["new", "-d", "-s", "h"]).await;
+    h.wait_capture("h:0", "shell prompt", |t| t.contains("wmux>")).await;
+    // A coloured prompt, then more lines than the screen holds.
+    h.cli(&["send-keys", "-t", "h:0", "prompt $e[31mred$e[0m$g", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "h:0", "for /l %i in (1,1,60) do @echo scroll-line-%i", "Enter"]).await;
+    h.wait_capture("h:0", "the last line", |t| t.contains("scroll-line-60")).await;
+    let saved = |h: &Harness| {
+        std::fs::read_dir(&h.sessions_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+            .find(|t| t.contains("\"name\": \"h\""))
+            .expect("a saved file for h")
+    };
+
+    // A number keeps that many lines from the bottom...
+    h.cli(&["set", "-g", "save-history", "5"]).await;
+    let (code, _, err) = h.cli(&["save-session", "-t", "h"]).await;
+    assert_eq!(code, 0, "{err}");
+    let file = saved(&h);
+    assert!(file.contains("\"scroll-line-60\""), "{file}");
+    assert!(!file.contains("\"scroll-line-1\""), "only the last 5 lines: {file}");
+    // ...and `all` keeps everything, colours as escape sequences.
+    let (code, _, err) = h.cli(&["set", "-g", "save-history", "all"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "save-history"]).await.1.trim(), "all");
+    h.cli(&["save-session", "-t", "h"]).await;
+    let file = saved(&h);
+    assert!(file.contains("\"scroll-line-1\""), "the first line, long scrolled off: {file}");
+    assert!(file.contains("\\u001b[31mred"), "the red prompt: {file}");
+    let (code, _, err) = h.cli(&["set", "-g", "save-history", "lots"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("or all"), "{err}");
+
+    // Resumed, the whole scrollback is back and the prompt is still red.
+    h.cli(&["new", "-d", "-s", "keeper"]).await;
+    h.cli(&["kill-session", "-t", "h"]).await;
+    let (code, _, err) = h.cli(&["resume", "h"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("h:0", "the restored shell", |t| t.contains("wmux>")).await;
+    let (_, out, _) = h.cli(&["capture-pane", "-p", "-e", "-S", "-", "-t", "h:0"]).await;
+    assert!(out.lines().any(|l| l.trim_end() == "scroll-line-1"), "{out}");
+    assert!(out.contains("\x1b[31mred"), "{out}");
+
+    // A detached session takes its size from -x/-y (there is no terminal
+    // to take it from); one row goes to the status line.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "small", "-x", "30", "-y", "5"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["display-message", "-p", "-t", "small:0", "#{pane_width}x#{pane_height}"]).await;
+    assert_eq!(out.trim(), "30x4");
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "tooSmall", "-x", "3"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("at least 10"), "{err}");
+    h.cli(&["kill-server"]).await;
+}

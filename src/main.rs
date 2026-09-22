@@ -7,7 +7,7 @@ const USAGE: &str = "\
 usage: wmux [-L socket-name] [command [flags]]
 
 Sessions:
-  new-session   (new)     [-s name] [-n window] [-c dir] [-d] [command...]
+  new-session   (new)     [-s name] [-n window] [-c dir] [-d [-x cols] [-y rows]] [command...]
   attach-session (attach) [-t target] [-d]
   list-sessions (ls)
   kill-session  [-t target]      kill-server      has-session -t target

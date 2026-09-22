@@ -270,7 +270,11 @@ struct Window {
     layout_preset: Option<layout::Preset>,
     /// `synchronize-panes`: input goes to every pane of the window.
     synchronized: bool,
+    /// Where each pane's content is drawn: its layout cell less the row a
+    /// `pane-border-status` line takes.
     rects: Vec<(PaneId, Rect)>,
+    /// The layout cells themselves, which is what splitting divides.
+    layout_rects: Vec<(PaneId, Rect)>,
     /// Alerts waiting to be seen (tmux `#F`): a background window printed
     /// something, rang the bell, or went quiet. Cleared when the window is
     /// drawn, which is when the alert has done its job.
@@ -325,6 +329,13 @@ impl Window {
     fn rect_of(&self, id: PaneId) -> Option<Rect> {
         self.rects.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
     }
+    /// The pane's layout cell, border-status row included: what a split
+    /// divides. Dividing the drawn rect instead leaves the tree one row
+    /// short, and the layout hands that row to the first pane (11/9, not
+    /// 10/10).
+    fn layout_rect(&self, id: PaneId) -> Option<Rect> {
+        self.layout_rects.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
+    }
     fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
         self.rects.iter().find(|(_, r)| r.contains(x, y)).map(|(id, _)| *id)
     }
@@ -341,6 +352,7 @@ impl Window {
             self.zoomed = false;
             self.layout.layout(area, &mut self.rects);
         }
+        self.layout_rects = self.rects.clone();
         if let Some(top) = border {
             for (_, r) in &mut self.rects {
                 if r.h >= 2 {
@@ -825,7 +837,8 @@ impl Server {
         }
     }
 
-    /// The last `save-history` lines of every pane in a session.
+    /// The last `save-history` lines of every pane in a session (all of them
+    /// for `all`), colours included.
     fn pane_histories(&mut self, sid: SessionId) -> HashMap<PaneId, Vec<String>> {
         let want = self.opts.save_history;
         let mut out = HashMap::new();
@@ -839,11 +852,7 @@ impl Server {
         for id in ids {
             let Some(p) = self.find_pane_mut(id) else { continue };
             let total = p.scrollback_len() + p.rows as usize;
-            let start = total.saturating_sub(want);
-            let mut lines: Vec<String> = (start..total).map(|abs| p.line_text(abs).0.trim_end().to_string()).collect();
-            while lines.last().is_some_and(|l| l.is_empty()) {
-                lines.pop();
-            }
+            let lines = p.lines_from(total.saturating_sub(want), true);
             if !lines.is_empty() {
                 out.insert(id, lines);
             }
@@ -1905,6 +1914,7 @@ impl Server {
             layout_preset: None,
             synchronized: false,
             rects: Vec::new(),
+            layout_rects: Vec::new(),
             alert_activity: false,
             alert_bell: false,
             alert_silence: false,
@@ -1991,10 +2001,16 @@ impl Server {
     fn exec(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         match cmd {
             Cmd::Version => Outcome::Text(format!("wmux {}", env!("CARGO_PKG_VERSION"))),
-            Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing } => {
+            Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);
-                let (cols, rows) = client.map(|c| (c.cols, c.rows)).unwrap_or((80, 24));
+                let (mut cols, mut rows) = client.map(|c| (c.cols, c.rows)).unwrap_or((80, 24));
+                // A session nobody is attaching to has no terminal to size
+                // it; -x/-y say instead (tmux ignores them otherwise too).
+                if detached || !interactive {
+                    cols = size.0.unwrap_or(cols);
+                    rows = size.1.unwrap_or(rows);
+                }
                 let inside = client.is_some_and(|c| c.pane_env.is_some() && c.session.is_none());
                 if inside && !detached && interactive {
                     return Outcome::Error("sessions should be nested with care, unset WMUX to force".into());
@@ -2676,12 +2692,14 @@ impl Server {
                 let rect = if full {
                     area
                 } else {
-                    match w.rect_of(pid) {
+                    match w.layout_rect(pid) {
                         Some(r) => r,
                         None => return Outcome::Error("pane has no layout".into()),
                     }
                 };
-                if (horizontal && rect.w < 3) || (!horizontal && rect.h < 3) {
+                // Each half needs a row of content, plus its border-status row.
+                let min_rows = if border.is_some() { 5 } else { 3 };
+                if (horizontal && rect.w < 3) || (!horizontal && rect.h < min_rows) {
                     return Outcome::Error("pane too small to split".into());
                 }
                 let (nw, nh) = if horizontal { ((rect.w - 1) / 2, rect.h) } else { (rect.w, (rect.h - 1) / 2) };
@@ -2928,6 +2946,7 @@ impl Server {
                     layout_preset: None,
                     synchronized: false,
                     rects: Vec::new(),
+                    layout_rects: Vec::new(),
                     alert_activity: false,
                     alert_bell: false,
                     alert_silence: false,
@@ -2971,8 +2990,9 @@ impl Server {
                     dw.zoomed = false;
                     dw.relayout(area, border);
                 }
-                let Some(rect) = dw.rect_of(dpid) else { return Outcome::Error("pane has no layout".into()) };
-                if (horizontal && rect.w < 3) || (!horizontal && rect.h < 3) {
+                let Some(rect) = dw.layout_rect(dpid) else { return Outcome::Error("pane has no layout".into()) };
+                let min_rows = if border.is_some() { 5 } else { 3 };
+                if (horizontal && rect.w < 3) || (!horizontal && rect.h < min_rows) {
                     return Outcome::Error("pane too small to split".into());
                 }
                 let Some(pane) = self.take_pane(ssid, swidx, spid) else {
@@ -3362,10 +3382,14 @@ impl Server {
                 }
                 Outcome::Ok
             }
-            Cmd::DisplayMessage { msg } => {
-                let Some(cid) = cid else { return Outcome::Ok };
-                let m = self.expand_format(&msg, cid);
-                Outcome::Text(m)
+            Cmd::DisplayMessage { msg, target } => {
+                if cid.is_none() && target.is_none() {
+                    return Outcome::Ok; // from the config: nobody to show it to
+                }
+                if let Err(e) = self.resolve(target.as_ref(), cid) {
+                    return Outcome::Error(e);
+                }
+                Outcome::Text(self.expand_format_at(&msg, target.as_ref(), cid))
             }
             Cmd::BindKey { root, key, repeat, cmd } => match Key::parse(&key) {
                 Some(k) => {
@@ -3703,19 +3727,8 @@ impl Server {
                     Err(e) => return Outcome::Error(e),
                 };
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
-                let total = p.scrollback_len();
-                let rows = p.rows as usize;
-                let from = total.saturating_sub(history);
-                let mut lines: Vec<String> = Vec::with_capacity(total - from + rows);
-                for abs in from..total + rows {
-                    lines.push(if escapes { p.line_escapes(abs) } else { p.line_text(abs).0.trim_end().to_string() });
-                }
-                // Trailing blank lines are noise either way; with -e a line
-                // that is only a reset counts as blank too.
-                while lines.last().is_some_and(|l| l.is_empty() || l == "\x1b[0m") {
-                    lines.pop();
-                }
-                Outcome::Text(lines.join("\n"))
+                let from = p.scrollback_len().saturating_sub(history);
+                Outcome::Text(p.lines_from(from, escapes).join("\n"))
             }
             Cmd::ClearHistory => {
                 let (_, _, pid) = match self.resolve(None, cid) {
@@ -3813,8 +3826,13 @@ impl Server {
     /// same engine the status line uses, so `#{...}`, `#{?...}` and `#(...)`
     /// mean the same thing everywhere.
     fn expand_format(&mut self, s: &str, cid: ClientId) -> String {
-        let Ok((sid, widx, pid)) = self.resolve(None, Some(cid)) else { return s.to_string() };
-        let ctx = self.context(sid, widx, Some(pid), Some(cid));
+        self.expand_format_at(s, None, Some(cid))
+    }
+
+    /// `s` expanded for `target` (the client's current pane when None).
+    fn expand_format_at(&mut self, s: &str, target: Option<&Target>, cid: Option<ClientId>) -> String {
+        let Ok((sid, widx, pid)) = self.resolve(target, cid) else { return s.to_string() };
+        let ctx = self.context(sid, widx, Some(pid), cid);
         let now = chrono::Local::now();
         let base = render::Style::default();
         crate::format::expand(s, &ctx, &mut self.shell_cache, base, now).into_iter().map(|seg| seg.text).collect()

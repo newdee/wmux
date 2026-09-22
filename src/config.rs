@@ -22,7 +22,8 @@ pub struct Options {
     /// that died leaves its output and can be restarted (tmux `remain-on-exit`).
     pub remain_on_exit: bool,
     /// Lines of each pane's scrollback written into the session file, so
-    /// `resume` brings the output back too. 0 saves nothing.
+    /// `resume` brings the output back too. 0 saves nothing; `all`
+    /// (`usize::MAX`) saves everything the pane still holds.
     pub save_history: usize,
     /// Flag a window in the status line when a background window prints
     /// anything (`#`), rings the bell (`!`), or goes quiet for
@@ -406,7 +407,12 @@ impl Options {
             }
             "base-index" => self.base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "remain-on-exit" => self.remain_on_exit = parse_bool(value)?,
-            "save-history" => self.save_history = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "save-history" => {
+                self.save_history = match value.trim() {
+                    v if v.eq_ignore_ascii_case("all") => usize::MAX,
+                    v => v.parse().map_err(|_| format!("bad save-history '{v}' (a number of lines, or all)"))?,
+                }
+            }
             "monitor-activity" => self.monitor_activity = parse_bool(value)?,
             "monitor-bell" => self.monitor_bell = parse_bool(value)?,
             "monitor-silence" => self.monitor_silence = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -493,7 +499,13 @@ impl Options {
             "window-status-current-format" => self.window_status_current_format.clone(),
             "base-index" => self.base_index.to_string(),
             "remain-on-exit" => onoff(self.remain_on_exit),
-            "save-history" => self.save_history.to_string(),
+            "save-history" => {
+                if self.save_history == usize::MAX {
+                    "all".to_string()
+                } else {
+                    self.save_history.to_string()
+                }
+            }
             "monitor-activity" => onoff(self.monitor_activity),
             "monitor-bell" => onoff(self.monitor_bell),
             "monitor-silence" => self.monitor_silence.to_string(),
@@ -726,6 +738,21 @@ mod tests {
         assert!(o.set("mouse", "maybe").is_err());
         assert!(o.set("history-limit", "x").is_err());
         assert_eq!(o.prefix.to_string(), "C-a");
+    }
+
+    #[test]
+    fn save_history_all_means_everything() {
+        let mut o = Options::default();
+        o.set("save-history", "all").unwrap();
+        assert_eq!(o.save_history, usize::MAX);
+        assert_eq!(o.get("save-history").as_deref(), Some("all"), "shown as the word, not a number");
+        o.set("save-hist", "20").unwrap();
+        assert_eq!(o.get("save-history").as_deref(), Some("20"));
+        o.set("save-history", " ALL ").unwrap();
+        assert_eq!(o.save_history, usize::MAX, "case and blanks do not matter, as for on/off");
+        let err = o.set("save-history", "some").unwrap_err();
+        assert!(err.contains("or all"), "{err}");
+        assert!(o.set("save-history", "").is_err(), "not an on/off option");
     }
 
     #[test]

@@ -973,3 +973,65 @@ clippy 与 `cargo fmt --check` 无输出。
 ## 结论（第十六次验收）
 
 第 2、3、4 轮连续零发现，验收通过。测试 136 → 141（lib 95 / console 4 / e2e 42）。
+
+# 第十七次验收（2026-09-22）— save-history all、new -x/-y、display-message -t、边框态分屏修正
+
+本次新增 / 修正：
+- `set -g save-history all`：整段 scrollback（受 `history-limit` 约束）随 session 存盘，
+  行里保留颜色与属性（`capture-pane -e` 的形式），`resume` 时逐字节贴回；`show-options` 显示 `all`。
+- `Pane::lines_from(start, escapes)`：一趟走完 scrollback 取行；`capture-pane -S -` 也改用它
+  （原来逐行调 `line_text`/`line_escapes`，每行重算一次 scrollback 长度，5000 行就是 5000 次全扫）。
+- `new-session -x cols -y rows`：给 detached / 脚本建的 session 定尺寸（tmux 同款；最小 10×3）。
+- `display-message -t 目标`：format 按指定 pane 展开（原来所有 flag 连值一起被吞掉，`-t x` 的 x 会混进消息）。
+- **修 bug**：`pane-border-status` 开着时再 `split-window`，两半不均（23 行的格子切成 11/9 而不是 10/10；
+  7 行切成 1/2）。原因是分屏把"已扣掉边框行的绘制 rect"当布局输入，树里少了一行，布局把它补给第一个 pane。
+  现在 `Window` 另存一份布局格子 `layout_rects`，分屏与 join-pane 按格子切，最小高度检查也算上边框行。
+
+**更正第十六次记录**：第 3 轮里"`-x 20 -y 4` 的小 session 下 top/bottom … server 全部存活"这句不成立——
+当时 `new` 根本不认 `-x`（报 `unknown flag '-x'`，探针把输出吞了），session 没建出来，
+后面只验证了 server 没死。本次补上参数后小 session 的检查才真正跑到（见第 3 轮）。
+
+## 第 1 轮（不计数）— 视角：静态一致性 + diff 自审
+
+| # | 问题 | 处理 |
+|---|------|------|
+| 1 | `cargo fmt --check` 一处差异 | fmt |
+| 2 | `capture-pane -S -` 仍是逐行 O(n²) 取法 | 改用 `lines_from` |
+| 3 | `line_escapes` 无人再用 | 删除 |
+| 4 | 网站统计仍写 126 tests（实际 143） | 改 143 |
+
+## 第 2 轮（不计数）— 视角：机制通路（release 二进制）
+
+wmux 数据无问题；发现的是探针脚本的问题（`$t[0]` 取到字符串首字符、双引号里 `$g` 被 PowerShell 展开成空）。
+
+## 第 3 轮（不计数）— 视角：边界
+
+发现 `new -x/-y` 不存在（上一批的小 session 检查因此从未跑过）→ 补上；`all `/`ALL` 被拒 → 与 `parse_bool` 一致，
+去空白、忽略大小写。补 e2e 时又发现 `display-message -t` 不生效（输出 `small:0 30x4`）→ 实现。
+用 `-x/-y` 建小 session 后再查边框态分屏：24 行 11/9、7 行 1/2、9 行 2/3，不开边框全部正常 → 定位并修复（见上）。
+
+## 第 4 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：`save-history 500` 存 498 行 14059 B；`all` 存 5021 行 136160 B，`save-session` 20 ms；
+`capture-pane -S -` 18 ms 取 5023 行（line-980 … line-6000）；`resume` 33 ms，回来 5019 行 line-* 加提示符
+（少 2 行是新 shell 自己的空行+提示符把最早两行挤出了 `history-limit`）；`save-history 0` 存 0 行。
+
+## 第 5 轮（计数 2/3，无发现）— 视角：边界
+
+数据：4 行"绿色中文提示符 + 蓝底 + 汉字"resume 后 4/4 逐字节相同；120 列存、80 列恢复，100 个 x 换行成
+30+80+20=130 个字符不丢；空 pane 存 2 行；只打印转义序列的提示符行被丢掉不存；`history-limit 50` 下存 73 行
+（≤ 50+23）；20×4 小 session：建成 20×3，开边框后 20×2，此时分屏被明确拒绝 `pane too small to split`，
+resume 回来 80×23（存档不含尺寸，与 tmux-resurrect 一致），server 存活；`-1`、`1e3`、空值被拒，`all `、`ALL` 接受。
+resume 后底部多一组"空行+提示符"（旧提示符行在存档里，新 shell 又打一个）：与 tmux-resurrect 行为相同，不算问题。
+
+## 第 6 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，143 项指纹均为 `4592FD1A9969C1C4`；边框态分屏 6/7/8/9/10/24 行 →
+1/1、2/1、2/2、3/2、3/3、10/10（第一个多一行，与不开边框时的规则一致）；`display-message -p -t s24:0.1` 答 `1 10`，
+坏目标报 `can't find session: nosuch` 退出 1；`--help` 列出 `-x cols -y rows`；README（中英）、conf 示例、
+对照表、网站六处都写了 `all`；对照表 new-session 行有 `-x`、`-y`，display-message 行有 `-t`；
+网站 143 tests；`line_escapes` 无残留；clippy 与 fmt 无输出。
+
+## 结论（第十七次验收）
+
+第 4、5、6 轮连续零发现，验收通过。测试 141 → 143（lib 96 / console 4 / e2e 43）。
