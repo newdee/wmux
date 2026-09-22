@@ -385,9 +385,19 @@ Commands a script or a binding reaches for, beyond the obvious ones
   `record -t target` with no path stops. Play it with `asciinema play`, or
   upload it, or embed it in a page: a terminal session someone else can
   watch, not a screenshot.
-- `notify [-T title] message` raises a desktop notification, and
-  `set -g notify on` sends one for every alert, so a job that ends while
-  the terminal is behind other windows still reaches you.
+- `notify [-T title] message` raises a desktop notification (a Windows
+  toast, in the Action Center under wmux's own name), and `set -g notify on`
+  sends one for every alert, so a job that ends while the terminal is
+  behind other windows still reaches you. An alert's toast has a **Go to
+  pane** button: it opens a `wmux://` link that runs `focus-pane`, which
+  switches every attached client to that pane and brings its window
+  forward (best effort: Windows Terminal does not always let a window be
+  raised from outside). The first toast registers two entries under
+  `HKCU\Software\Classes` (the AppUserModelID and the `wmux:` protocol),
+  nothing machine-wide; when a toast cannot be shown a tray balloon is used
+  instead.
+- `focus-pane %N` is that command on its own: every attached client goes to
+  pane `%N` (the id `list-panes` and `#{pane_id}` show).
 - `jobs` is the task board: one line per pane on the whole server, with
   whether its program is still running or what it exited with, how long it
   has been up, how long since it last printed, its pid, command and

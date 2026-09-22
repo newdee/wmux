@@ -263,7 +263,8 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
   web:0.0    exit 1   2h13m  1h02m  28748  npm run dev   C:\src\site
   ```
 - `record [-t 目标] out.cast`：从现在起把这个 pane 打印的一切写成 [asciinema](https://asciinema.org) v2 文件（连窗口尺寸变化一起）；`record -t 目标` 不带路径就是停。`asciinema play` 能回放，也能上传或嵌进网页——给别人看的是一段能动的终端，不是截图。
-- `notify [-T 标题] 消息`：弹一个 Windows 桌面通知；`set -g notify on` 之后每次告警都弹，终端被别的窗口盖住时也能收到。
+- `notify [-T 标题] 消息`：弹一个 Windows 桌面通知（toast，通知中心里以 wmux 自己的名字出现）；`set -g notify on` 之后每次告警都弹，终端被别的窗口盖住时也能收到。告警的通知带一个 **Go to pane** 按钮：点了打开一个 `wmux://` 链接，执行 `focus-pane`，让所有接着的客户端切到那个 pane 并把窗口提到前面（尽力而为：Windows Terminal 不一定允许别的进程把它拉到前台）。第一次弹 toast 会在 `HKCU\Software\Classes` 下登记两个键（AppUserModelID 和 `wmux:` 协议），不碰系统范围；弹不出 toast 时退回托盘气泡。
+- `focus-pane %N`：单独用这条命令，所有接着的客户端都切到 pane `%N`（`list-panes` 和 `#{pane_id}` 显示的那个 id）。
 
 窗口和 pane 相关的命令都接受 `-t 目标`，写法和 tmux 一样：`session`、`session:窗口`、`:窗口`、`session:窗口.pane`，窗口那段可以是编号、名字，也可以是 `+`、`-`、`!`。只有 `select-pane` 例外，它的 `-t` 跟的是要跳到哪个 pane（`next`、`last` 或编号），和 `-L` `-R` `-U` `-D` 是一类。
 
