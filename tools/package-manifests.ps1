@@ -13,11 +13,19 @@
 # The winget tree is laid out as microsoft/winget-pkgs expects, so the
 # directory can be copied into a fork as is; the scoop file installs with
 # `scoop install <raw url of wmux.json>` or goes into a bucket.
+#
+# With -MsiPath and -ZipPath (the files just built, as in the release
+# workflow) nothing is downloaded: the hashes and the ProductCode come from
+# those files, and the URLs are still the release's.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version,
     [string] $Repo = "newdee/wmux",
-    [string] $OutDir = (Join-Path $PSScriptRoot "..\packaging")
+    [string] $OutDir = (Join-Path $PSScriptRoot "..\packaging"),
+    [string] $MsiPath,
+    [string] $ZipPath,
+    # yyyy-MM-dd; the release's publish date when downloading, today otherwise.
+    [string] $ReleaseDate
 )
 $ErrorActionPreference = "Stop"
 
@@ -42,26 +50,41 @@ function Get-MsiProductCode([string] $path) {
     $rec.GetType().InvokeMember("StringData", "GetProperty", $null, $rec, @(1))
 }
 
-try {
-    $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/tags/v$Version"
-} catch {
-    throw "no release v$Version on github.com/$Repo (tag the release first): $($_.Exception.Message)"
-}
-$releaseDate = ([datetime] $release.published_at).ToUniversalTime().ToString("yyyy-MM-dd")
-$msiSha = Get-Sha256FromRelease $msiName
-$zipSha = Get-Sha256FromRelease $zipName
+if ($ReleaseDate -and $ReleaseDate -notmatch '^\d{4}-\d{2}-\d{2}$') { throw "-ReleaseDate wants yyyy-MM-dd, not '$ReleaseDate'" }
+if ($MsiPath -or $ZipPath) {
+    # Local mode: the files just built. Their names must be the release's,
+    # since the manifests point at the release URLs of those names.
+    if (-not ($MsiPath -and $ZipPath)) { throw "-MsiPath and -ZipPath go together" }
+    foreach ($pair in @(@($MsiPath, $msiName), @($ZipPath, $zipName))) {
+        if (-not (Test-Path $pair[0])) { throw "no such file: $($pair[0])" }
+        if ((Split-Path -Leaf $pair[0]) -ne $pair[1]) { throw "$($pair[0]) should be named $($pair[1]) for v$Version" }
+    }
+    $msiSha = (Get-FileHash $MsiPath -Algorithm SHA256).Hash.ToLower()
+    $zipSha = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLower()
+    $productCode = Get-MsiProductCode $MsiPath
+    $releaseDate = if ($ReleaseDate) { $ReleaseDate } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd") }
+} else {
+    try {
+        $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/tags/v$Version"
+    } catch {
+        throw "no release v$Version on github.com/$Repo (tag the release first): $($_.Exception.Message)"
+    }
+    $releaseDate = if ($ReleaseDate) { $ReleaseDate } else { ([datetime] $release.published_at).ToUniversalTime().ToString("yyyy-MM-dd") }
+    $msiSha = Get-Sha256FromRelease $msiName
+    $zipSha = Get-Sha256FromRelease $zipName
 
-# The MSI itself, for its ProductCode; checked against the published hash.
-$tmp = Join-Path ([IO.Path]::GetTempPath()) "wmux-manifests-$PID"
-New-Item -ItemType Directory -Force $tmp | Out-Null
-try {
-    $msiPath = Join-Path $tmp $msiName
-    Invoke-WebRequest "$base/$msiName" -OutFile $msiPath
-    $got = (Get-FileHash $msiPath -Algorithm SHA256).Hash.ToLower()
-    if ($got -ne $msiSha) { throw "${msiName}: downloaded sha256 $got is not the published $msiSha" }
-    $productCode = Get-MsiProductCode $msiPath
-} finally {
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    # The MSI itself, for its ProductCode; checked against the published hash.
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) "wmux-manifests-$PID"
+    New-Item -ItemType Directory -Force $tmp | Out-Null
+    try {
+        $msiPath = Join-Path $tmp $msiName
+        Invoke-WebRequest "$base/$msiName" -OutFile $msiPath
+        $got = (Get-FileHash $msiPath -Algorithm SHA256).Hash.ToLower()
+        if ($got -ne $msiSha) { throw "${msiName}: downloaded sha256 $got is not the published $msiSha" }
+        $productCode = Get-MsiProductCode $msiPath
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
 }
 if ($productCode -notmatch '^\{[0-9A-F-]{36}\}$') { throw "odd ProductCode: $productCode" }
 

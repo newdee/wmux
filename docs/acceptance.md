@@ -1251,3 +1251,44 @@ i18n 52/52；152 项测试通过。（`winget install --manifest` 要管理员�
 ## 结论（第二十二次验收）
 
 第 2、3、4 轮连续零发现，验收通过。测试 152 → 154（lib 103 / console 4 / e2e 47）。
+
+# 第二十三次验收（2026-09-22）— 发布流水线自动出清单
+
+本次新增：
+- `tools/package-manifests.ps1` 加本地模式（`-MsiPath`/`-ZipPath`/`-ReleaseDate`）：CI 里用刚构建的文件算 hash、读 ProductCode，不联网；
+  文件名必须与发布资产名一致（清单指向发布 URL）；`-ReleaseDate` 校验 yyyy-MM-dd。
+- `release.yml` 新增两步：`package manifests`（生成 + `winget validate`（runner 上没有 winget 则跳过）+ 打包
+  `wmux-X.Y.Z-manifests.zip` 附到 release）；`commit the manifests to master`（把生成的 `winget/`、`scoop/` 拷到一边，
+  从 tag 的 detached 状态切到 origin/master 再拷回、以 github-actions[bot] 提交推送；无变化则不提交）。
+- `packaging/README.md` 说明自动化。
+
+## 第 1 轮（不计数）— 视角：机制通路（在临时 bare origin 上按 yml 原文跑两步）
+
+发现两处流水线 bug：(1) `if (git diff --cached --quiet)` 测的是空输出而非退出码，"无变化"分支永不触发 → 改看 `$LASTEXITCODE`；
+(2) 拷回时 `Copy-Item "$keep\*"` 把 `packaging/README.md` 也盖掉，master 上别人的改动丢失 → 只拷 `winget\`、`scoop\`。
+另加 `git clean -fdq packaging`，防新版本目录（未跟踪）挡住切分支。模拟脚本自身两处顺序问题（`other` 克隆早于推送、
+第二次运行没还原文件）已修。
+
+## 第 2 轮（计数 1/3，无发现）— 视角：机制通路（同上，master 同时前进）
+
+数据：`package manifests` 步骤退出 0，`winget validate` 通过，zip 含 4 个文件；与已提交清单仅 `ReleaseDate` 一行不同
+（CI 取当天，符合语义）；master 先提交了 README 与 packaging/README 的改动后，`commit` 步骤成功推送
+`build: package manifests for v0.5.0`，只改 installer.yaml 一个文件，master 自己的两处改动保留，作者 github-actions[bot]；
+第二次（无变化）输出 `manifests unchanged`、退出 0、没有尝试 commit。
+
+## 第 3 轮（计数 2/3，无发现）— 视角：边界
+
+数据：本地模式输出与已提交 4 个文件逐字节相同（指定 `-ReleaseDate 2026-09-21`）；只给 `-MsiPath` → `go together` 退出 1；
+文件名不对 → `should be named …` 退出 1；`-ReleaseDate 21/09/2026` → `wants yyyy-MM-dd` 退出 1；不给日期 → 当天；
+`release.yml` 经 PyYAML 解析通过，步骤顺序 test → build → zip → msi → manifests → release → commit。
+
+## 第 4 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，154 项指纹均为 `31C7DC8E2E466AC7`；packaging/README 的 zip 名与 yml 一致并写明自动提交；
+`permissions: contents: write` 存在；commit 步骤按退出码判断、只拷 winget/scoop；生成器路径存在、用本地模式、
+资产名与生成器一致；`.gitattributes` 固定 LF；clippy 与 fmt 无输出。
+（流水线本身要等下一个 tag 才真正跑一次；这里验证的是按 yml 原文提取的脚本。）
+
+## 结论（第二十三次验收）
+
+第 2、3、4 轮连续零发现，验收通过。测试数不变（154）。

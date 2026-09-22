@@ -11,7 +11,11 @@ release for `vX.Y.Z` and writes
 - `scoop\wmux.json` — a Scoop manifest for the zip, with `checkver` and
   `autoupdate` so a bucket keeps up with releases by itself.
 
-Run it once per release, commit the output, and then:
+The release workflow runs it for every tag from the files it just built
+(`-MsiPath`/`-ZipPath`: no download), attaches `wmux-X.Y.Z-manifests.zip`
+to the release and commits the output here, so this directory follows
+releases by itself. Running it by hand is for a release made some other
+way. Either way, then:
 
 **WinGet.** Copy `winget\manifests\n\newdee\wmux\X.Y.Z` into a fork of
 winget-pkgs at the same path and open a pull request titled
