@@ -1214,3 +1214,40 @@ i18n 52/52；152 项测试通过。（`winget install --manifest` 要管理员�
 ## 结论（第二十一次验收）
 
 第 2、3、4 轮连续零发现，验收通过。测试数不变（152）。
+
+# 第二十二次验收（2026-09-22）— 一次性 `#()`、`pane_dead_time`、存档尺寸
+
+本次新增 / 修正：
+- `display-message -p`、`jobs -F` 里的 `#(命令)` 当场执行（`expand_with_shells`），最多等 3 秒（`ONE_SHOT_SHELL_TIMEOUT`），
+  结果进同一个缓存；原来只有状态栏按 `status-interval` 后台跑，一次性命令拿到的是空串。
+- `Pane.died_at` + 变量 `pane_dead_time`（未退出为空）；`jobs` 里已退出 pane 的 UP 停在退出时刻（"跑了多久"），不再一直涨。
+- 存档 `SavedSession.size`（serde default，旧文件兼容）；`resume` 没有终端接入时用存档尺寸，下限 10×3（与 `new -x/-y` 一致）；
+  有终端接入时仍用终端尺寸。
+
+## 第 1 轮（不计数）— 视角：机制通路（release 二进制）
+
+`jobs -F` 的 `#()` 仍为空：jobs 直接调 `format::expand`，没走同步路径 → 抽出 `expand_with_shells`，两处共用；e2e 补断言。
+探针把 `exit 9` 当两列数错了 UP/IDLE 下标（脚本问题）。
+
+## 第 2 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：`#(echo now-please)` 首次 272 ms 得到结果、第二次走缓存 15 ms；`#(Start-Sleep 20)` 3050 ms 后返回空串，server 存活；
+`jobs -F '#(echo in-jobs) #{pane_index}'` → `in-jobs 0`（267 ms）；`cmd /c exit 9` 的 pane 3 秒后 UP 仍为 `0s`、IDLE 由 2s → 5s；
+`pane_dead_time` 为 unix 秒、活 pane 为空；132×43 的 session 存档含 size，`resume`（无终端）回来 132×43；
+删掉 size 字段后 resume 为 80×24。
+
+## 第 3 轮（计数 2/3，无发现）— 视角：边界
+
+数据：`#()` 无输出→空、多行取第一行、退出码 3 仍显示输出、中文正常、同一格式两个 `#()` 都执行、`#()` 空、
+未闭合 `#(echo a` 按已闭合处理（既有宽松解析），server 存活；存档 size 1×1 / 0×0 → 10×3，10×3 → 10×3，500×200 → 500×200，
+`"wide"` → `saved session: invalid type: string "wide", expected a tuple of size 2` 退出 1。
+记录（不改）：`#(echo #{session_name})` 里的 `#{}` 不先展开——既有行为。
+
+## 第 4 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，154 项指纹均为 `31C7DC8E2E466AC7`；三处文档列出 `pane_dead_time`；README（中英）写了一次性
+`#()` 与 3 秒上限，与常量一致；restore 下限与 `-x/-y` 下限一致（10/3）；网站 154 tests；clippy 与 fmt 无输出。
+
+## 结论（第二十二次验收）
+
+第 2、3、4 轮连续零发现，验收通过。测试 152 → 154（lib 103 / console 4 / e2e 47）。

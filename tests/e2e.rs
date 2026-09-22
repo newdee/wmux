@@ -2515,6 +2515,20 @@ async fn jobs_lists_every_pane_with_its_state() {
     // pid, then the command: a number in the PID column.
     assert!(live.split_whitespace().nth(4).is_some_and(|p| p.parse::<u32>().is_ok()), "{live}");
 
+    // A dead pane's UP stops at its death; pane_dead_time says when, and is
+    // empty for a live one.
+    let up = |out: &str| {
+        out.lines().find(|l| l.starts_with("build:1.0")).unwrap().split_whitespace().nth(3).unwrap().to_string()
+    };
+    let first = up(&out);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (_, later, _) = h.cli(&["jobs"]).await;
+    assert_eq!(up(&later), first, "the clock of an exited pane does not run on: {later}");
+    let (_, dead, _) = h.cli(&["jobs", "-t", "build:1.0", "-F", "#{pane_dead_time}"]).await;
+    assert!(dead.trim().parse::<i64>().is_ok_and(|t| t > 1_600_000_000), "{dead:?}");
+    let (_, live, _) = h.cli(&["jobs", "-t", "build:0.0", "-F", "[#{pane_dead_time}]"]).await;
+    assert_eq!(live.trim(), "[]");
+
     // -t narrows to a session, a window or one pane; -F says what to print.
     let (_, out, _) = h.cli(&["jobs", "-t", "web"]).await;
     assert_eq!(out.lines().count(), 3, "{out}");
@@ -2577,5 +2591,52 @@ async fn status_justify_and_separator_move_the_window_list() {
     let (code, _, err) = h.cli(&["set", "-g", "status-justify", "sideways"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("left, centre, right or absolute-centre"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_shot_formats_run_their_shell_pieces() {
+    let h = Harness::start("oneshot").await;
+    h.cli(&["new", "-d", "-s", "os"]).await;
+    // display-message -p is answered now: a #(command) nobody has run yet
+    // runs here, not "next status-interval".
+    let (code, out, err) = h.cli(&["display-message", "-p", "#(echo one-shot-ok)|#{session_name}"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "one-shot-ok|os");
+    // ...with a leash: a command that hangs is given up on, and the
+    // server answers anyway.
+    let started = Instant::now();
+    let (code, out, _) = h.cli(&["display-message", "-p", "[#(Start-Sleep 20; echo late)]"]).await;
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "[]");
+    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    // The server is fine after that, and jobs -F runs its pieces the same way.
+    let (_, out, _) = h.cli(&["display-message", "-p", "#{session_name}"]).await;
+    assert_eq!(out.trim(), "os");
+    let (_, out, _) = h.cli(&["jobs", "-t", "os:0.0", "-F", "#(echo in-jobs) #{pane_index}"]).await;
+    assert_eq!(out.trim(), "in-jobs 0");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_keeps_its_saved_size() {
+    let h = Harness::start("savesize").await;
+    h.cli(&["new", "-d", "-s", "keeper"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "sz", "-x", "100", "-y", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["save-session", "-t", "sz"]).await;
+    let file = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .find(|t| t.contains("\"name\": \"sz\""))
+        .expect("a saved file for sz");
+    assert!(file.contains("\"size\""), "the size is in the file: {file}");
+    h.cli(&["kill-session", "-t", "sz"]).await;
+    // Resumed from a script (nothing attaching), it is the size it was.
+    let (code, _, err) = h.cli(&["resume", "sz"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["display-message", "-p", "-t", "sz:0", "#{window_width}x#{window_height}"]).await;
+    assert_eq!(out.trim(), "100x30");
     h.cli(&["kill-server"]).await;
 }

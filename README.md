@@ -290,7 +290,8 @@ names, `#{?flag,then,else}` conditionals (`#{?window_flags,busy,idle}`,
 `#{?session_name==work,…,…}`), `%H:%M` time fields,
 `#[fg=colour39,bg=black,bold]` style changes and `#(command)`, which runs the
 command every `status-interval` seconds (default 15) and shows its first
-line. `status-left-length` / `status-right-length` clip. `status-justify
+line (a one-shot `display-message -p` or `jobs -F` runs it right away,
+giving up after 3 s). `status-left-length` / `status-right-length` clip. `status-justify
 left|centre|right|absolute-centre` places the window list, and
 `window-status-separator` is what goes between the labels (a space by
 default).
@@ -303,7 +304,7 @@ Variables: `session_name` `session_id` `session_windows` `session_attached`
 `pane_current_command` `pane_start_command` `pane_current_path` `pane_width`
 `pane_height` `pane_active` `pane_dead` `pane_dead_status`
 `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time`
-`pane_activity`, `client_width`
+`pane_activity` `pane_dead_time`, `client_width`
 `client_height`, `host` `host_short` `socket_path` `version` `pid`.
 Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
 `#{=-10:…}` (last 10), `#{b:pane_current_path}` (basename), `#{d:…}`

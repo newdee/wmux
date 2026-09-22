@@ -56,6 +56,8 @@ pub struct Context {
     /// Unix time the pane's program was started, and of its last output.
     pub pane_start_time: i64,
     pub pane_activity: i64,
+    /// Unix time the program exited, 0 while it runs.
+    pub pane_dead_time: i64,
     pub client_width: u16,
     pub client_height: u16,
     pub host: String,
@@ -162,6 +164,13 @@ impl Context {
             "pane_pid" => self.pane_pid.map(|p| p.to_string()).unwrap_or_default(),
             "pane_start_time" => self.pane_start_time.to_string(),
             "pane_activity" => self.pane_activity.to_string(),
+            "pane_dead_time" => {
+                if self.pane_dead_time == 0 {
+                    String::new()
+                } else {
+                    self.pane_dead_time.to_string()
+                }
+            }
             "client_width" => self.client_width.to_string(),
             "client_height" => self.client_height.to_string(),
             "host" | "H" => self.host.clone(),

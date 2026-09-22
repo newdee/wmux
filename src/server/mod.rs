@@ -812,6 +812,7 @@ impl Server {
         SavedSession {
             name: s.name.clone(),
             current: s.cur,
+            size: Some((s.cols, s.rows)),
             windows: s
                 .windows
                 .iter()
@@ -909,17 +910,21 @@ impl Server {
     }
 
     /// Recreate one saved session (its name must be free). Returns its id.
+    /// `size` is the terminal about to attach; without one the session
+    /// comes back at the size it was saved at (80x24 for older files).
     fn restore_session_file(
         &mut self,
         path: &std::path::Path,
-        cols: u16,
-        rows: u16,
+        size: Option<(u16, u16)>,
     ) -> Result<(SessionId, Vec<String>), String> {
         use crate::resurrect::*;
         let ss = SavedFile::load(path)?.session;
         if self.sessions.iter().any(|s| s.name == ss.name) {
             return Err(format!("session {} already exists", ss.name));
         }
+        // A file is data: a hand-edited or damaged size must not make a
+        // session too small to lay out (`new -x/-y` has the same floor).
+        let (cols, rows) = size.or(ss.size).map(|(c, r)| (c.max(10), r.max(3))).unwrap_or((80, 24));
         let first = ss.windows.first().ok_or_else(|| format!("session {} has no windows", ss.name))?;
         let mut problems = Vec::new();
         // The session comes with its first window; the placeholder pane of
@@ -945,14 +950,14 @@ impl Server {
     }
 
     /// Restore every saved session whose name is free.
-    fn restore_all(&mut self, cols: u16, rows: u16) -> (Vec<SessionId>, Vec<String>) {
+    fn restore_all(&mut self, size: Option<(u16, u16)>) -> (Vec<SessionId>, Vec<String>) {
         let mut created = Vec::new();
         let mut problems = Vec::new();
         for (name, _, path) in crate::resurrect::list(&self.sessions_dir()) {
             if self.sessions.iter().any(|s| s.name == name) {
                 continue;
             }
-            match self.restore_session_file(&path, cols, rows) {
+            match self.restore_session_file(&path, size) {
                 Ok((sid, p)) => {
                     created.push(sid);
                     problems.extend(p);
@@ -1027,7 +1032,7 @@ impl Server {
             }
         }
         if (self.opts.restore_on_start || self.force_restore) && self.sessions.is_empty() {
-            let (created, problems) = self.restore_all(80, 24);
+            let (created, problems) = self.restore_all(None);
             log::info!("restore-on-start: {} session(s)", created.len());
             for p in problems {
                 log::warn!("restore-on-start: {p}");
@@ -1261,6 +1266,7 @@ impl Server {
                     // `respawn-pane` starts it again, `kill-pane` closes it.
                     if let Some(p) = self.find_pane_mut(id) {
                         p.exit_code = Some(code);
+                        p.died_at = Some(Instant::now());
                         let note =
                             format!("\r\n\x1b[7m[{command} exited with {code}; respawn-pane or kill-pane]\x1b[0m\r\n");
                         p.process_output(note.as_bytes());
@@ -2274,7 +2280,9 @@ impl Server {
             Cmd::RestoreSession { name, attach } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive && c.session.is_none());
-                let (cols, rows) = client.map(|c| (c.cols, c.rows)).unwrap_or((80, 24));
+                // Only a terminal about to attach has a size worth using;
+                // a script resuming from the side leaves the saved size.
+                let size = if interactive && attach { client.map(|c| (c.cols, c.rows)) } else { None };
                 let dir = self.sessions_dir();
                 let (created, problems, target_sid) = match &name {
                     Some(n) => {
@@ -2285,14 +2293,14 @@ impl Server {
                             let Some(path) = crate::resurrect::find(&dir, n) else {
                                 return Outcome::Error(format!("no saved session named {n} (see list-saved)"));
                             };
-                            match self.restore_session_file(&path, cols, rows) {
+                            match self.restore_session_file(&path, size) {
                                 Ok((sid, p)) => (vec![sid], p, Some(sid)),
                                 Err(e) => return Outcome::Error(e),
                             }
                         }
                     }
                     None => {
-                        let (c, p) = self.restore_all(cols, rows);
+                        let (c, p) = self.restore_all(size);
                         let first = c.first().copied().or_else(|| self.resolve_session(None, cid).ok());
                         (c, p, first)
                     }
@@ -3419,11 +3427,7 @@ impl Server {
                 for (sid, widx, pid) in panes {
                     let ctx = self.context(sid, widx, Some(pid), cid);
                     match &format {
-                        Some(f) => {
-                            let base = render::Style::default();
-                            let segs = crate::format::expand(f, &ctx, &mut self.shell_cache, base, now);
-                            lines.push(segs.into_iter().map(|s| s.text).collect::<String>());
-                        }
+                        Some(f) => lines.push(self.expand_with_shells(f, &ctx, pid)),
                         None => {
                             let t = now.timestamp();
                             rows.push(vec![
@@ -3432,7 +3436,10 @@ impl Server {
                                     Some(code) => format!("exit {code}"),
                                     None => "running".to_string(),
                                 },
-                                crate::format::human_duration(t - ctx.pane_start_time),
+                                // A dead pane's clock stopped when it died: how long it ran.
+                                crate::format::human_duration(
+                                    (if ctx.pane_dead_time > 0 { ctx.pane_dead_time } else { t }) - ctx.pane_start_time,
+                                ),
                                 crate::format::human_duration(t - ctx.pane_activity),
                                 ctx.pane_pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
                                 ctx.pane_title,
@@ -3912,9 +3919,33 @@ impl Server {
     fn expand_format_at(&mut self, s: &str, target: Option<&Target>, cid: Option<ClientId>) -> String {
         let Ok((sid, widx, pid)) = self.resolve(target, cid) else { return s.to_string() };
         let ctx = self.context(sid, widx, Some(pid), cid);
+        self.expand_with_shells(s, &ctx, pid)
+    }
+
+    /// `s` expanded for `ctx` as text, for a one-shot answer
+    /// (`display-message -p`, `jobs -F`): a `#(command)` the status line has
+    /// not run yet is run here, with a short leash, since tmux waits for it
+    /// too and "empty until the next status-interval" is no answer.
+    fn expand_with_shells(&mut self, s: &str, ctx: &crate::format::Context, pid: PaneId) -> String {
         let now = chrono::Local::now();
         let base = render::Style::default();
-        crate::format::expand(s, &ctx, &mut self.shell_cache, base, now).into_iter().map(|seg| seg.text).collect()
+        let text = |segs: Vec<crate::format::Segment>| segs.into_iter().map(|seg| seg.text).collect::<String>();
+        let first = crate::format::expand(s, ctx, &mut self.shell_cache, base, now);
+        let missing: Vec<String> = std::mem::take(&mut self.shell_cache.wanted)
+            .into_iter()
+            .filter(|c| !self.shell_cache.results.contains_key(c))
+            .collect();
+        if missing.is_empty() {
+            return text(first);
+        }
+        let mut env = self.pane_env(pid);
+        env.retain(|(k, _)| k != "WMUX_PANE");
+        for cmd in missing {
+            let (output, _) = run_shell_blocking(&cmd, &env, Some(ONE_SHOT_SHELL_TIMEOUT));
+            let line = output.lines().next().unwrap_or("").trim_end().to_string();
+            self.shell_cache.results.insert(cmd, line);
+        }
+        text(crate::format::expand(s, ctx, &mut self.shell_cache, base, now))
     }
 
     /// Everything a format can ask about a session, one of its windows, a
@@ -3976,6 +4007,7 @@ impl Server {
             let now = chrono::Local::now().timestamp();
             ctx.pane_start_time = now - p.spawned_at.elapsed().as_secs() as i64;
             ctx.pane_activity = now - p.last_output.elapsed().as_secs() as i64;
+            ctx.pane_dead_time = p.died_at.map(|d| now - d.elapsed().as_secs() as i64).unwrap_or(0);
         }
         ctx
     }
@@ -5286,6 +5318,10 @@ fn path_with_self() -> String {
 
 /// Longest a status-line `#(command)` may run before it is killed.
 const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
+/// A `#(command)` run for a one-shot `display-message -p` or `jobs -F`
+/// blocks the server while it runs, so it gets less rope than the status
+/// line's background ones.
+const ONE_SHOT_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Run a shell command to completion, returning (stdout+stderr, exit code).
 /// Uses pwsh when available, else Windows PowerShell, else cmd. With a

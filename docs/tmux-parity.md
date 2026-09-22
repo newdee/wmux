@@ -205,7 +205,7 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `window_flags`), the pane (`pane_index` `pane_id` `pane_title`
 `pane_current_command` `pane_start_command` `pane_current_path`
 `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status`
-`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity`), the client
+`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time`), the client
 (`client_width` `client_height`) and the server (`host` `host_short`
 `socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
 #H #F #D #h`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.

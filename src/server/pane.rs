@@ -183,6 +183,9 @@ pub struct Pane {
     pub spawned_at: std::time::Instant,
     /// When it last printed anything (`jobs`, idle time).
     pub last_output: std::time::Instant,
+    /// When its program exited, while `remain-on-exit` keeps the pane
+    /// (`#{pane_dead_time}`; `jobs` stops the clock there).
+    pub died_at: Option<std::time::Instant>,
 }
 
 /// An asciinema v2 recording in progress: a header line, then one JSON
@@ -332,6 +335,7 @@ impl Pane {
             pid,
             spawned_at: std::time::Instant::now(),
             last_output: std::time::Instant::now(),
+            died_at: None,
         })
     }
 

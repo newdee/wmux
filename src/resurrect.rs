@@ -81,6 +81,10 @@ pub struct SavedSession {
     pub name: String,
     pub windows: Vec<SavedWindow>,
     pub current: usize,
+    /// (columns, rows) the session had, used when nothing attaches to size
+    /// the restored one. Older files have none: 80x24 then.
+    #[serde(default)]
+    pub size: Option<(u16, u16)>,
 }
 
 /// One file: one session.
@@ -186,6 +190,7 @@ mod tests {
         SavedFile::new(SavedSession {
             name: "main".into(),
             current: 1,
+            size: Some((120, 40)),
             windows: vec![
                 SavedWindow {
                     name: "shell".into(),
