@@ -109,6 +109,8 @@ enum ChooserItem {
     Client(ClientId),
     /// An entry of a `display-menu`, by position.
     Menu(usize),
+    /// A pane on the task board (`choose-jobs`).
+    Job(SessionId, WindowId, PaneId),
     /// A title or separator line: shown, never selected.
     Separator,
 }
@@ -121,6 +123,9 @@ enum ChooserKind {
     Buffers,
     /// The attached clients.
     Clients,
+    /// Every pane on the server with its state (`jobs`), to jump to, kill
+    /// or restart.
+    Jobs,
     /// A fixed list of windows (the `find-window` hits).
     Found,
     /// A `display-menu` and the commands its entries run.
@@ -130,7 +135,7 @@ enum ChooserKind {
 impl ChooserKind {
     /// Whether the list is rebuilt from the server state at every render.
     fn live(&self) -> bool {
-        matches!(self, ChooserKind::Tree { .. } | ChooserKind::Buffers | ChooserKind::Clients)
+        matches!(self, ChooserKind::Tree { .. } | ChooserKind::Buffers | ChooserKind::Clients | ChooserKind::Jobs)
     }
 }
 
@@ -722,6 +727,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("w", "choose-tree -Zw"),
         ("s", "choose-tree -Zs"),
         ("D", "choose-client"),
+        ("B", "choose-jobs"),
         (
             ">",
             "display-menu -T \"pane #P\" \"Split horizontally\" h \"split-window -h\" \
@@ -746,7 +752,11 @@ fn default_bindings() -> HashMap<Key, Binding> {
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
         let cmd = crate::command::parse_line(l).expect(l).expect(l);
-        m.insert(key, Binding { cmd, repeat: REPEATABLE.contains(&k) });
+        // Two entries for one key would mean the later one silently won.
+        assert!(
+            m.insert(key, Binding { cmd, repeat: REPEATABLE.contains(&k) }).is_none(),
+            "default key {k} bound twice"
+        );
     }
     for d in 0..10u8 {
         let cmd = Cmd::SelectWindow { target: Target::parse(&format!(":{d}")) };
@@ -3406,67 +3416,24 @@ impl Server {
                     },
                     None => (None, None, None),
                 };
-                let mut panes: Vec<(SessionId, usize, PaneId)> = Vec::new();
-                for s in self.sessions.iter().filter(|s| only_sid.is_none_or(|id| id == s.id)) {
-                    for (wi, w) in s.windows.iter().enumerate().filter(|(wi, _)| only_widx.is_none_or(|i| i == *wi)) {
-                        panes.extend(
-                            w.layout
-                                .panes()
-                                .into_iter()
-                                .filter(|p| only_pid.is_none_or(|id| id == *p))
-                                .map(|p| (s.id, wi, p)),
-                        );
-                    }
-                }
-                let now = chrono::Local::now();
-                let mut lines = Vec::new();
-                // Standard view: a header and aligned columns.
-                let mut rows: Vec<Vec<String>> = vec![
-                    ["PANE", "STATE", "UP", "IDLE", "PID", "COMMAND", "DIR"].iter().map(|s| s.to_string()).collect(),
-                ];
-                for (sid, widx, pid) in panes {
-                    let ctx = self.context(sid, widx, Some(pid), cid);
-                    match &format {
-                        Some(f) => lines.push(self.expand_with_shells(f, &ctx, pid)),
-                        None => {
-                            let t = now.timestamp();
-                            rows.push(vec![
-                                format!("{}:{}.{}", ctx.session, ctx.window_index, ctx.pane_index),
-                                match ctx.pane_dead_status {
-                                    Some(code) => format!("exit {code}"),
-                                    None => "running".to_string(),
-                                },
-                                // A dead pane's clock stopped when it died: how long it ran.
-                                crate::format::human_duration(
-                                    (if ctx.pane_dead_time > 0 { ctx.pane_dead_time } else { t }) - ctx.pane_start_time,
-                                ),
-                                crate::format::human_duration(t - ctx.pane_activity),
-                                ctx.pane_pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
-                                ctx.pane_title,
-                                ctx.pane_path,
-                            ]);
+                let panes = self.jobs_panes(only_sid, only_widx, only_pid);
+                match &format {
+                    Some(f) => {
+                        let mut lines = Vec::new();
+                        for (sid, widx, pid) in panes {
+                            let ctx = self.context(sid, widx, Some(pid), cid);
+                            lines.push(self.expand_with_shells(f, &ctx, pid));
                         }
+                        Outcome::Text(lines.join("\n"))
+                    }
+                    None if panes.is_empty() => Outcome::Text(String::new()),
+                    None => {
+                        // Standard view: a header and aligned columns.
+                        let mut rows = vec![jobs_header()];
+                        rows.extend(panes.into_iter().map(|(sid, widx, pid)| self.jobs_row(sid, widx, pid, cid)));
+                        Outcome::Text(align_columns(&rows).join("\n"))
                     }
                 }
-                if format.is_none() && rows.len() > 1 {
-                    // Columns line up on screen, so pad by display width: a
-                    // CJK session name is two cells a character.
-                    use unicode_width::UnicodeWidthStr;
-                    let ncol = rows[0].len();
-                    let widths: Vec<usize> =
-                        (0..ncol).map(|c| rows.iter().map(|r| r[c].width()).max().unwrap_or(0)).collect();
-                    for r in &rows {
-                        let mut line = String::new();
-                        for (c, cell) in r.iter().enumerate() {
-                            line.push_str(cell);
-                            if c + 1 < ncol {
-                                line.extend(std::iter::repeat_n(' ', widths[c] - cell.width() + 2));
-                            }
-                        }
-                        lines.push(line.trim_end().to_string());
-                    }
-                }
-                Outcome::Text(lines.join("\n"))
             }
             Cmd::DisplayMessage { msg, target } => {
                 if cid.is_none() && target.is_none() {
@@ -3581,6 +3548,26 @@ impl Server {
                 c.prompt = None;
                 c.overlay = None;
                 c.chooser = Some(Chooser { kind: ChooserKind::Buffers, items, lines, sel: 0, top: 0 });
+                Outcome::Ok
+            }
+            Cmd::ChooseJobs => {
+                let Some(cid) = cid else { return Outcome::Error("choose-jobs: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("choose-jobs: client not attached".into());
+                }
+                let (items, lines) = self.chooser_lines(&ChooserKind::Jobs).unwrap_or_default();
+                // Start on the client's own pane.
+                let sel = self
+                    .resolve(None, Some(cid))
+                    .ok()
+                    .and_then(|(_, _, pid)| {
+                        items.iter().position(|i| matches!(i, ChooserItem::Job(_, _, p) if *p == pid))
+                    })
+                    .unwrap_or(1);
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser { kind: ChooserKind::Jobs, items, lines, sel, top: 0 });
                 Outcome::Ok
             }
             Cmd::ChooseClient => {
@@ -4372,6 +4359,46 @@ impl Server {
     /// The picker's lines from the live sessions, tmux `choose-tree` style:
     /// `(n) - name: 2 windows (attached)` and, when expanded,
     /// `(n)   - 0: cmd* (2 panes) "title"` under each session.
+    /// The panes `jobs` lists, in session / window / layout order, narrowed
+    /// to a session, a window of it, or one pane.
+    fn jobs_panes(
+        &self,
+        only_sid: Option<SessionId>,
+        only_widx: Option<usize>,
+        only_pid: Option<PaneId>,
+    ) -> Vec<(SessionId, usize, PaneId)> {
+        let mut panes = Vec::new();
+        for s in self.sessions.iter().filter(|s| only_sid.is_none_or(|id| id == s.id)) {
+            for (wi, w) in s.windows.iter().enumerate().filter(|(wi, _)| only_widx.is_none_or(|i| i == *wi)) {
+                panes.extend(
+                    w.layout.panes().into_iter().filter(|p| only_pid.is_none_or(|id| id == *p)).map(|p| (s.id, wi, p)),
+                );
+            }
+        }
+        panes
+    }
+
+    /// One pane's row of the task board, the columns of `jobs_header`.
+    fn jobs_row(&self, sid: SessionId, widx: usize, pid: PaneId, cid: Option<ClientId>) -> Vec<String> {
+        let ctx = self.context(sid, widx, Some(pid), cid);
+        let t = chrono::Local::now().timestamp();
+        vec![
+            format!("{}:{}.{}", ctx.session, ctx.window_index, ctx.pane_index),
+            match ctx.pane_dead_status {
+                Some(code) => format!("exit {code}"),
+                None => "running".to_string(),
+            },
+            // A dead pane's clock stopped when it died: how long it ran.
+            crate::format::human_duration(
+                (if ctx.pane_dead_time > 0 { ctx.pane_dead_time } else { t }) - ctx.pane_start_time,
+            ),
+            crate::format::human_duration(t - ctx.pane_activity),
+            ctx.pane_pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+            ctx.pane_title,
+            ctx.pane_path,
+        ]
+    }
+
     fn chooser_lines(&self, kind: &ChooserKind) -> Option<(Vec<ChooserItem>, Vec<String>)> {
         let mut items = Vec::new();
         let mut lines = Vec::new();
@@ -4394,6 +4421,23 @@ impl Server {
                     let session = c.session.and_then(|s| self.session(s)).map(|s| s.name.as_str()).unwrap_or("-");
                     items.push(ChooserItem::Client(id));
                     lines.push(format!("{}client-{id}: {session} [{}x{}]", tag(lines.len()), c.cols, c.rows));
+                }
+                return Some((items, lines));
+            }
+            ChooserKind::Jobs => {
+                // The task board: the header is a title line, every other
+                // line is a pane to jump to, kill or restart.
+                let panes = self.jobs_panes(None, None, None);
+                let mut rows = vec![jobs_header()];
+                rows.extend(panes.iter().map(|(sid, widx, pid)| self.jobs_row(*sid, *widx, *pid, None)));
+                items.push(ChooserItem::Separator);
+                for (sid, widx, pid) in &panes {
+                    let wid = self.session(*sid).and_then(|s| s.windows.get(*widx)).map(|w| w.id).unwrap_or(0);
+                    items.push(ChooserItem::Job(*sid, wid, *pid));
+                }
+                for (i, line) in align_columns(&rows).into_iter().enumerate() {
+                    // Jump tags count items, and the header is item 0.
+                    lines.push(format!("{}{line}", if i == 0 { "    ".to_string() } else { tag(i) }));
                 }
                 return Some((items, lines));
             }
@@ -4475,6 +4519,24 @@ impl Server {
             (KeyCode::PPage, _, _) | (KeyCode::Char('b'), true, _) => ch.step(-page),
             (KeyCode::Char('d'), true, _) => ch.step(page / 2),
             (KeyCode::Char('u'), true, _) => ch.step(-(page / 2)),
+            // The task board acts on the pane under the cursor and stays
+            // open (the list is live, so the row changes in place).
+            (KeyCode::Char(key @ ('x' | 'r')), false, false) if matches!(ch.kind, ChooserKind::Jobs) => {
+                if let Some(ChooserItem::Job(sid, wid, pid)) = ch.items.get(ch.sel).copied() {
+                    let Some(target) = self.pane_target(sid, wid, pid) else {
+                        self.message(cid, "pane is gone");
+                        return;
+                    };
+                    let cmd = if key == 'x' {
+                        Cmd::KillPane { target: Some(target), all_but: false }
+                    } else {
+                        Cmd::RespawnPane { target: Some(target), kill: true, argv: Vec::new(), window: false }
+                    };
+                    if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
+                        self.message(cid, &e);
+                    }
+                }
+            }
             (KeyCode::Char(d @ '0'..='9'), false, false) => {
                 let i = d as usize - '0' as usize;
                 if i < ch.items.len() && !matches!(ch.items[i], ChooserItem::Separator) {
@@ -4504,6 +4566,7 @@ impl Server {
                             self.message(cid, "client is gone");
                         }
                     }
+                    Some(ChooserItem::Job(sid, wid, pid)) => self.chooser_go_pane(cid, sid, wid, pid),
                     Some(ChooserItem::Menu(_)) | Some(ChooserItem::Separator) => {}
                     Some(ChooserItem::Buffer(i)) => {
                         let name = self.buffers.get(i).map(|(n, _)| n.clone());
@@ -4559,6 +4622,38 @@ impl Server {
         {
             s.select_window(i);
             self.fire_hook("after-select-window", Some(cid));
+        }
+    }
+
+    /// `session:window.pane` for a pane, as the commands want it; None
+    /// when it is gone.
+    fn pane_target(&self, sid: SessionId, wid: WindowId, pid: PaneId) -> Option<Target> {
+        let s = self.session(sid)?;
+        let widx = s.windows.iter().position(|w| w.id == wid)?;
+        let w = &s.windows[widx];
+        let pidx = w.layout.panes().iter().position(|p| *p == pid)?;
+        Some(Target {
+            session: Some(s.name.clone()),
+            window: Some((widx + self.opts.base_index).to_string()),
+            pane: Some(pidx + self.opts.pane_base_index),
+        })
+    }
+
+    /// Switch the client to a pane: its session, its window, then the pane.
+    fn chooser_go_pane(&mut self, cid: ClientId, sid: SessionId, wid: WindowId, pid: PaneId) {
+        if self.pane_target(sid, wid, pid).is_none() {
+            self.message(cid, "pane is gone");
+            return;
+        }
+        self.chooser_go(cid, sid, Some(wid));
+        if let Some(s) = self.session_mut(sid)
+            && let Some(w) = s.windows.iter_mut().find(|w| w.id == wid)
+            && w.active != pid
+            && w.pane(pid).is_some()
+        {
+            w.last_pane = Some(w.active);
+            w.active = pid;
+            self.fire_hook("after-select-pane", Some(cid));
         }
     }
 
@@ -5185,7 +5280,13 @@ impl Server {
             } else if body_h > 0 && ch.sel >= ch.top + body_h {
                 ch.top = ch.sel + 1 - body_h;
             }
-            render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top);
+            let actions = match ch.kind {
+                ChooserKind::Jobs => "Enter go  x kill  r restart",
+                ChooserKind::Clients => "Enter detach",
+                ChooserKind::Buffers => "Enter paste",
+                _ => "Enter select",
+            };
+            render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions);
             cursor = None;
         }
         // An overlay (a hook's message, a `run-shell` result) draws over the
@@ -5317,6 +5418,32 @@ fn path_with_self() -> String {
 }
 
 /// Longest a status-line `#(command)` may run before it is killed.
+/// The columns of the task board (`jobs`, `choose-jobs`).
+fn jobs_header() -> Vec<String> {
+    ["PANE", "STATE", "UP", "IDLE", "PID", "COMMAND", "DIR"].iter().map(|s| s.to_string()).collect()
+}
+
+/// Rows as lines with the columns lined up on screen: padded by display
+/// width, since a CJK session name is two cells a character.
+fn align_columns(rows: &[Vec<String>]) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let ncol = rows.first().map(|r| r.len()).unwrap_or(0);
+    let widths: Vec<usize> =
+        (0..ncol).map(|c| rows.iter().map(|r| r.get(c).map(|s| s.width()).unwrap_or(0)).max().unwrap_or(0)).collect();
+    rows.iter()
+        .map(|r| {
+            let mut line = String::new();
+            for (c, cell) in r.iter().enumerate() {
+                line.push_str(cell);
+                if c + 1 < ncol {
+                    line.extend(std::iter::repeat_n(' ', widths[c].saturating_sub(cell.width()) + 2));
+                }
+            }
+            line.trim_end().to_string()
+        })
+        .collect()
+}
+
 const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A `#(command)` run for a one-shot `display-message -p` or `jobs -F`
 /// blocks the server while it runs, so it gets less rope than the status

@@ -1292,3 +1292,40 @@ i18n 52/52；152 项测试通过。（`winget install --manifest` 要管理员�
 ## 结论（第二十三次验收）
 
 第 2、3、4 轮连续零发现，验收通过。测试数不变（154）。
+
+# 第二十四次验收（2026-09-22）— `choose-jobs`（prefix B）任务板弹窗
+
+本次新增：
+- `choose-jobs`：`jobs` 那张板做成 chooser（`ChooserKind::Jobs`，每帧重建）。首行是表头（不可选），
+  光标起始在本客户端所在 pane；`Enter` 切到那个 pane（session → 窗口 → pane，触发 after-select-pane 钩子），
+  `x` kill-pane，`r` respawn-pane -k，操作后板不关、行原地刷新；提示行按类型显示动作（`Enter go  x kill  r restart`）。
+  `jobs` 与弹窗共用 `jobs_panes`/`jobs_row`/`align_columns`。默认绑定 `prefix B`。
+- 默认按键表建表时对重复键断言，防止后加的条目静默覆盖前面的。
+
+## 第 1 轮（不计数）— 视角：机制通路
+
+发现真 bug：最初绑在 `prefix J`，HashMap 插入静默覆盖了默认的 `J → resize-pane -D 5`（`list-keys` 还显示成 `-r`）。
+`T` 也被 pane 标题提示占用，改用空闲的 `B`；加断言。
+
+## 第 2 轮（计数 1/3，无发现）— 视角：机制通路
+
+数据：交互 e2e（两条）连跑 3 次全过：板打开时 `[2/4]` 停在本 pane、提示行含 `Enter go  x kill  r restart`、
+`r` 后 pane pid 变化且板仍开着、`x` 杀掉 `exit 4` 的 pane 后计数变 3 且窗口消失、`G`+`Enter` 切到 `other` session、
+按键没有漏进 shell、脚本里调用报 `client not attached`。release 二进制：`list-keys` 有 `-T prefix B choose-jobs`（无 `-r`）
+且 `J` 仍是 `resize-pane -D 5`；`list-commands`、`--help` 都有；`jobs` 表头对齐不变。
+
+## 第 3 轮（计数 2/3，无发现）— 视角：边界
+
+数据：边界 e2e 连跑 3 次全过：12 个 pane 时跳转标签 (1)…(9) 且第 10 个起无标签、`g` 不落在表头、`7` 跳到第 7 项、
+光标下的窗口被外部 kill 后板自动变 12 行、`q` 关闭、按键不漏、`unbind-key B` 后 `list-keys` 无 choose-jobs、
+`bind-key Y choose-jobs` 后 `prefix Y` 打开。CLI：多余参数拒绝、`choose-jo`/`choose-j` 解析到 choose-jobs、
+`bind-key -n F12 choose-jobs` 出现在 root 表；41 个 pane 的板 26 ms，STATE 列同一屏幕列。
+
+## 第 4 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，156 项指纹均为 `ABBD54930CF37D7B`；README（中英）与对照表写了 choose-jobs、prefix B、x/r；
+默认绑定为 B 且有重复键断言；提示行文案、live 重建、共用行构造器、COMMANDS 条目、网站 156 tests 全部核对；clippy 与 fmt 无输出。
+
+## 结论（第二十四次验收）
+
+第 2、3、4 轮连续零发现，验收通过。测试 154 → 156（lib 103 / console 4 / e2e 49）。

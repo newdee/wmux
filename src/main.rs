@@ -30,6 +30,7 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   display-popup [-E] [-C] [-w W] [-h H] [-d dir] [command...]   wait-for [-L|-U|-S] channel
   find-text [-C] [-n hits] [-t target] pattern   (search what every pane printed)
   jobs [-t session] [-F format]   (every pane: running or exited, up for how long, idle since when)
+  choose-jobs   (prefix B: the same board as a picker; Enter goes there, x kills, r restarts)
   record [-t target] [out.cast]   (write the pane's output as asciinema v2; no path stops)
   notify [-T title] message   (a desktop notification; `set -g notify on` for alerts)
 Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):

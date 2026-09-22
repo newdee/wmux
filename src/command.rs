@@ -289,6 +289,9 @@ pub enum Cmd {
     /// `choose-client`: pick an attached client from a list and detach it
     /// (tmux binds this to prefix `D`).
     ChooseClient,
+    /// `choose-jobs`: the task board as a picker (prefix `B`): Enter goes
+    /// to the pane, `x` kills it, `r` restarts it.
+    ChooseJobs,
     /// `display-menu [-T title] name key command ...`: a menu over the window;
     /// an empty name is a separator, `key` selects the entry directly.
     DisplayMenu {
@@ -873,6 +876,7 @@ impl fmt::Display for Cmd {
             Cmd::ListBuffers => f.write_str("list-buffers"),
             Cmd::ChooseBuffer => f.write_str("choose-buffer"),
             Cmd::ChooseClient => f.write_str("choose-client"),
+            Cmd::ChooseJobs => f.write_str("choose-jobs"),
             Cmd::DisplayMenu { title, items } => {
                 f.write_str("display-menu")?;
                 if let Some(t) = title {
@@ -1288,6 +1292,7 @@ pub const COMMANDS: &[&str] = &[
     "capture-pane",
     "choose-buffer",
     "choose-client",
+    "choose-jobs",
     "choose-session",
     "clock-mode",
     "choose-tree",
@@ -1455,6 +1460,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "list-buffers" | "lsb" => "list-buffers",
         "choose-buffer" => "choose-buffer",
         "choose-client" => "choose-client",
+        "choose-jobs" => "choose-jobs",
         "command-prompt" => "command-prompt",
         "pipe-pane" | "pipep" => "pipe-pane",
         "wait-for" | "wait" => "wait-for",
@@ -2077,6 +2083,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ChooseBuffer
+        }
+        "choose-jobs" => {
+            a.none_left(n)?;
+            Cmd::ChooseJobs
         }
         "choose-client" => {
             while a.is_flag() {
@@ -3032,6 +3042,8 @@ mod tests {
         assert!(matches!(p("pipep cat"), Cmd::PipePane { .. }));
         assert!(matches!(p("wait x"), Cmd::WaitFor { .. }));
         assert!(matches!(p("choose-c"), Cmd::ChooseClient));
+        assert!(matches!(p("choose-j"), Cmd::ChooseJobs));
+        assert!(parse_line("choose-jobs extra").unwrap_err().contains("unexpected argument"));
         // Commands that exist must be in the table, or a prefix of them is
         // "unknown" and `list-commands` does not mention them.
         assert!(matches!(p("copy-m"), Cmd::CopyMode { .. }));

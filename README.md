@@ -393,7 +393,10 @@ Commands a script or a binding reaches for, beyond the obvious ones
   whether its program is still running or what it exited with, how long it
   has been up, how long since it last printed, its pid, command and
   directory. `-t session` narrows it; `-F format` prints what you want
-  instead (`#{pane_start_time}` and `#{pane_activity}` are the raw times).
+  instead (`#{pane_start_time}`, `#{pane_activity}` and `#{pane_dead_time}`
+  are the raw times). `prefix B` (`choose-jobs`) is the same board as a
+  picker: `Enter` goes to that pane, `x` kills it, `r` restarts it, and the
+  rows update in place while it is open.
 
   ```
   PANE       STATE    UP     IDLE   PID    COMMAND       DIR

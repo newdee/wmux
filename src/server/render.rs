@@ -663,7 +663,9 @@ pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool
 
 /// The `choose-tree` picker: `lines` from `top` fill the area, line `sel` is
 /// highlighted (tmux mode-style: black on yellow), the last row is the key hint.
-pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize) {
+/// `actions` is the hint's middle piece: what Enter (and any other action
+/// key) does for this kind of list.
+pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize, actions: &str) {
     if area.h == 0 || area.w == 0 {
         return;
     }
@@ -680,7 +682,7 @@ pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top:
         g.put_str(area.x, y, line, st, area.w);
     }
     let hint = format!(
-        "[{}/{}] j/k move  g/G top/bottom  Enter select  q quit",
+        "[{}/{}] j/k move  g/G top/bottom  {actions}  q quit",
         if lines.is_empty() { 0 } else { sel + 1 },
         lines.len()
     );
@@ -698,7 +700,7 @@ mod tests {
         let mut g = Grid::new(40, 4);
         let lines: Vec<String> = (0..6).map(|i| format!("item{i}")).collect();
         let row = |g: &Grid, y: u16| (0..40).map(|x| g.get(x, y).text()).collect::<String>();
-        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 1, 0);
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 1, 0, "Enter select");
         assert_eq!(row(&g, 0).trim_end(), "item0");
         assert_eq!(row(&g, 1).trim_end(), "item1");
         assert_eq!(row(&g, 2).trim_end(), "item2");
@@ -707,16 +709,16 @@ mod tests {
         assert_eq!(g.get(0, 0).style.bg, Color::Default);
         assert!(row(&g, 3).starts_with("[2/6] j/k move"), "{}", row(&g, 3));
         // Scrolled: top=3 shows items 3..5, selection 5 on the last body row.
-        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 5, 3);
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 5, 3, "Enter select");
         assert_eq!(row(&g, 0).trim_end(), "item3");
         assert_eq!(row(&g, 2).trim_end(), "item5");
         assert_eq!(g.get(0, 2).style.bg, Color::Idx(3));
         assert!(row(&g, 3).starts_with("[6/6]"));
         // Empty list and degenerate areas never panic.
-        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &[], 0, 0);
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &[], 0, 0, "Enter select");
         assert!(row(&g, 3).starts_with("[0/0]"));
-        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 0, h: 0 }, &lines, 0, 0);
-        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 1 }, &lines, 0, 0);
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 0, h: 0 }, &lines, 0, 0, "Enter select");
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 1 }, &lines, 0, 0, "Enter select");
     }
 
     #[test]

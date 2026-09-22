@@ -262,7 +262,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 - `send-keys -X <copy 命令>`：用脚本开 copy mode 干活（`search-backward`、`begin-selection`、`copy-selection` ……名字和 tmux 一样）。
 - `capture-pane -p [-e]`：把 pane 的内容打出来，`-e` 连颜色一起。
 - `find-text 关键词`：在**所有 pane 打印过的内容**里找（不是找窗口名），告诉你在哪个 pane、往回第几行：`ft:0.0  -8  REDIS-TIMEOUT-here`。`-C` 区分大小写，`-t` 限定 session 或窗口，`-n` 限制每个 pane 最多几条。tmux 的 `find-window` 只搜名字和标题，搜不了内容。
-- `jobs`：任务板。整个 server 上每个 pane 一行——程序还在跑还是已经退出（退出码多少）、跑了多久、多久没有输出、pid、命令、目录。`-t session` 只看一个 session；`-F 格式` 自己定输出（`#{pane_start_time}`、`#{pane_activity}` 是原始时间戳）。
+- `jobs`：任务板。整个 server 上每个 pane 一行——程序还在跑还是已经退出（退出码多少）、跑了多久、多久没有输出、pid、命令、目录。`-t session` 只看一个 session；`-F 格式` 自己定输出（`#{pane_start_time}`、`#{pane_activity}`、`#{pane_dead_time}` 是原始时间戳）。`prefix B`（`choose-jobs`）是同一张板的可操作版：`Enter` 跳到那个 pane，`x` 杀掉，`r` 重启，开着的时候行会原地刷新。
 
   ```
   PANE       STATE    UP     IDLE   PID    COMMAND       DIR

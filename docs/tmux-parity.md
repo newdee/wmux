@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `record` (a pane's output as an asciinema file), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop notification), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
@@ -115,6 +115,7 @@ tmux's table, with what wmux does today.
 | `=` | choose-buffer | yes |
 | `?` | list-keys | yes |
 | `D` | choose-client | yes |
+| `B` | choose-jobs | wmux only: the task board as a picker (Enter goes there, `x` kills, `r` restarts) |
 | `E` | select-layout -E (spread) | yes |
 | `L` | switch-client -l | wmux uses `L` to resize; `:switch-client -l` works |
 | `M` / `m` | select-pane -M / -m | yes |

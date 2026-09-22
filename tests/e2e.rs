@@ -2640,3 +2640,112 @@ async fn a_resumed_session_keeps_its_saved_size() {
     assert_eq!(out.trim(), "100x30");
     h.cli(&["kill-server"]).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_jobs_is_the_board_you_can_act_on() {
+    let h = Harness::start("choosejobs").await;
+    h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "j"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    h.cli(&["new-window", "-d", "-t", "j", "-n", "dies", "cmd.exe", "/c", "exit", "4"]).await;
+    h.cli(&["new", "-d", "-s", "other"]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.cli(&["jobs"]).await.1.contains("exit 4") {
+        assert!(Instant::now() < deadline, "the exited pane never showed");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let pid_before = h.cli(&["jobs", "-t", "j:0.0", "-F", "#{pane_pid}"]).await.1.trim().to_string();
+
+    // prefix J: the board, cursor on this client's own pane (item 1 of
+    // header + 3 panes), with its own action keys in the hint.
+    c.prefix('B').await;
+    c.wait_for("the board", |s| {
+        let t = s.contents();
+        t.contains("[2/4] j/k move") && t.contains("Enter go  x kill  r restart") && t.contains("exit 4")
+    })
+    .await;
+    let text = c.text();
+    assert!(text.contains("PANE") && text.contains("STATE") && text.contains("IDLE"), "{text}");
+    assert!(text.contains("(1) j:0.0") && text.contains("(2) j:1.0") && text.contains("(3) other:0.0"), "{text}");
+
+    // r restarts the pane under the cursor: a new pid, the board stays open.
+    c.type_str("r").await;
+    c.wait_for("restarted", |s| s.contents().contains("[2/4]")).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let pid = h.cli(&["jobs", "-t", "j:0.0", "-F", "#{pane_pid}"]).await.1.trim().to_string();
+        if !pid.is_empty() && pid != pid_before {
+            break;
+        }
+        assert!(Instant::now() < deadline, "pid did not change after r: {pid} vs {pid_before}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // x kills the exited one: its row goes, the count follows.
+    c.type_str("j").await;
+    c.wait_for("on the dead pane", |s| s.contents().contains("[3/4]")).await;
+    c.type_str("x").await;
+    c.wait_for("killed", |s| !s.contents().contains("exit 4") && s.contents().contains("/3]")).await;
+    let (_, wins, _) = h.cli(&["list-windows", "-t", "j"]).await;
+    assert_eq!(wins.lines().count(), 1, "the window of the killed pane is gone: {wins}");
+    // Enter on the other session's pane switches the client there.
+    c.type_str("G").await;
+    c.wait_for("last item", |s| s.contents().contains("[3/3]")).await;
+    c.key(0x0D, '\r', 0).await;
+    c.wait_for("switched", |s| {
+        let t = s.contents();
+        !t.contains("j/k move") && t.contains("[other]")
+    })
+    .await;
+    // Nothing leaked into a shell.
+    let out = h.cli(&["capture-pane", "-p", "-t", "other:0"]).await.1;
+    assert_eq!(out.trim(), "wmux>", "picker keys leaked into the pane: {out:?}");
+    // From a script there is no client to draw it for.
+    let (code, _, err) = h.cli(&["choose-jobs"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("not attached"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_jobs_edges() {
+    let h = Harness::start("choosejobs2").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "e"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    for _ in 0..11 {
+        h.cli(&["new-window", "-d", "-t", "e"]).await;
+    }
+    c.prefix('B').await;
+    c.wait_for("the board", |s| s.contents().contains("[2/13] j/k move")).await;
+    let text = c.text();
+    // Jump tags run 1..9 (items, the header being 0); beyond that, none.
+    assert!(text.contains("(9) e:8.0"), "{text}");
+    assert!(!text.contains("(10)"), "{text}");
+    assert!(text.lines().any(|l| l.trim_start().starts_with("e:10.0")), "{text}");
+    // g never lands on the header: it is a title, not a pane.
+    c.type_str("g").await;
+    c.wait_for("first pane", |s| s.contents().contains("[2/13]")).await;
+    // A digit jumps to that item.
+    c.type_str("7").await;
+    c.wait_for("item 7", |s| s.contents().contains("[8/13]")).await;
+    // The pane under the cursor is killed from outside: the board notices
+    // (12 rows), and acting on what vanished says so instead of guessing.
+    h.cli(&["kill-window", "-t", "e:6"]).await;
+    c.wait_for("one fewer", |s| s.contents().contains("/12]")).await;
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
+    // Keys never reached the shell.
+    let out = h.cli(&["capture-pane", "-p", "-t", "e:0"]).await.1;
+    assert_eq!(out.trim(), "wmux>", "{out:?}");
+    // The binding is an ordinary one: rebound and unbound like any other.
+    h.cli(&["unbind-key", "B"]).await;
+    let (_, keys, _) = h.cli(&["list-keys"]).await;
+    assert!(!keys.contains("choose-jobs"), "{keys}");
+    h.cli(&["bind-key", "Y", "choose-jobs"]).await;
+    c.prefix('Y').await;
+    c.wait_for("the board again", |s| s.contents().contains("j/k move")).await;
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
+    h.cli(&["kill-server"]).await;
+}
