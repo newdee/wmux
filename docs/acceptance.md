@@ -1128,3 +1128,46 @@ README（中英）写了命令与 Fragments 路径，对照表 wmux-only 行有�
 ## 结论（第十九次验收）
 
 第 3、4、5 轮连续零发现，验收通过。测试 145 → 149（lib 101 / console 4 / e2e 44）。
+
+# 第二十次验收（2026-09-22）— status-justify、window-status-separator
+
+本次新增：
+- `status-justify left|centre|right|absolute-centre`（也接受 `center` / `absolute-center`，存成 tmux 拼法）：
+  窗口列表整体放得下时按此定位；放不下退回左对齐（保持"当前窗口一定可见"的既有预留逻辑）。
+- `window-status-separator`（默认一个空格）：替换原来硬编码在标签之间的一格；按显示宽度计算，
+  分隔符与其后的标签一起判断放不放得下——放不下就一起省略，不留悬空分隔符。
+- render 层新增 `Justify` 枚举，`StatusLine` 带 `separator`/`justify`；两项进 SHOWABLE/KNOWN，可缩写（`s-j`、`w-s-s`）。
+
+## 第 1 轮（不计数）— 视角：单元测试
+
+新写的 render 测试抓到：12 列放不下第二个标签时分隔符先画出来了（`[s] 0:a|   R`）→ 改成分隔符+标签一起判断。
+`set_options` 里歧义计数 "and 9 more" 因新选项变 10 → 更新。
+
+## 第 2 轮（不计数）— 视角：边界（release 二进制）
+
+`center` 接受但 `absolute-center` 拒绝，不一致 → 一并接受；单元测试覆盖两种拼法与 4 种坏值。
+（`set w-s x` 报 unknown：缩写规则要求词数一致，`w-s-s` 可用，不算问题。）
+
+## 第 3 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制 + e2e 客户端）
+
+数据：`.tmux.conf` 写 `status-justify centre` / `window-status-separator ' | '` 启动后 show 为 `centre` / ` | `，
+`show-messages` 无 skip 记录；set right/center/absolute-centre/s-j left 往返正确，`w-s-s ::` 与空分隔符往返正确；
+`show-options -g` 列出两项。e2e（attach 的客户端）：`" | "` 出现在 `0:aa` 与 `1:bb` 之间且列表从第 4 格起；
+`right` 时 `1:bb` 紧接一格再接右侧引号；`center` 时起点 > 6 且两侧都有空隙；`sideways` 被拒。
+
+## 第 4 轮（计数 2/3，无发现）— 视角：边界
+
+数据：`''`、`middle`、`CENTRE`、`left right`、`0` 拒绝且不改值；` centre ` 去空白接受；`absolute-center` 接受存为 `absolute-centre`；
+200 字符、全角 `｜`、制表符、`#[bold]|#[default]`（按字面）、emoji 分隔符全部往返一致；
+200 字符分隔符 + 3 个窗口 + absolute-centre 下 server 存活。渲染层边界由单元测试覆盖：
+30 列四种对齐的逐格结果、` · ` 与 `│` 分隔符、12 列退回左对齐并丢掉放不下的窗口。
+
+## 第 5 轮（计数 3/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，152 项指纹均为 `B99056DA91B556E2`；README（中英）、conf 示例、对照表都写了两项；
+SHOWABLE 与 KNOWN 各列两项（脚本计数 3 是把单元测试里的 `o.set("status-justify", …)` 也数了，grep 行号核实）；
+默认分隔符代码与文档一致为空格；render 从 frame 取 justify/separator；网站 152 tests；clippy 与 fmt 无输出。
+
+## 结论（第二十次验收）
+
+第 3、4、5 轮连续零发现，验收通过。测试 149 → 152（lib 103 / console 4 / e2e 45）。

@@ -55,6 +55,11 @@ pub struct Options {
     pub status_right: String,
     pub status_left_length: usize,
     pub status_right_length: usize,
+    /// Where the window list sits on the status line: "left", "centre",
+    /// "right" or "absolute-centre" (tmux `status-justify`).
+    pub status_justify: String,
+    /// Text between window labels (tmux `window-status-separator`).
+    pub window_status_separator: String,
     /// Seconds between refreshes of `#(command)` pieces.
     pub status_interval: u64,
     pub window_status_format: String,
@@ -87,6 +92,8 @@ pub const SHOWABLE: &[&str] = &[
     "status-right",
     "status-left-length",
     "status-right-length",
+    "status-justify",
+    "window-status-separator",
     "status-interval",
     "window-status-format",
     "window-status-current-format",
@@ -142,6 +149,8 @@ impl Default for Options {
             status_right: "\"#T\" %H:%M %d-%b-%y".into(),
             status_left_length: 40,
             status_right_length: 60,
+            status_justify: "left".into(),
+            window_status_separator: " ".into(),
             status_interval: 15,
             window_status_format: "#I:#W#F".into(),
             window_status_current_format: "#I:#W#F".into(),
@@ -250,6 +259,7 @@ pub const KNOWN: &[&str] = &[
     "status-bg",
     "status-fg",
     "status-interval",
+    "status-justify",
     "status-left",
     "status-left-length",
     "status-position",
@@ -261,6 +271,7 @@ pub const KNOWN: &[&str] = &[
     "visual-bell",
     "window-status-current-format",
     "window-status-format",
+    "window-status-separator",
 ];
 
 /// Names taken only so that a `.tmux.conf` loads; setting them does nothing.
@@ -437,6 +448,16 @@ impl Options {
             "status-right-length" => {
                 self.status_right_length = value.parse().map_err(|_| format!("bad number '{value}'"))?
             }
+            "status-justify" => {
+                // Both spellings of centre, stored as tmux spells it.
+                self.status_justify = match value.trim() {
+                    "left" | "right" | "absolute-centre" => value.trim().to_string(),
+                    "centre" | "center" => "centre".to_string(),
+                    "absolute-center" => "absolute-centre".to_string(),
+                    v => return Err(format!("bad status-justify '{v}' (left, centre, right or absolute-centre)")),
+                }
+            }
+            "window-status-separator" => self.window_status_separator = value.to_string(),
             "status-interval" => self.status_interval = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "window-status-format" => self.window_status_format = value.to_string(),
             "window-status-current-format" => self.window_status_current_format = value.to_string(),
@@ -494,6 +515,8 @@ impl Options {
             "status-right" => self.status_right.clone(),
             "status-left-length" => self.status_left_length.to_string(),
             "status-right-length" => self.status_right_length.to_string(),
+            "status-justify" => self.status_justify.clone(),
+            "window-status-separator" => self.window_status_separator.clone(),
             "status-interval" => self.status_interval.to_string(),
             "window-status-format" => self.window_status_format.clone(),
             "window-status-current-format" => self.window_status_current_format.clone(),
@@ -711,7 +734,7 @@ mod tests {
         assert_eq!(resolve_name("-").unwrap(), "-");
         assert_eq!(resolve_name("s-").unwrap(), "s-");
         let many = resolve_name("s").unwrap_err();
-        assert!(many.contains("and 9 more"), "{many}");
+        assert!(many.contains("and 10 more"), "{many}");
         assert!(many.matches(", ").count() <= 4, "{many}");
         assert!(resolve_name("vis").is_err(), "visual-bell and visual-activity are both there");
         // Each dash-separated word may be abbreviated too.
@@ -738,6 +761,33 @@ mod tests {
         assert!(o.set("mouse", "maybe").is_err());
         assert!(o.set("history-limit", "x").is_err());
         assert_eq!(o.prefix.to_string(), "C-a");
+    }
+
+    #[test]
+    fn status_justify_takes_both_spellings_and_the_separator_anything() {
+        let mut o = Options::default();
+        assert_eq!(o.status_justify, "left");
+        assert_eq!(o.window_status_separator, " ");
+        for (given, stored) in [
+            ("centre", "centre"),
+            ("center", "centre"),
+            ("absolute-centre", "absolute-centre"),
+            ("absolute-center", "absolute-centre"),
+            (" right ", "right"),
+            ("left", "left"),
+        ] {
+            o.set("status-justify", given).unwrap();
+            assert_eq!(o.get("status-justify").as_deref(), Some(stored), "{given}");
+        }
+        for bad in ["", "middle", "CENTRE", "left right"] {
+            let e = o.set("status-justify", bad).unwrap_err();
+            assert!(e.contains("left, centre, right or absolute-centre"), "{bad}: {e}");
+        }
+        for sep in ["", " | ", "｜", "#[bold]x", "🙂"] {
+            o.set("window-status-separator", sep).unwrap();
+            assert_eq!(o.get("window-status-separator").as_deref(), Some(sep));
+        }
+        assert_eq!(o.set("s-j", "right").map(|_| o.status_justify.clone()).unwrap(), "right", "abbreviates");
     }
 
     #[test]

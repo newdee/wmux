@@ -5043,7 +5043,17 @@ impl Server {
                     (crate::format::expand(fmt, ctx, cache, base, now), i == cur)
                 })
                 .collect();
-            Some(StatusLine { left, windows, right, message, prompt, fg: self.opts.status_fg, bg: self.opts.status_bg })
+            Some(StatusLine {
+                left,
+                windows,
+                separator: self.opts.window_status_separator.clone(),
+                justify: render::Justify::parse(&self.opts.status_justify),
+                right,
+                message,
+                prompt,
+                fg: self.opts.status_fg,
+                bg: self.opts.status_bg,
+            })
         } else {
             None
         };

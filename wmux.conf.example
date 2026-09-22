@@ -38,6 +38,8 @@ bind r source-file ~/.wmux.conf
 # status line formats (tmux syntax; #() runs every status-interval seconds)
 set -g status-left "#[bold][#S] "
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -Command (Get-Date).ToString('HH:mm'))#[default] #H"
+set -g status-justify left          # where the window list sits: left, centre, right, absolute-centre
+set -g window-status-separator " "  # between the window labels
 set -g status-interval 15
 
 # tell me about the windows I am not looking at: # output, ! bell, ~ silence

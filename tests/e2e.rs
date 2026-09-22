@@ -2549,3 +2549,33 @@ async fn jobs_lists_every_pane_with_its_state() {
     assert!(err.contains("unexpected argument"), "{err}");
     h.cli(&["kill-server"]).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_justify_and_separator_move_the_window_list() {
+    let h = Harness::start("justify").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "j", "-n", "aa"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    h.cli(&["new-window", "-d", "-t", "j", "-n", "bb"]).await;
+    let status = |s: &vt100::Screen| s.rows(0, COLS).last().unwrap();
+    // The separator goes between the labels, the list starts after "[j] ".
+    h.cli(&["set", "-g", "window-status-separator", " | "]).await;
+    c.wait_for("separator", |s| status(s).contains("0:aa") && status(s).contains(" | 1:bb")).await;
+    assert_eq!(status(c.screen.screen()).find("0:aa"), Some(4), "{}", status(c.screen.screen()));
+    // right: the list ends one gap before the right side, which starts
+    // with the quoted pane title.
+    h.cli(&["set", "-g", "status-justify", "right"]).await;
+    c.wait_for("right-justified", |s| status(s).contains("1:bb \"")).await;
+    // centre: away from both sides, and `center` spells it too.
+    h.cli(&["set", "-g", "status-justify", "center"]).await;
+    assert_eq!(h.cli(&["show", "-gv", "status-justify"]).await.1.trim(), "centre");
+    c.wait_for("centred", |s| {
+        let row = status(s);
+        row.find("0:aa").is_some_and(|at| at > 6) && !row.contains("1:bb \"") && row.contains("1:bb  ")
+    })
+    .await;
+    let (code, _, err) = h.cli(&["set", "-g", "status-justify", "sideways"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("left, centre, right or absolute-centre"), "{err}");
+    h.cli(&["kill-server"]).await;
+}

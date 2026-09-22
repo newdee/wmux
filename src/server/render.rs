@@ -298,11 +298,38 @@ pub struct CopyView {
     pub offset: usize,
 }
 
+/// Where the window list sits between status-left and status-right
+/// (tmux `status-justify`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Justify {
+    #[default]
+    Left,
+    /// Centred in the room between the two sides.
+    Centre,
+    Right,
+    /// Centred on the line itself, room permitting.
+    AbsoluteCentre,
+}
+
+impl Justify {
+    pub fn parse(s: &str) -> Justify {
+        match s {
+            "centre" | "center" => Justify::Centre,
+            "right" => Justify::Right,
+            "absolute-centre" | "absolute-center" => Justify::AbsoluteCentre,
+            _ => Justify::Left,
+        }
+    }
+}
+
 pub struct StatusLine {
     /// Expanded `status-left`.
     pub left: Vec<Segment>,
     /// (expanded window label, is_current)
     pub windows: Vec<(Vec<Segment>, bool)>,
+    /// Between window labels (`window-status-separator`).
+    pub separator: String,
+    pub justify: Justify,
     /// Expanded `status-right`.
     pub right: Vec<Segment>,
     pub message: Option<String>,
@@ -443,17 +470,40 @@ pub fn compose(f: &Frame) -> Composed {
             // window keeps its place and the right side is clipped instead.
             // (A long pane title on a narrow terminal used to hide it.)
             // Reserving room is pointless when the label cannot fit anyway.
-            let need = s.windows.iter().find(|(_, cur)| *cur).map(|(l, _)| seg_width(l) + 1).unwrap_or(0);
+            let sep_w = s.separator.width() as u16;
+            let need = s.windows.iter().find(|(_, cur)| *cur).map(|(l, _)| seg_width(l) + sep_w).unwrap_or(0);
             let full = seg_width(&s.right);
             let right_w = match f.cols.checked_sub(x.saturating_add(need).saturating_add(1)) {
                 Some(room) => full.min(room),
                 None => full,
             };
             let win_end = f.cols.saturating_sub(right_w + 1);
-            for (label, current) in &s.windows {
-                let w = seg_width(label) + 1;
-                if x + w > win_end {
+            // status-justify moves the whole list when it fits; when it
+            // does not, it starts at the left as before so the first
+            // windows (the current one among them, by the reservation
+            // above) are the ones shown.
+            let total: u16 = s.windows.iter().map(|(l, _)| seg_width(l)).sum::<u16>()
+                + sep_w * (s.windows.len().saturating_sub(1)) as u16;
+            let room = win_end.saturating_sub(x);
+            if total <= room {
+                x = match s.justify {
+                    Justify::Left => x,
+                    Justify::Centre => x + (room - total) / 2,
+                    Justify::Right => win_end - total,
+                    Justify::AbsoluteCentre => (f.cols.saturating_sub(total) / 2).clamp(x, win_end - total),
+                };
+            }
+            let base = Style::colors(s.fg, s.bg);
+            for (i, (label, current)) in s.windows.iter().enumerate() {
+                // The separator and the label it leads to go together: a
+                // label that does not fit leaves no dangling separator.
+                let lead = if i > 0 { sep_w } else { 0 };
+                let w = seg_width(label);
+                if x + lead + w > win_end {
                     break;
+                }
+                if i > 0 {
+                    x += g.put_str(x, sy, &s.separator, base, win_end - x);
                 }
                 let start = x;
                 if *current {
@@ -466,7 +516,6 @@ pub fn compose(f: &Frame) -> Composed {
                     x += g.put_segments(x, sy, label, win_end - x);
                 }
                 window_hits.push((start, x));
-                x += 1;
             }
             if right_w < f.cols {
                 g.put_segments(f.cols - right_w, sy, &s.right, right_w);
@@ -793,6 +842,8 @@ mod tests {
             status: Some(StatusLine {
                 left: seg("[s] ", Style { bold: true, ..st }),
                 windows: vec![(seg("0:a", st), true), (seg("1:b", st), false)],
+                separator: " ".into(),
+                justify: Justify::Left,
                 right: seg("12:00", st),
                 message: None,
                 prompt: None,
@@ -823,6 +874,70 @@ mod tests {
     }
 
     #[test]
+    fn status_justify_moves_the_window_list_and_the_separator_sits_between() {
+        let st = Style::colors(Color::Idx(0), Color::Idx(2));
+        let frame = |cols: u16, justify: Justify, sep: &str| {
+            let a = screen(cols, 1, b"");
+            let f = Frame {
+                cols,
+                rows: 2,
+                panes: vec![PaneView {
+                    rect: Rect { x: 0, y: 0, w: cols, h: 1 },
+                    screen: a.screen(),
+                    active: true,
+                    copy: None,
+                    border_text: None,
+                }],
+                status: Some(StatusLine {
+                    left: seg("[s] ", st),
+                    windows: vec![(seg("0:a", st), true), (seg("1:b", st), false)],
+                    separator: sep.into(),
+                    justify,
+                    right: seg("R", st),
+                    message: None,
+                    prompt: None,
+                    fg: Color::Idx(0),
+                    bg: Color::Idx(2),
+                }),
+                status_top: false,
+                border_fg: Color::Idx(8),
+                active_border_fg: Color::Idx(2),
+            };
+            let (g, _, hits) = compose(&f);
+            let row: String = (0..cols).map(|x| g.get(x, 1).text()).collect();
+            (row, hits)
+        };
+        // 30 columns: left takes 4, the right side 1 plus a gap, so the
+        // list (3 + 1 + 3 = 7 cells) has 24 cells of room, from 4 to 28.
+        let (row, hits) = frame(30, Justify::Left, "|");
+        assert_eq!(row, "[s] 0:a|1:b                  R");
+        assert_eq!(hits, vec![(4, 7), (8, 11)], "the separator is not part of a label");
+        let (row, hits) = frame(30, Justify::Centre, "|");
+        assert_eq!(row, "[s]         0:a|1:b          R", "centred in the room between the sides");
+        assert_eq!(hits, vec![(12, 15), (16, 19)]);
+        let (row, hits) = frame(30, Justify::Right, "|");
+        assert_eq!(row, "[s]                  0:a|1:b R", "flush against the right side");
+        assert_eq!(hits, vec![(21, 24), (25, 28)]);
+        let (row, hits) = frame(30, Justify::AbsoluteCentre, "|");
+        assert_eq!(row, "[s]        0:a|1:b           R", "centred on the line: (30 - 7) / 2 = 11");
+        assert_eq!(hits, vec![(11, 14), (15, 18)]);
+        // A wider separator, and one with a double-width character, count
+        // by display width.
+        let (row, _) = frame(30, Justify::Right, " · ");
+        assert_eq!(row, "[s]                0:a · 1:b R");
+        let (row, hits) = frame(30, Justify::Right, "│");
+        assert_eq!(row, "[s]                  0:a│1:b R");
+        assert_eq!(hits, vec![(21, 24), (25, 28)]);
+        // No room to move the list: it starts at the left as before, and the
+        // window that does not fit is dropped rather than squeezed.
+        let (row, hits) = frame(12, Justify::Right, "|");
+        assert_eq!(row, "[s] 0:a    R");
+        assert_eq!(hits, vec![(4, 7)]);
+        assert_eq!(Justify::parse("center"), Justify::Centre);
+        assert_eq!(Justify::parse("nonsense"), Justify::Left);
+    }
+
+    #[test]
     fn status_segments_keep_their_styles_and_clip() {
         let a = screen(3, 1, b"");
         let st = Style::colors(Color::Idx(7), Color::Idx(0));
@@ -841,6 +956,8 @@ mod tests {
             status: Some(StatusLine {
                 left,
                 windows: vec![(seg("0:long-name", st), true), (seg("1:x", st), false)],
+                separator: " ".into(),
+                justify: Justify::Left,
                 right: seg("RR", Style { bold: true, ..st }),
                 message: None,
                 prompt: None,
@@ -909,6 +1026,8 @@ mod tests {
                 status: Some(StatusLine {
                     left: seg("[a-very-long-session-name] ", Style::default()),
                     windows: vec![(seg("0:x", Style::default()), true)],
+                    separator: " ".into(),
+                    justify: Justify::Left,
                     right: seg("right", Style::default()),
                     message: None,
                     prompt: Some(("(p) ".into(), "typed".into(), 3)),
@@ -992,6 +1111,8 @@ mod tests {
             status: Some(StatusLine {
                 left: seg("[s] ", Style::default()),
                 windows: vec![],
+                separator: " ".into(),
+                justify: Justify::Left,
                 right: Vec::new(),
                 message: Some("hello".into()),
                 prompt: None,

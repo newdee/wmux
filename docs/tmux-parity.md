@@ -188,7 +188,7 @@ line never ends up bound under the prefix.
 The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `mouse`, `history-limit`, `status`, `status-position`, `status-style`,
 `status-left`, `status-right`, `status-left-length`,
-`status-right-length`, `status-interval`, `window-status-format`,
+`status-right-length`, `status-justify`, `window-status-separator`, `status-interval`, `window-status-format`,
 `window-status-current-format`, `pane-border-style`,
 `pane-active-border-style`, `base-index`, `pane-base-index`,
 `display-time`, `repeat-time`, `remain-on-exit`, `monitor-activity`,

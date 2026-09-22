@@ -277,7 +277,10 @@ names, `#{?flag,then,else}` conditionals (`#{?window_flags,busy,idle}`,
 `#{?session_name==work,…,…}`), `%H:%M` time fields,
 `#[fg=colour39,bg=black,bold]` style changes and `#(command)`, which runs the
 command every `status-interval` seconds (default 15) and shows its first
-line. `status-left-length` / `status-right-length` clip.
+line. `status-left-length` / `status-right-length` clip. `status-justify
+left|centre|right|absolute-centre` places the window list, and
+`window-status-separator` is what goes between the labels (a space by
+default).
 
 Variables: `session_name` `session_id` `session_windows` `session_attached`
 `session_created`, `window_name` `window_id` `window_index` `window_panes`
