@@ -1171,3 +1171,46 @@ SHOWABLE 与 KNOWN 各列两项（脚本计数 3 是把单元测试里的 `o.set
 ## 结论（第二十次验收）
 
 第 3、4、5 轮连续零发现，验收通过。测试 149 → 152（lib 103 / console 4 / e2e 45）。
+
+# 第二十一次验收（2026-09-22）— WinGet / Scoop 清单
+
+本次新增：
+- `tools/package-manifests.ps1 -Version X.Y.Z`：从 GitHub 发布页取两个 `.sha256` 与 MSI（读其 ProductCode，
+  因为 wxs 里 `Product Id="*"` 每次构建都变），生成 WinGet 三个清单（`packaging/winget/manifests/n/newdee/wmux/X.Y.Z/`，
+  目录布局与 winget-pkgs 一致）和 Scoop 清单（`packaging/scoop/wmux.json`，带 `checkver`/`autoupdate`）。
+  LF、无 BOM。0.5.0 的输出已提交。
+- `packaging/README.md`：提交到 winget-pkgs / ScoopInstaller/Extras 的步骤；README（中英）安装段与网站安装卡片加了 Scoop 一行
+  （仓库里的清单可直接 `scoop install <raw url>`），WinGet 写明"合并后才有 `winget install newdee.wmux`"，不做尚未成立的 claim。
+- 提交 winget-pkgs / Extras 的 PR 需要用户自己的 GitHub 账号，这一步留给用户。
+
+## 第 1 轮（不计数）— 视角：机制通路
+
+生成器两处 PowerShell 插值错误（`"$msiName: …"` 被当作用域、`"$asset.sha256"` 被当属性）→ `${…}`；
+不存在的版本只吐 GitHub 原始 404 JSON → 加 "no release vX.Y.Z on github.com/<repo>" 的明确报错。
+探针脚本自身三处误判（`packaging/` 未跟踪时用 git status 判"是否改动"、Scoop 的 Write-Host 输出用 `2>&1` 抓不到、
+"Checking hash of … ok." 被 Scoop 分段输出）→ 改成内容哈希比较、`*>&1`、以"installed successfully"为准。
+
+## 第 2 轮（计数 1/3，无发现）— 视角：边界
+
+数据：`0.5`、`v0.5.0`、`0.5.0.1`、`latest` 四种坏版本号在联网前被 ValidatePattern 拒绝（退出 1、报错含模式、未写文件）；
+`9.9.9` 与不存在的仓库都报 `no release …` 退出 1、未写文件；4 个输出文件无 BOM、0 个 CRLF、以 LF 结尾；
+installer 的 sha 为 64 位大写十六进制、ProductCode 带引号；Scoop 的 hash 为 64 位小写、`extract_dir` 等于 zip 内目录名、
+autoupdate 的 hash 取 `$url.sha256`；三个 winget 文件名符合 winget-pkgs 要求；152 项测试通过。
+
+## 第 3 轮（计数 2/3，无发现）— 视角：可复现性 + 文档 claim
+
+数据：连续 3 次 `cargo test`，152 项指纹均为 `B99056DA91B556E2`；README（中英）与网站含同一条 Scoop raw URL，
+其路径在仓库中存在；README 指向 `packaging/README.md` 且写了 `winget install --manifest` 路径；packaging/README 写了生成器与两个输出；
+网站有 Scoop 卡片且中文两个键齐全（52 个 i18n 键全部有中文）；三个 winget 文件的 PackageIdentifier 一致；
+release.yml 的资产命名与生成器期望一致；clippy 与 fmt 无输出。
+
+## 第 4 轮（计数 3/3，无发现）— 视角：机制通路（真实安装）
+
+数据：重新生成 4 个文件与磁盘上的逐字节相同；`winget validate --manifest` 报"清单验证成功"（winget v1.29.20-preview）；
+用仓库清单 `scoop install`：过 hash 闸门、解压、建 shim，`wmux --version` 经 shim 得 `wmux 0.5.0`，`--help` 含 attach-session；
+把 hash 改成全 0 的副本被拒（`ERROR Hash check failed!`，未装、无 shim）；`scoop uninstall` 后 shim 与 app 目录都不在；
+i18n 52/52；152 项测试通过。（`winget install --manifest` 要管理员并装到全机，未执行；validate 为准。）
+
+## 结论（第二十一次验收）
+
+第 2、3、4 轮连续零发现，验收通过。测试数不变（152）。

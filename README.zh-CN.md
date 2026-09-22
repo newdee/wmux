@@ -32,6 +32,14 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 - `wmux-<版本>-windows-x86_64.msi`：双击装到 `Program Files`，自动加进系统 `PATH`，以后在“应用和功能”里卸载。要静默装就 `msiexec /i wmux-<版本>-windows-x86_64.msi /qn`。
 - `wmux-<版本>-windows-x86_64.zip`：就是一个 `wmux.exe`，解压放哪都行。
 
+用 Scoop 的话，仓库里的清单直接装 zip，以后也跟着更新：
+
+```powershell
+scoop install https://raw.githubusercontent.com/newdee/wmux/master/packaging/scoop/wmux.json
+```
+
+WinGet 的清单（装 MSI）在 `packaging/winget/`，`winget validate` 通过；合进 winget-pkgs 之后 `winget install newdee.wmux` 就行，在那之前可以在克隆里 `winget install --manifest packaging/winget/manifests/n/newdee/wmux/<版本>`。细节见 `packaging/README.md`。
+
 想自己编译的话（需要 Rust 1.88 以上）：
 
 ```powershell

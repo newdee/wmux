@@ -1,0 +1,18 @@
+{
+  "version": "0.5.0",
+  "description": "A tmux for Windows: sessions that outlive the terminal, panes, windows, and a status line.",
+  "homepage": "https://github.com/newdee/wmux",
+  "license": "MIT",
+  "url": "https://github.com/newdee/wmux/releases/download/v0.5.0/wmux-v0.5.0-windows-x86_64.zip",
+  "hash": "4056cec5aef8a0e689a7e48cd986a13cc264fdedb0ca927bfff712ed087495d6",
+  "extract_dir": "wmux-v0.5.0-windows-x86_64",
+  "bin": "wmux.exe",
+  "checkver": "github",
+  "autoupdate": {
+    "url": "https://github.com/newdee/wmux/releases/download/v$version/wmux-v$version-windows-x86_64.zip",
+    "extract_dir": "wmux-v$version-windows-x86_64",
+    "hash": {
+      "url": "$url.sha256"
+    }
+  }
+}

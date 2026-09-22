@@ -48,6 +48,19 @@ From the [releases page](https://github.com/newdee/wmux/releases):
 - `wmux-<version>-windows-x86_64.zip` is the same `wmux.exe` to unzip
   wherever you like.
 
+With Scoop, the manifest in this repository installs the zip and keeps
+it current:
+
+```powershell
+scoop install https://raw.githubusercontent.com/newdee/wmux/master/packaging/scoop/wmux.json
+```
+
+WinGet manifests for the MSI are in `packaging/winget/` (validated with
+`winget validate`); `winget install newdee.wmux` works once they are
+merged into winget-pkgs, and until then
+`winget install --manifest packaging/winget/manifests/n/newdee/wmux/<version>`
+from a clone does the same. See `packaging/README.md`.
+
 Or build from source, which needs Rust 1.88+:
 
 ```powershell

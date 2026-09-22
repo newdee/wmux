@@ -71,6 +71,8 @@ const ZH = {
   "c5.title": "安装",
   "c5.msi": "安装包",
   "c5.msi.sub": "下载 .msi 双击，装到 Program Files，自动进系统 PATH，卸载在“应用和功能”里。",
+  "c5.scoop": "Scoop",
+  "c5.scoop.sub": "仓库里的清单直接装 zip，以后跟着新版本更新。",
   "c5.zip": "免安装",
   "c5.zip.sub": ".zip 里就是同一个 exe，解压到哪都能跑。",
   "c5.cargo": "从源码装",
