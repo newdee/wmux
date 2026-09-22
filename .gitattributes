@@ -1,0 +1,3 @@
+# Package manifests go to other repositories as they are: keep them LF on
+# every checkout (winget-pkgs validation, Scoop's autoupdate diffs).
+packaging/** text eol=lf
