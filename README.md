@@ -164,7 +164,10 @@ Resuming recreates the pane tree, puts back the last `save-history` lines
 each pane had on screen (500 by default; `set -g save-history all` keeps
 the whole scrollback, colours included) and starts each pane's original
 command in the pane's last known directory. What the programs themselves
-were doing does not come back; no multiplexer can do that. `set -g
+were doing does not come back; no multiplexer can do that. Saving happens
+by itself: the tree whenever it changes, the pane text every 30 seconds,
+and everything once more when Windows shuts down, restarts or you log
+off (the server holds the shutdown up for the moment that takes). `set -g
 restore-on-start on` makes a fresh server restore everything by itself;
 `set -g autosave off` turns saving off; `sessions-dir` moves the files.
 
@@ -379,8 +382,10 @@ Commands a script or a binding reaches for, beyond the obvious ones
   ready` waits, `wmux wait-for -S ready` releases it.
 - `display-menu [-T title] name key command ...` opens a menu over the
   window; an empty name is a separator. `display-popup [-E] [-w W] [-h H]
-  [-d dir] [command]` runs a program in a box over the window (`-E` closes
-  it when the program exits, `-C` closes it from outside).
+  [-x X] [-y Y] [-d dir] [command]` runs a program in a box over the window
+  (`-E` closes it when the program exits, `-C` closes it from outside;
+  `-x`/`-y` take a column or row, a percentage, `C` for centred or `R`/`B`
+  for the right or bottom edge, and the box is centred without them).
 - `choose-client` lists the attached clients and detaches the one picked.
 - `send-keys -X <copy-command>` drives copy mode (`search-backward`,
   `begin-selection`, `copy-selection`, ... — the tmux names).
@@ -470,20 +475,16 @@ covered without a human at the keyboard.
 
 ## Not (yet) implemented
 
-Relative to tmux: `synchronize-panes` applies to the current window (no
-`-t`), multiple clients on the same session see the same size (`window-size
-latest|smallest|largest|manual` picks which client sets it: the one used
-last, the smallest, the largest, or none but `resize-window`; there is no
-per-client viewport, so `refresh-client -U`/`-D` do nothing), only the hooks
-listed above,
-`swap-window` works inside one session (`move-window` crosses sessions),
-`bind -r` has no per-key repeat count, `choose-tree` has no per-session
-collapsing (its filter is a substring, not a format), `swap-pane` swaps with
-the previous or next pane (`-U` / `-D`; `-s` and `-t` both name the pane to
-swap, there is no pair form), `select-layout` has the five named layouts and
-`-E` but not tmux's layout strings, `list-panes -a`/`-s` always list the
-target window only, `pipe-pane` copies pane output into a command but has no
-`-I` the other way, and `display-popup` is always centred (no `-x`/`-y`) and
-gives the prefix key to wmux rather than to the program in the box.
+Relative to tmux: multiple clients on the same session see the same size
+(`window-size latest|smallest|largest|manual` picks which client sets it:
+the one used last, the smallest, the largest, or none but `resize-window`;
+there is no per-client viewport, so `refresh-client -U`/`-D` do nothing),
+only the hooks listed above, `swap-window` works inside one session
+(`move-window` crosses sessions), `bind -r` has no per-key repeat count,
+`choose-tree` has no per-session collapsing (its filter is a substring, not
+a format), `select-layout` has the five named layouts and `-E` but not
+tmux's layout strings, `pipe-pane` copies pane output into a command but
+has no `-I` the other way, and `display-popup` gives the prefix key to wmux
+rather than to the program in the box.
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.

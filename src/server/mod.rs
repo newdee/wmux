@@ -54,6 +54,9 @@ enum Event {
         command: String,
         output: String,
     },
+    /// Windows is shutting down or the user is logging off: save every
+    /// session now and tell the watcher (which is holding Windows up).
+    EndSession(std::sync::mpsc::Sender<()>),
 }
 
 /// Hooks a plugin can attach commands to (`set-hook -g <name> <command>`).
@@ -210,6 +213,8 @@ struct Popup {
     rect: Rect,
     width: Option<String>,
     height: Option<String>,
+    x: Option<String>,
+    y: Option<String>,
     /// `-E`: go away as soon as the command finishes.
     close_on_exit: bool,
     /// The command has finished and the next key closes the box.
@@ -632,6 +637,18 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
         })
     };
 
+    // Shutdown, restart, logoff: save first. The callback runs on the
+    // watcher's thread and holds Windows up until the server has saved
+    // (or, should the loop be gone, returns at once).
+    {
+        let tx = tx.clone();
+        crate::shutdown::watch(&socket, move || {
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            if tx.send(Event::EndSession(done_tx)).is_ok() {
+                let _ = done_rx.recv_timeout(Duration::from_secs(4));
+            }
+        });
+    }
     let mut srv = Server::new(pane_tx, socket, tx.clone());
     srv.force_restore = options.force_restore;
     srv.config_override = options.config;
@@ -913,6 +930,21 @@ impl Server {
         crate::resurrect::SavedFile::new(saved).save(&path)?;
         self.last_saved.insert(path.to_string_lossy().into_owned(), key);
         Ok(path)
+    }
+
+    /// Save every session, history included, whatever changed: the session
+    /// is ending (shutdown, logoff) and there is no next tick.
+    fn save_everything(&mut self) {
+        if !self.opts.autosave {
+            return;
+        }
+        let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
+        for sid in ids {
+            if let Err(e) = self.save_session_file(sid) {
+                log::warn!("save at session end: {e}");
+            }
+        }
+        self.last_history_save = Some(Instant::now());
     }
 
     /// Autosave every session whose structure changed since its last save
@@ -1417,6 +1449,11 @@ impl Server {
                 let line = output.lines().next().unwrap_or("").trim_end().to_string();
                 self.shell_cache.results.insert(command, line);
             }
+            Event::EndSession(done) => {
+                log::info!("session ending: saving every session");
+                self.save_everything();
+                let _ = done.send(());
+            }
             Event::Tick => {
                 self.autosave_changed();
                 // A server nobody uses has no reason to live (e.g. started by
@@ -1821,6 +1858,58 @@ impl Server {
         if let Some((cols, rows)) = pick {
             self.resize_session(sid, cols, rows);
         }
+    }
+
+    /// `swap-pane -s a -t b` across windows: each pane takes the other's
+    /// place in the other's layout, the active pane of each window follows
+    /// the place (not the pane), and both windows are laid out again so the
+    /// panes take their new sizes.
+    fn swap_panes_across(
+        &mut self,
+        asid: SessionId,
+        awidx: usize,
+        a: PaneId,
+        bsid: SessionId,
+        bwidx: usize,
+        b: PaneId,
+    ) {
+        // Take `a` out of its window, leaving `b`'s id in its place.
+        let Some(pane_a) = self.session_mut(asid).and_then(|s| s.windows.get_mut(awidx)).and_then(|w| {
+            let pos = w.panes.iter().position(|p| p.id == a)?;
+            let order: Vec<PaneId> = w.layout.panes().into_iter().map(|p| if p == a { b } else { p }).collect();
+            w.layout.set_panes(&order);
+            if w.active == a {
+                w.active = b;
+            }
+            if w.last_pane == Some(a) {
+                w.last_pane = None;
+            }
+            Some(w.panes.remove(pos))
+        }) else {
+            return;
+        };
+        // Put it where `b` was, and take `b` out.
+        let Some(pane_b) = self.session_mut(bsid).and_then(|s| s.windows.get_mut(bwidx)).and_then(|w| {
+            let pos = w.panes.iter().position(|p| p.id == b)?;
+            let order: Vec<PaneId> = w.layout.panes().into_iter().map(|p| if p == b { a } else { p }).collect();
+            w.layout.set_panes(&order);
+            if w.active == b {
+                w.active = a;
+            }
+            if w.last_pane == Some(b) {
+                w.last_pane = None;
+            }
+            let taken = w.panes.remove(pos);
+            w.panes.push(pane_a);
+            Some(taken)
+        }) else {
+            return; // cannot happen: `b` was resolved a moment ago
+        };
+        if let Some(w) = self.session_mut(asid).and_then(|s| s.windows.get_mut(awidx)) {
+            w.panes.push(pane_b);
+        }
+        self.relayout_session(asid);
+        self.relayout_session(bsid);
     }
 
     fn relayout_session(&mut self, sid: SessionId) {
@@ -2308,34 +2397,49 @@ impl Server {
                     .collect();
                 Outcome::Text(lines.join("\n"))
             }
-            Cmd::ListPanes { target } => {
+            Cmd::ListPanes { target, all, session } => {
+                // One window, the session's windows (`-s`), or every window
+                // on the server (`-a`); beyond one window each line is
+                // prefixed with its window the way tmux does it.
                 let (sid, widx, _) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
-                let w = &self.session(sid).unwrap().windows[widx];
-                let lines: Vec<String> = w
-                    .layout
-                    .panes()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, id)| {
+                let windows: Vec<(SessionId, usize)> = if all {
+                    self.sessions.iter().flat_map(|s| (0..s.windows.len()).map(move |i| (s.id, i))).collect()
+                } else if session {
+                    (0..self.session(sid).map(|s| s.windows.len()).unwrap_or(0)).map(|i| (sid, i)).collect()
+                } else {
+                    vec![(sid, widx)]
+                };
+                let mut lines = Vec::new();
+                for (sid, widx) in windows {
+                    let s = self.session(sid).unwrap();
+                    let w = &s.windows[widx];
+                    let prefix = if all {
+                        format!("{}:{}.", s.name, widx + self.opts.base_index)
+                    } else if session {
+                        format!("{}.", widx + self.opts.base_index)
+                    } else {
+                        String::new()
+                    };
+                    for (i, id) in w.layout.panes().iter().enumerate() {
                         let p = w.pane(*id);
                         // The pane's own size, not its rectangle: a zoomed
                         // window has no rectangle for the panes it hides, and
                         // those panes keep running at their previous size.
                         let (cols, rows) = p.map(|p| (p.cols, p.rows)).unwrap_or_default();
-                        format!(
-                            "{}: [{}x{}] %{id} {}{}{}",
+                        lines.push(format!(
+                            "{prefix}{}: [{}x{}] %{id} {}{}{}",
                             i + self.opts.pane_base_index,
                             cols,
                             rows,
                             p.map(|p| p.display_title()).unwrap_or(""),
                             p.and_then(|p| p.cwd.as_deref()).map(|d| format!(" [{d}]")).unwrap_or_default(),
                             if *id == w.active { " (active)" } else { "" }
-                        )
-                    })
-                    .collect();
+                        ));
+                    }
+                }
                 Outcome::Text(lines.join("\n"))
             }
             Cmd::HasSession { target } => match self.resolve_session(Some(&target), cid) {
@@ -3022,11 +3126,29 @@ impl Server {
                 self.message(cid.unwrap_or(0), preset.name());
                 Outcome::Ok
             }
-            Cmd::SwapPane { up, target } => {
+            Cmd::SwapPane { up, target, source } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
+                if let Some(src) = source {
+                    // The pair form: two named panes change places, in one
+                    // window or across windows and sessions.
+                    let (ssid, swidx, spid) = match self.resolve(Some(&src), cid) {
+                        Ok(r) => r,
+                        Err(e) => return Outcome::Error(e),
+                    };
+                    if spid == pid {
+                        return Outcome::Ok;
+                    }
+                    if (ssid, swidx) == (sid, widx) {
+                        self.session_mut(sid).unwrap().windows[widx].layout.swap(spid, pid);
+                        self.relayout_session(sid);
+                    } else {
+                        self.swap_panes_across(ssid, swidx, spid, sid, widx, pid);
+                    }
+                    return Outcome::Ok;
+                }
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 let order = w.layout.panes();
                 let cur = order.iter().position(|p| *p == pid).unwrap_or(0);
@@ -3560,20 +3682,20 @@ impl Server {
                 }
                 None => Outcome::Error(format!("unknown key: {key}")),
             },
-            Cmd::SetOption { name, value, append } if append && name != "synchronize-panes" => {
+            Cmd::SetOption { name, value, append, target } if append && name != "synchronize-panes" => {
                 // `set -a`: add to what is there (tmux appends the text).
                 let current = self.opts.get(&name).unwrap_or_default();
-                self.exec(Cmd::SetOption { name, value: format!("{current}{value}"), append: false }, cid)
+                self.exec(Cmd::SetOption { name, value: format!("{current}{value}"), append: false, target }, cid)
             }
-            Cmd::SetOption { name, value, .. } if name == "synchronize-panes" => {
-                // Window-scoped in tmux; here it applies to the current window.
+            Cmd::SetOption { name, value, target, .. } if name == "synchronize-panes" => {
+                // Window-scoped in tmux: the `-t` window, else the current one.
                 let on = match value.trim().to_ascii_lowercase().as_str() {
                     "on" | "true" | "yes" | "1" => Some(true),
                     "off" | "false" | "no" | "0" => Some(false),
                     "" => None, // toggle
                     v => return Outcome::Error(format!("bad boolean '{v}'")),
                 };
-                let (sid, widx, _) = match self.resolve(None, cid) {
+                let (sid, widx, _) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
@@ -3734,7 +3856,7 @@ impl Server {
                 c.chooser = Some(ch);
                 Outcome::Ok
             }
-            Cmd::DisplayPopup { close, close_on_exit, width, height, cwd, argv } => {
+            Cmd::DisplayPopup { close, close_on_exit, width, height, x, y, cwd, argv } => {
                 let Some(cid) = cid else { return Outcome::Error("display-popup: no client".into()) };
                 let Some((cols, rows)) = self.clients.get(&cid).map(|c| (c.cols, c.rows)) else {
                     return Outcome::Error("display-popup: no client".into());
@@ -3761,7 +3883,7 @@ impl Server {
                     return Outcome::Error("display-popup: client not attached".into());
                 };
                 let area = self.window_area(cols, rows);
-                let rect = popup_rect(area, width.as_deref(), height.as_deref());
+                let rect = popup_rect(area, width.as_deref(), height.as_deref(), x.as_deref(), y.as_deref());
                 if rect.w < 3 || rect.h < 3 {
                     return Outcome::Error("display-popup: no room for a popup".into());
                 }
@@ -3777,7 +3899,7 @@ impl Server {
                 c.overlay = None;
                 c.chooser = None;
                 c.last_grid = None;
-                c.popup = Some(Popup { pane, rect, width, height, close_on_exit, finished: false });
+                c.popup = Some(Popup { pane, rect, width, height, x, y, close_on_exit, finished: false });
                 Outcome::Ok
             }
             Cmd::PipePane { target, command, toggle } => {
@@ -4360,7 +4482,7 @@ impl Server {
         let area = self.window_area(c.cols, c.rows);
         let c = self.clients.get_mut(&cid).unwrap();
         let p = c.popup.as_mut().unwrap();
-        let rect = popup_rect(area, p.width.as_deref(), p.height.as_deref());
+        let rect = popup_rect(area, p.width.as_deref(), p.height.as_deref(), p.x.as_deref(), p.y.as_deref());
         if rect.w < 3 || rect.h < 3 {
             c.popup = None; // nowhere left to draw it
             return;
@@ -6003,14 +6125,27 @@ fn copy_word_motion(p: &mut Pane, key: char) {
 
 /// A `-x`/`-y` size: cells, or a percentage of the window.
 /// Where a `display-popup` box goes: the asked-for size (`80`, `50%`),
-/// defaulting to four fifths of the window, centred in it.
-fn popup_rect(area: Rect, width: Option<&str>, height: Option<&str>) -> Rect {
+/// defaulting to four fifths of the window, at the asked-for position
+/// (`-x`/`-y`: a column or row, a percentage of the window, `C` centred,
+/// `R`/`B` against the right or bottom edge), centred when not given. A
+/// box that would stick out is pulled back in.
+fn popup_rect(area: Rect, width: Option<&str>, height: Option<&str>, x: Option<&str>, y: Option<&str>) -> Rect {
     let size = |spec: Option<&str>, full: u16| -> u16 {
         spec.and_then(|s| parse_size(s, full)).unwrap_or((full as u32 * 4 / 5) as u16).clamp(1, full)
     };
     let w = size(width, area.w);
     let h = size(height, area.h);
-    Rect { x: area.x + (area.w - w) / 2, y: area.y + (area.h - h) / 2, w, h }
+    let place = |spec: Option<&str>, full: u16, size: u16| -> u16 {
+        let room = full - size;
+        let at = match spec.map(str::trim) {
+            None | Some("C") | Some("c") => room / 2,
+            Some("R") | Some("r") | Some("B") | Some("b") => room,
+            Some(s) if s.ends_with('%') => parse_size(s, full).unwrap_or(room / 2),
+            Some(s) => s.parse::<u16>().unwrap_or(room / 2),
+        };
+        at.min(room)
+    };
+    Rect { x: area.x + place(x, area.w, w), y: area.y + place(y, area.h, h), w, h }
 }
 
 fn parse_size(spec: &str, full: u16) -> Option<u16> {
@@ -6265,21 +6400,42 @@ mod tests {
     #[test]
     fn popups_are_centred_and_sized_as_asked() {
         let area = Rect { x: 0, y: 0, w: 80, h: 23 };
+        let centred = |w, h| popup_rect(area, w, h, None, None);
         // Default: four fifths of the window, centred.
-        let r = popup_rect(area, None, None);
+        let r = centred(None, None);
         assert_eq!((r.w, r.h), (64, 18));
         assert_eq!((r.x, r.y), ((80 - 64) / 2, (23 - 18) / 2));
         // Cells and percentages, and never bigger than the window.
-        assert_eq!(popup_rect(area, Some("40"), Some("10")).w, 40);
-        assert_eq!(popup_rect(area, Some("50%"), Some("50%")).h, 11);
-        let big = popup_rect(area, Some("500"), Some("500"));
+        assert_eq!(centred(Some("40"), Some("10")).w, 40);
+        assert_eq!(centred(Some("50%"), Some("50%")).h, 11);
+        let big = centred(Some("500"), Some("500"));
         assert_eq!((big.w, big.h, big.x, big.y), (80, 23, 0, 0));
         // Nonsense falls back to the default instead of vanishing.
-        assert_eq!(popup_rect(area, Some("wide"), None).w, 64);
+        assert_eq!(centred(Some("wide"), None).w, 64);
         // A window with no room gives a box too small to draw, which the
         // caller refuses rather than drawing a broken border.
-        let tiny = popup_rect(Rect { x: 0, y: 0, w: 2, h: 2 }, None, None);
+        let tiny = popup_rect(Rect { x: 0, y: 0, w: 2, h: 2 }, None, None, None, None);
         assert!(tiny.w < 3 || tiny.h < 3, "{tiny:?}");
+    }
+
+    #[test]
+    fn popups_go_where_x_and_y_say() {
+        // The window area starts below a top status line, so positions are
+        // relative to it, not to the terminal.
+        let area = Rect { x: 0, y: 1, w: 80, h: 23 };
+        let at = |x, y| {
+            let r = popup_rect(area, Some("20"), Some("5"), x, y);
+            (r.x, r.y)
+        };
+        assert_eq!(at(None, None), (30, 1 + 9), "centred without -x/-y");
+        assert_eq!(at(Some("0"), Some("0")), (0, 1), "a column and a row");
+        assert_eq!(at(Some("10"), Some("2")), (10, 3));
+        assert_eq!(at(Some("C"), Some("C")), (30, 10), "C centres");
+        assert_eq!(at(Some("R"), Some("B")), (60, 1 + 18), "R and B hug the edges");
+        assert_eq!(at(Some("50%"), Some("50%")), (40, 1 + 11), "a percentage of the window");
+        assert_eq!(at(Some("79"), Some("22")), (60, 19), "pulled back in when it would stick out");
+        assert_eq!(at(Some("500"), Some("500")), (60, 19));
+        assert_eq!(at(Some("left"), Some("top")), (30, 10), "nonsense centres");
     }
 
     /// The reading with every `%if` false: blocks left out whole.

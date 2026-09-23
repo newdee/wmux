@@ -13,6 +13,7 @@ pub mod notify;
 pub mod proccwd;
 pub mod resurrect;
 pub mod server;
+pub mod shutdown;
 pub mod startup;
 pub mod winsec;
 pub mod wt;

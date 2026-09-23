@@ -1468,3 +1468,53 @@ v0.7.0 的 release 工作流在 test 步骤失败：`startup::tests::install_sta
 ## 结论（第二十七次验收）
 
 三轮零发现。测试 180 → 181。`docs/index.html` 计数同步。
+
+# 第二十八次验收（2026-09-23）— 关机/注销时存档、CI 门禁、tmux 四个小差距
+
+## 做了什么
+
+1. **关机/注销时存档**（`src/shutdown.rs`）：server 起一个隐藏的顶层窗口（类 `wmux-shutdown`，标题 = socket 名）收
+   `WM_QUERYENDSESSION` / `WM_ENDSESSION`，同时注册控制台处理函数收 `CTRL_SHUTDOWN_EVENT` / `CTRL_LOGOFF_EVENT`
+   （client 拉起的 server 是 DETACHED_PROCESS 没控制台，只有窗口这条路；登录项那条 `conhost --headless` 有控制台）。
+   任一信号触发 `Event::EndSession`，server 同步把每个 session 连历史一起存一遍再应答，`ShutdownBlockReasonCreate`
+   把关机拖住那一瞬间。`autosave off` 时同样不存。
+   **前提修正**：之前对用户说"autosave 只在结构变化和退出时存"是错的——历史每 30 秒就存一次（实测存档文件 mtime 30 秒一跳）；
+   关机真正会丢的是最后 30 秒和 cwd 变化，现在补上。
+2. **CI**：三个 workflow 的 `actions/checkout` 升 v5（去掉 Node 20 告警）；release 工作流用 `gh run list --commit` 等
+   同一 commit 的 CI 跑绿才出包（最多等 25 分钟，失败即拒绝发布），替换掉它自己重复跑一遍测试的步骤；
+   `permissions` 加 `actions: read`。
+3. **tmux 小差距**：`display-popup -x/-y`（列/行、`N%`、`C`、`R`/`B`，越界拉回）；`swap-pane -s A -t B` 成对写法
+   （同窗口走 layout.swap，跨窗口/跨 session 把 Pane 对象互换、layout 用 set_panes 换 id、active 跟位置走、两边重排）；
+   `list-panes -s`（`窗口.` 前缀）/ `-a`（`session:窗口.` 前缀）；`set -t 窗口 synchronize-panes`。
+
+## 修复过程中的发现（不计数）
+
+- 探针 gpC 先取窗口句柄再 `kill-session`：server 没 session 会自行退出，`new b` 起的是新 server，旧句柄发消息当然没反应。
+  是脚本错，代码没问题（gpDbg 在同一 server 上 WM_ENDSESSION(1) 与 WM_QUERYENDSESSION 都存了）。
+- 探针 gpC 敲 echo 前没等 pwsh 起来：改成轮询提示符和回显。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制 + 全量）
+
+数据：`list-panes` 单窗口 2 行无前缀、`-s` 4 行 `0.`/`1.` 前缀、`-a` 5 行 `g:0.0:`…`other:0.0:` 前缀；
+同窗口成对交换 `%2,%4 -> %4,%2`；跨窗口交换后 g:0 = `%7,%2`、g:1 = `%5,%4`，pane 总数仍 5，被搬的 pane 能回显；
+`set -w -t g:1 sync on` 后 g:1 = 1、g:0 = 0；真实 DETACHED server 的隐藏窗口 FindWindow 找得到且不可见，
+`WM_QUERYENDSESSION` 5 ms 内应答 1，标记从文件里 0 处变 2 处（命令行 + 输出）。
+全量 185 项（lib 123 / console 4 / e2e 58）全过，clippy 无 warning，fmt 干净。
+e2e `a_shutdown_saves_every_session_first`：先等首次 autosave 落盘，再 echo，确认文件里没有，发 WM_QUERYENDSESSION 后有；
+`autosave off` 后再发不存。e2e `the_smaller_tmux_gaps_are_closed`：四项各自断言，popup `-x 0 -y 0` 左上角在 (0,0) 且 20 宽，
+`-x R -y B` 右下角贴状态栏上一行。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：3 条 e2e + 4 条单元测试连跑 3 次，去掉耗时后输出完全一致（distinct = 1）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界 + 静态一致性
+
+数据：单 pane 时 `-a`/`-s` 各 1 行；和自己交换退出码 0 无输出；坏 session / 坏 pane 序号 / 缺失窗口各报对应错误退出码 1；
+`set -t a:0 sync` 缩写切换 1 → 0；`WM_ENDSESSION(0)`（取消的关机）不存，`WM_ENDSESSION(1)` 存；收完消息 server 照常服务；
+kill-server 后窗口消失。文档核对：README（中英）"还没做的"删掉四项、popup 段加 `-x/-y`、存档段写明 30 秒与关机存；
+parity 表 display-popup / list-panes / swap-pane / set-window-option 行与 Still to do 段同步；站点计数 181 → 185。
+
+## 结论（第二十八次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 181 → 185（lib 123 / console 4 / e2e 58）。

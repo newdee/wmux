@@ -86,6 +86,9 @@ pub enum Cmd {
     },
     ListPanes {
         target: Option<Target>,
+        /// `-a`: every pane on the server; `-s`: every pane in the session.
+        all: bool,
+        session: bool,
     },
     KillSession {
         target: Option<Target>,
@@ -180,6 +183,10 @@ pub enum Cmd {
     SwapPane {
         up: bool,
         target: Option<Target>,
+        /// `-s`: the pair form, tmux style: this pane and `target` change
+        /// places (any two panes, even in different windows); `-U`/`-D`
+        /// are then not looked at.
+        source: Option<Target>,
     },
     /// `select-layout [-n|-p] [-t target] [name]`: rearrange a window's panes
     /// into one of the named layouts (tmux `select-layout`).
@@ -307,8 +314,9 @@ pub enum Cmd {
         title: Option<String>,
         items: Vec<MenuItem>,
     },
-    /// `display-popup [-C] [-E] [-d dir] [-w width] [-h height] [command]`: a
-    /// program in a box over the window, with its own terminal.
+    /// `display-popup [-C] [-E] [-d dir] [-x pos] [-y pos] [-w width]
+    /// [-h height] [command]`: a program in a box over the window, with its
+    /// own terminal.
     DisplayPopup {
         /// `-C`: close the popup this client has open.
         close: bool,
@@ -316,6 +324,11 @@ pub enum Cmd {
         close_on_exit: bool,
         width: Option<String>,
         height: Option<String>,
+        /// `-x` / `-y`: where the box goes (a column or row, a percentage,
+        /// `C` for centred, `R`/`B` for the right or bottom edge); centred
+        /// when not given.
+        x: Option<String>,
+        y: Option<String>,
         cwd: Option<String>,
         argv: Vec<String>,
     },
@@ -367,6 +380,9 @@ pub enum Cmd {
         value: String,
         /// `-a`: add to the option's current value instead of replacing it.
         append: bool,
+        /// `-t`: the window a window option (`synchronize-panes`) applies
+        /// to; the current one without it.
+        target: Option<Target>,
     },
     /// `show-options [-g] [-v] [-q] [name]`: one option, or all of them.
     ShowOptions {
@@ -584,8 +600,13 @@ impl fmt::Display for Cmd {
                 f.write_str("list-windows")?;
                 fmt_target(f, target)
             }
-            Cmd::ListPanes { target } => {
+            Cmd::ListPanes { target, all, session } => {
                 f.write_str("list-panes")?;
+                if *all {
+                    f.write_str(" -a")?;
+                } else if *session {
+                    f.write_str(" -s")?;
+                }
                 fmt_target(f, target)
             }
             Cmd::KillSession { target, all_but } => {
@@ -744,8 +765,12 @@ impl fmt::Display for Cmd {
                 }
                 fmt_target(f, target)
             }
-            Cmd::SwapPane { up, target } => {
-                write!(f, "swap-pane {}", if *up { "-U" } else { "-D" })?;
+            Cmd::SwapPane { up, target, source } => {
+                f.write_str("swap-pane")?;
+                match source {
+                    Some(s) => write!(f, " -s {}", quote(&target_string(s)))?,
+                    None => write!(f, " {}", if *up { "-U" } else { "-D" })?,
+                }
                 fmt_target(f, target)
             }
             Cmd::SelectLayout { name, next, prev, spread, target } => {
@@ -908,7 +933,7 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::DisplayPopup { close, close_on_exit, width, height, cwd, argv } => {
+            Cmd::DisplayPopup { close, close_on_exit, width, height, x, y, cwd, argv } => {
                 f.write_str("display-popup")?;
                 if *close {
                     f.write_str(" -C")?;
@@ -921,6 +946,12 @@ impl fmt::Display for Cmd {
                 }
                 if let Some(h) = height {
                     write!(f, " -h {}", quote(h))?;
+                }
+                if let Some(x) = x {
+                    write!(f, " -x {}", quote(x))?;
+                }
+                if let Some(y) = y {
+                    write!(f, " -y {}", quote(y))?;
                 }
                 if let Some(d) = cwd {
                     write!(f, " -d {}", quote(d))?;
@@ -996,8 +1027,10 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " {}", quote(key))
             }
-            Cmd::SetOption { name, value, append } => {
-                write!(f, "set-option{} {} {}", if *append { " -a" } else { "" }, quote(name), quote(value))
+            Cmd::SetOption { name, value, append, target } => {
+                write!(f, "set-option{}", if *append { " -a" } else { "" })?;
+                fmt_target(f, target)?;
+                write!(f, " {} {}", quote(name), quote(value))
             }
             Cmd::SwitchClient { next, prev, last, target } => {
                 f.write_str("switch-client")?;
@@ -1132,20 +1165,25 @@ impl fmt::Display for Cmd {
     }
 }
 
+/// A target as `session:window.pane`, the way `-t` takes it back.
+fn target_string(t: &Target) -> String {
+    let mut s = t.session.clone().unwrap_or_default();
+    if let Some(w) = &t.window {
+        s.push(':');
+        s.push_str(w);
+    } else if t.pane.is_some() {
+        s.push(':');
+    }
+    if let Some(p) = t.pane {
+        s.push('.');
+        s.push_str(&p.to_string());
+    }
+    s
+}
+
 fn fmt_target(f: &mut fmt::Formatter<'_>, t: &Option<Target>) -> fmt::Result {
     if let Some(t) = t {
-        let mut s = t.session.clone().unwrap_or_default();
-        if let Some(w) = &t.window {
-            s.push(':');
-            s.push_str(w);
-        } else if t.pane.is_some() {
-            s.push(':');
-        }
-        if let Some(p) = t.pane {
-            s.push('.');
-            s.push_str(&p.to_string());
-        }
-        write!(f, " -t {}", quote(&s))?;
+        write!(f, " -t {}", quote(&target_string(t)))?;
     }
     Ok(())
 }
@@ -1633,18 +1671,20 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         }
         "list-windows" | "list-panes" | "kill-session" | "kill-window" | "kill-pane" => {
             let (mut target, mut all_but) = (None, false);
+            let (mut all, mut session) = (false, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
                     "-a" if n.starts_with("kill-") => all_but = true,
-                    "-a" | "-s" => {} // list-panes -a/-s: we always list the target window only
+                    "-a" => all = true,     // list-panes: every pane on the server
+                    "-s" => session = true, // list-panes: every pane in the session
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
             match n {
                 "list-windows" => Cmd::ListWindows { target },
-                "list-panes" => Cmd::ListPanes { target },
+                "list-panes" => Cmd::ListPanes { target, all, session },
                 "kill-session" => Cmd::KillSession { target, all_but },
                 "kill-window" => Cmd::KillWindow { target, all_but },
                 _ => Cmd::KillPane { target, all_but },
@@ -1855,17 +1895,19 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ResizePane { dir, amount, zoom, target, width, height }
         }
         "swap-pane" => {
-            let (mut up, mut target) = (false, None);
+            let (mut up, mut target, mut source) = (false, None, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-U" => up = true,
                     "-D" => up = false,
-                    "-t" | "-s" => target = Some(Target::parse(a.value("-t")?)),
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-s" => source = Some(Target::parse(a.value("-s")?)),
+                    "-d" | "-Z" => {} // the active pane stays put either way; zoom is not touched
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::SwapPane { up, target }
+            Cmd::SwapPane { up, target, source }
         }
         "next-layout" | "previous-layout" => {
             let mut target = None;
@@ -2174,25 +2216,27 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         }
         "display-popup" => {
             let (mut close, mut close_on_exit) = (false, false);
-            let (mut width, mut height, mut cwd) = (None, None, None);
+            let (mut width, mut height, mut x, mut y, mut cwd) = (None, None, None, None, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-C" => close = true,
                     "-E" | "-EE" => close_on_exit = true,
                     "-w" => width = Some(a.value("-w")?.to_string()),
                     "-h" => height = Some(a.value("-h")?.to_string()),
+                    "-x" => x = Some(a.value("-x")?.to_string()),
+                    "-y" => y = Some(a.value("-y")?.to_string()),
                     "-d" => cwd = Some(a.value("-d")?.to_string()),
-                    // Where it sits and whose client it is: wmux centres the
-                    // popup on the client that asked for it.
-                    "-x" | "-y" | "-c" | "-t" | "-T" | "-s" | "-S" | "-b" | "-e" => {
-                        a.value("-x")?;
+                    // Whose client it is, its title and styles: the popup is
+                    // the asking client's, drawn in the pane border style.
+                    "-c" | "-t" | "-T" | "-s" | "-S" | "-b" | "-e" => {
+                        a.value("-c")?;
                     }
                     "-B" => {}
                     f => return Err(bad_flag(n, f)),
                 }
             }
             let argv = a.rest();
-            Cmd::DisplayPopup { close, close_on_exit, width, height, cwd, argv }
+            Cmd::DisplayPopup { close, close_on_exit, width, height, x, y, cwd, argv }
         }
         "pipe-pane" => {
             let (mut target, mut toggle) = (None, false);
@@ -2349,9 +2393,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "set-option" => {
             // -g / -s / -w are accepted and ignored; -a appends, and tmux
             // users write it combined ("set -ag status-right ...").
-            let mut append = false;
+            let (mut append, mut target) = (false, None);
             while a.is_flag() {
                 let flag = a.next().unwrap();
+                if flag == "-t" {
+                    target = Some(Target::parse(a.value("-t")?));
+                    continue;
+                }
                 if flag.contains('a') {
                     append = true;
                 }
@@ -2361,7 +2409,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             // everything downstream sees the real name.
             let name = crate::config::resolve_name(a.next().ok_or("set-option: option name required")?)?;
             let value = a.rest().join(" ");
-            Cmd::SetOption { name, value, append }
+            Cmd::SetOption { name, value, append, target }
         }
         "switch-client" => {
             let (mut next, mut prev, mut last, mut target) = (false, false, false, None);
@@ -2883,7 +2931,12 @@ mod tests {
                 height: None
             }
         );
-        assert_eq!(p("swap-pane -U -t work"), Cmd::SwapPane { up: true, target: t("work") });
+        assert_eq!(p("swap-pane -U -t work"), Cmd::SwapPane { up: true, target: t("work"), source: None });
+        // The pair form: -s and -t are two panes; it prints back without -U/-D.
+        let pair = p("swap-pane -s v:0.1 -t v:1.0");
+        assert_eq!(pair, Cmd::SwapPane { up: false, target: t("v:1.0"), source: t("v:0.1") });
+        assert_eq!(pair.to_string(), "swap-pane -s v:0.1 -t v:1.0");
+        assert_eq!(p(&pair.to_string()), pair);
         assert_eq!(p("break-pane -t work:2"), Cmd::BreakPane { target: t("work:2") });
         assert_eq!(p("break-pane"), Cmd::BreakPane { target: None });
         assert_eq!(p("resize-pane -Z -t work:1").to_string(), "resize-pane -Z -t work:1");
@@ -2957,12 +3010,23 @@ mod tests {
         assert_eq!(p("bind -r C-h resize-pane -L 5").to_string(), "bind-key -r C-h resize-pane -L 5");
         assert_eq!(
             p("set -g prefix C-a"),
-            Cmd::SetOption { name: "prefix".into(), value: "C-a".into(), append: false }
+            Cmd::SetOption { name: "prefix".into(), value: "C-a".into(), append: false, target: None }
         );
         assert_eq!(
             p("set -ag status-right \" | x\""),
-            Cmd::SetOption { name: "status-right".into(), value: " | x".into(), append: true }
+            Cmd::SetOption { name: "status-right".into(), value: " | x".into(), append: true, target: None }
         );
+        // `set -w -t v:1 synchronize-panes on`: the window it applies to.
+        assert_eq!(
+            p("set -w -t v:1 synchronize-panes on"),
+            Cmd::SetOption {
+                name: "synchronize-panes".into(),
+                value: "on".into(),
+                append: false,
+                target: Some(Target::parse("v:1"))
+            }
+        );
+        assert_eq!(p("set -w -t v:1 synchronize-panes on").to_string(), "set-option -t v:1 synchronize-panes on");
     }
 
     #[test]

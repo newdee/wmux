@@ -6,19 +6,40 @@ on:
 
 permissions:
   contents: write
+  actions: read # to ask whether CI passed on the tagged commit
 
 jobs:
   build:
     name: build and publish (windows x86_64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: wait for CI on this commit
+        # A tag is only released once the CI workflow (fmt, clippy, the
+        # whole suite) has passed on the very commit it points at. It may
+        # still be running when the tag lands, so wait for it; a commit CI
+        # never ran on (or failed on) is not released.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $sha = "${{ github.sha }}"
+          $deadline = (Get-Date).AddMinutes(25)
+          while ($true) {
+            $runs = gh run list --workflow CI --commit $sha --json databaseId,status,conclusion | ConvertFrom-Json
+            if ($runs.Count -gt 0) {
+              $r = $runs[0]
+              if ($r.status -eq "completed") {
+                if ($r.conclusion -eq "success") { "CI run $($r.databaseId) passed on $sha"; break }
+                throw "CI run $($r.databaseId) ended with '$($r.conclusion)' on $sha; fix master and tag again"
+              }
+              "CI run $($r.databaseId) is $($r.status); waiting"
+            } else { "no CI run for $sha yet; waiting" }
+            if ((Get-Date) -gt $deadline) { throw "gave up waiting for CI on $sha" }
+            Start-Sleep -Seconds 30
+          }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: test
-        env:
-          WMUX_SESSIONS_DIR: ${{ runner.temp }}\wmux-sessions
-        run: cargo test --all-targets
       - name: build
         run: cargo build --release --locked
       - name: package (zip)

@@ -34,7 +34,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | display-menu | part | `-T` title, name/key/command triples, `""` separators; always drawn over the window (no `-x`/`-y`) |
 | display-message | yes | `-p`, `-t`, formats |
 | display-panes | yes | `prefix q`, digit selects |
-| display-popup | part | `-E`, `-C`, `-w`, `-h`, `-d`; always centred, and the prefix key stays wmux's |
+| display-popup | part | `-E`, `-C`, `-w`, `-h`, `-x`, `-y` (a column/row, `N%`, `C`, `R`/`B`), `-d`; the prefix key stays wmux's |
 | find-window | yes | `prefix f`; one hit jumps, several open the picker |
 | has-session | yes | |
 | if-shell | yes | `-F` formats and shell exit status; `-b` runs inline |
@@ -46,7 +46,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | list-clients | yes | |
 | list-commands | yes | |
 | list-keys | part | no `-N` notes, no `-T` filter |
-| list-panes | part | target window only (`-a`/`-s` accepted, ignored) |
+| list-panes | yes | `-s` (the session's windows, `window.` prefixed), `-a` (every pane, `session:window.` prefixed) |
 | list-sessions / list-windows | yes | |
 | load-buffer / save-buffer | yes | |
 | lock-client / lock-server / lock-session | no | no equivalent of a Unix screen lock here |
@@ -74,13 +74,13 @@ Status: **yes** = works, **part** = works with a documented limit,
 | set-environment / show-environment | yes | `-r` to remove |
 | set-hook / show-hooks | part | nine hooks |
 | set-option / show-options | part | the options wmux implements; unknown ones accepted and ignored |
-| set-window-option / show-window-options | part | folded into `set-option` |
+| set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |
 | show-messages | yes | `prefix ~`, the last 100 |
 | source-file | yes | |
 | split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t` |
 | start-server | part | any client starts it |
 | suspend-client | no | no SIGTSTP on Windows |
-| swap-pane | part | `-U` / `-D`; no `-s`/`-t` pair |
+| swap-pane | yes | `-U` / `-D`, and the `-s src -t dst` pair (across windows and sessions too) |
 | swap-window | part | inside one session |
 | switch-client | yes | `-n`, `-p`, `-l`, `-t` |
 | unbind-key | yes | |
@@ -261,5 +261,5 @@ Nothing from tmux 3.5's command table is outstanding; what is left are the
 limits marked **part** above. The largest of them: no per-client viewport
 (`refresh-client -U`/`-D`, `S-`arrows; `window-size` says which client
 sizes the session), no layout strings for `select-layout`, `choose-tree`
-without per-session collapse, `pipe-pane` without `-I`, and `display-popup`
-without placement flags.
+without per-session collapse, `pipe-pane` without `-I`, and the prefix key
+inside a `display-popup` still being wmux's.

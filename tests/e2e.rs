@@ -2682,6 +2682,141 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `list-panes -s/-a`, `swap-pane -s A -t B` (in one window and across
+/// windows), `set -t` for synchronize-panes, and where `display-popup
+/// -x/-y` puts the box.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_smaller_tmux_gaps_are_closed() {
+    let h = Harness::start("gaps").await;
+    h.cli(&["new", "-d", "-s", "g"]).await;
+    h.cli(&["split-window", "-d", "-t", "g:0"]).await;
+    h.cli(&["new-window", "-d", "-t", "g", "-n", "two"]).await;
+    h.cli(&["split-window", "-d", "-t", "g:1"]).await;
+    h.cli(&["new", "-d", "-s", "other"]).await;
+    let ids = |out: &str| -> Vec<String> {
+        out.lines().filter_map(|l| l.split_whitespace().find(|w| w.starts_with('%')).map(str::to_string)).collect()
+    };
+    // list-panes: one window, the session (window-prefixed), the server
+    // (session:window-prefixed).
+    let (_, one, _) = h.cli(&["list-panes", "-t", "g:0"]).await;
+    assert_eq!(one.lines().count(), 2, "{one}");
+    assert!(one.starts_with("0: ["), "{one}");
+    let (_, sess, _) = h.cli(&["list-panes", "-s", "-t", "g"]).await;
+    assert_eq!(sess.lines().count(), 4, "{sess}");
+    assert!(sess.lines().filter(|l| l.starts_with("0.")).count() == 2, "{sess}");
+    assert!(sess.lines().filter(|l| l.starts_with("1.")).count() == 2, "{sess}");
+    let (_, all, _) = h.cli(&["list-panes", "-a"]).await;
+    assert_eq!(all.lines().count(), 5, "{all}");
+    assert!(
+        all.lines().any(|l| l.starts_with("g:1.1: [")) && all.lines().any(|l| l.starts_with("other:0.0: [")),
+        "{all}"
+    );
+    // swap-pane pair form, in one window: the ids change places.
+    let before = ids(&one);
+    h.cli(&["swap-pane", "-s", "g:0.0", "-t", "g:0.1"]).await;
+    let (_, after, _) = h.cli(&["list-panes", "-t", "g:0"]).await;
+    assert_eq!(ids(&after), vec![before[1].clone(), before[0].clone()], "{after}");
+    // ...and across windows: g:0.0 goes to window 1, its pane comes here.
+    let w1_before = ids(&h.cli(&["list-panes", "-t", "g:1"]).await.1);
+    let (code, _, err) = h.cli(&["swap-pane", "-s", "g:0.0", "-t", "g:1.1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let w0 = ids(&h.cli(&["list-panes", "-t", "g:0"]).await.1);
+    let w1 = ids(&h.cli(&["list-panes", "-t", "g:1"]).await.1);
+    assert_eq!(w0, vec![w1_before[1].clone(), before[0].clone()], "window 0 after the cross swap: {w0:?}");
+    assert_eq!(w1, vec![w1_before[0].clone(), before[1].clone()], "window 1 after the cross swap: {w1:?}");
+    assert_eq!(h.cli(&["list-panes", "-a"]).await.1.lines().count(), 5, "no pane was lost");
+    // Both moved panes still answer.
+    h.cli(&["send-keys", "-t", "g:0.1", "echo moved-here", "Enter"]).await;
+    h.wait_capture("g:0.1", "the moved pane's echo", |t| t.contains("moved-here")).await;
+    // synchronize-panes with -t: that window only.
+    let (code, _, err) = h.cli(&["set", "-w", "-t", "g:1", "synchronize-panes", "on"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "g:1", "#{pane_synchronized}"]).await.1.trim(), "1");
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "g:0", "#{pane_synchronized}"]).await.1.trim(), "0");
+    // display-popup -x/-y: the box's corner is where it was asked to be.
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "other"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.prefix(':').await;
+    c.type_str("display-popup -x 0 -y 0 -w 20 -h 5 -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.enter().await;
+    c.wait_for("popup", |s| s.contents().contains("pip>")).await;
+    assert!(c.row(0).starts_with('┌'), "top-left corner at 0,0: {:?}", c.row(0));
+    assert_eq!(c.row(0).chars().filter(|ch| *ch == '─').count(), 18, "20 wide: {:?}", c.row(0));
+    c.type_str("exit").await;
+    c.enter().await;
+    c.wait_for("popup closed", |s| !s.contents().contains("pip>")).await;
+    c.prefix(':').await;
+    c.type_str("display-popup -x R -y B -w 20 -h 5 -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.enter().await;
+    c.wait_for("popup", |s| s.contents().contains("pip>")).await;
+    // Bottom-right of the window area: the row above the status line ends
+    // with the box's bottom-right corner.
+    let last = c.row(ROWS - 2);
+    assert!(last.trim_end().ends_with('┘'), "bottom-right corner against the edge: {last:?}");
+    assert!(c.row(ROWS - 6).trim_end().ends_with('┐'), "5 tall: {:?}", c.row(ROWS - 6));
+    h.cli(&["kill-server"]).await;
+}
+
+/// Windows asks every top-level window WM_QUERYENDSESSION before a shutdown
+/// or logoff; the server keeps a hidden one for that and saves everything
+/// when asked. The server runs in this process, so the test can ask the
+/// same way Windows would.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shutdown_saves_every_session_first() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_QUERYENDSESSION};
+    let h = Harness::start("endsession").await;
+    h.cli(&["new", "-d", "-s", "bye"]).await;
+    h.wait_capture("bye:0", "prompt", |t| t.contains("wmux>")).await;
+    let file = || {
+        std::fs::read_dir(&h.sessions_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+            .find(|t| t.contains("\"name\": \"bye\""))
+            .unwrap_or_default()
+    };
+    // Let the first autosave happen (the tick after the session was made,
+    // history included): for the next 30 seconds the tick writes nothing
+    // more unless the tree changes, so what the pane prints now can only
+    // reach the file through the shutdown path.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while file().is_empty() {
+        assert!(Instant::now() < deadline, "the session was never autosaved");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    h.cli(&["send-keys", "-t", "bye:0", "echo typed-just-before-shutdown", "Enter"]).await;
+    h.wait_capture("bye:0", "the echo", |t| t.matches("typed-just-before-shutdown").count() >= 2).await;
+    assert!(!file().contains("typed-just-before-shutdown"), "not saved yet: {}", file());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let hwnd = loop {
+        if let Some(w) = wmux::shutdown::window(&h.socket) {
+            break w as usize; // a handle is a number; usize crosses threads
+        }
+        assert!(Instant::now() < deadline, "the server's shutdown window never came up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    // SendMessage runs the window's handler on its thread and returns when
+    // it has answered, which it does once the server has saved.
+    let allowed = tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) })
+        .await
+        .unwrap();
+    assert_eq!(allowed, 1, "the shutdown may go on");
+    let saved = file();
+    assert!(saved.contains("typed-just-before-shutdown"), "saved on the way out: {saved}");
+    // `autosave off` means off at shutdown too: nothing is written.
+    h.cli(&["set", "-g", "autosave", "off"]).await;
+    h.cli(&["send-keys", "-t", "bye:0", "echo after-autosave-off", "Enter"]).await;
+    h.wait_capture("bye:0", "the second echo", |t| t.matches("after-autosave-off").count() >= 2).await;
+    let allowed =
+        tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) }).await.unwrap();
+    assert_eq!(allowed, 1);
+    assert!(!file().contains("after-autosave-off"), "autosave off is respected: {}", file());
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn window_size_picks_which_client_sizes_the_session() {
     let h = Harness::start("winsize").await;
