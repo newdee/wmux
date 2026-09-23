@@ -1044,7 +1044,17 @@ async fn copy_mode_vi_motions_and_modes() {
     c.type_str("v").await;
     c.type_str("e").await;
     c.enter().await;
-    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    // The copy and the show-buffer travel different pipes: wait for the
+    // buffer to change rather than assuming the Enter landed first.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let out = loop {
+        let (_, out, _) = h.cli(&["show-buffer"]).await;
+        if out.trim_end() != "alpha" {
+            break out;
+        }
+        assert!(Instant::now() < deadline, "the second copy never replaced the buffer: {out:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(out.trim_end(), "gamma", "w moves a word at a time: {out:?}");
     c.prefix('[').await;
     c.type_str("?gamma").await;
@@ -2679,6 +2689,73 @@ async fn a_resumed_session_keeps_its_saved_size() {
     assert_eq!(code, 0, "{err}");
     let (_, out, _) = h.cli(&["display-message", "-p", "-t", "sz:0", "#{window_width}x#{window_height}"]).await;
     assert_eq!(out.trim(), "100x30");
+    h.cli(&["kill-server"]).await;
+}
+
+/// A right click pastes the clipboard into the pane, the way the terminal
+/// itself would were the mouse not wmux's; from copy mode too, which it
+/// leaves first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_right_click_pastes_the_clipboard() {
+    // The Windows clipboard is shared with everything else on the machine;
+    // a runner without one (a service session) cannot run this.
+    if wmux::clipboard::set_text("echo pasted-by-right-click").is_err() {
+        eprintln!("no clipboard here; skipping");
+        return;
+    }
+    let h = Harness::start("rclick").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "rc"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // Other tests copy text in parallel and the clipboard is one for the
+    // whole machine, so what lands may be theirs: set, click, look, and
+    // try again (after clearing cmd's line) when it was something else.
+    async fn right_click_pastes(c: &mut Conn, text: &str) {
+        for attempt in 0..8 {
+            // The clipboard may be busy for a moment as well.
+            let mut set = wmux::clipboard::set_text(text);
+            for _ in 0..20 {
+                if set.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                set = wmux::clipboard::set_text(text);
+            }
+            set.expect("the clipboard stayed busy");
+            // Right button down and up (bit 2 of the buttons mask).
+            c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 2, ctrl: 0, flags: 0 })).await;
+            c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 0, ctrl: 0, flags: 0 })).await;
+            let want = format!("wmux>{text}");
+            let seen =
+                tokio::time::timeout(Duration::from_secs(2), c.wait_for("the paste", |s| s.contents().contains(&want)));
+            if seen.await.is_ok() {
+                return;
+            }
+            eprintln!("attempt {attempt}: the clipboard held something else; clearing the line");
+            c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its input line on Escape
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("a right click never pasted {text:?}:\n{}", c.text());
+    }
+    right_click_pastes(&mut c, "echo pasted-by-right-click").await;
+    c.enter().await;
+    c.wait_for("and it ran", |s| s.contents().matches("pasted-by-right-click").count() >= 2).await;
+    // From copy mode (the wheel scrolled back): copy mode ends, the paste lands.
+    h.cli(&["send-keys", "-t", "rc:0", "for /l %i in (1,1,40) do @echo fill-%i", "Enter"]).await;
+    c.wait_for("filled", |s| s.contents().contains("fill-40")).await;
+    c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: (120u32) << 16, ctrl: 0, flags: 4 })).await;
+    c.wait_for("copy mode", |s| s.rows(0, COLS).next().unwrap().contains("[3/")).await;
+    right_click_pastes(&mut c, "echo second-paste").await;
+    assert!(!c.row(0).contains("[3/"), "copy mode ended: {:?}", c.row(0));
+    c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its input line on Escape
+    // On the status line a right click is not a paste.
+    wmux::clipboard::set_text("echo not-this-one").unwrap();
+    c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: ROWS as i16 - 1, buttons: 2, ctrl: 0, flags: 0 })).await;
+    c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: ROWS as i16 - 1, buttons: 0, ctrl: 0, flags: 0 })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.type_str("echo after").await;
+    c.wait_for("typing still works", |s| s.contents().contains("echo after")).await;
+    assert!(!c.text().contains("not-this-one"), "{}", c.text());
     h.cli(&["kill-server"]).await;
 }
 

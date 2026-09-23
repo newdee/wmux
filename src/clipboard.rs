@@ -14,7 +14,10 @@ struct Open;
 
 impl Open {
     fn new() -> Result<Open> {
-        for _ in 0..10 {
+        // Another program may hold the clipboard for a moment (a clipboard
+        // manager reacting to the last change takes tens of milliseconds):
+        // half a second of trying before giving up.
+        for _ in 0..50 {
             if unsafe { OpenClipboard(null_mut()) } != 0 {
                 return Ok(Open);
             }

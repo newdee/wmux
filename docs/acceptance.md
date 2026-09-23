@@ -1660,3 +1660,40 @@ e2e `tab_completes_at_the_prompt_and_the_shell_gets_a_completer`：`spl`+Tab →
 ## 结论（第三十一次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 188 → 192（lib 127 / console 4 / e2e 61）。
+
+# 第三十二次验收（2026-09-24）— 右键粘贴
+
+## 做了什么
+
+`mouse on` 时右键被 wmux 吃掉、什么都不做，终端自带的"右键粘贴"就没了。现在 pane 上按下右键 = 把 Windows 剪贴板贴进
+当前 pane（走 `paste-buffer`，带括号粘贴），和 Windows Terminal / conhost 的右键一样；在 copy mode 里右键先退出 copy mode 再贴。
+程序自己要鼠标事件（vim、htop 那类）时右键照旧原样转给程序；状态栏上的右键不粘贴。
+顺带两处加固：copy 时剪贴板忙（别的程序占着、剪贴板管理器在读）不再让整个复制失败——paste buffer 照设，提示里附上剪贴板的报错；
+`OpenClipboard` 重试从 100 ms 提到 500 ms。
+
+## 修复过程中的发现（不计数）
+
+- 全量并行时 `copy_mode_vi_motions_and_modes` 挂过一次：第二次复制后立刻 `show-buffer`，键和命令走两条管道没有先后保证，
+  改成轮询 buffer 变化（既有竞争，被新增的剪贴板流量放大后露出来）。
+- 新 e2e 与其它复制测试共用机器唯一的剪贴板：别的测试复制的文字会被右键贴进来。测试改成"设、点、看，不对就清行重来"；
+  第一版用 C-u 清 cmd 的输入行，cmd 不认 C-u（打出 `^U`），改用 Escape；`set_text` 遇忙也重试。之后整套 e2e 连跑 6 次 0 失败。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路
+
+数据：e2e `a_right_click_pastes_the_clipboard` 走真实管道协议（`ClientMsg::Mouse` 按钮位 2 按下/抬起）：剪贴板里的
+`echo pasted-by-right-click` 出现在 cmd 提示符后并执行；滚轮进 copy mode（`[3/` 指示）后右键 → 指示消失、文字贴进；
+状态栏上右键 300 ms 内什么都没贴、随后照常能敲字。全量 193 项（lib 127 / console 4 / e2e 62）全过，clippy 无 warning，fmt 干净。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：整套 e2e（62 条并行，含全部复制/粘贴测试）连跑 6 次全过，另加此前一轮 4 次里 3 次失败的对照（修测试前）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界 + 静态一致性
+
+数据：程序占用鼠标时右键仍走原有转发分支（`mouse_selects_pane_and_copy_mode_scrolls` 覆盖那条路，右键分支放在它之后）；
+剪贴板忙 500 ms 内重试，超时报 `clipboard: OpenClipboard failed`，复制侧 buffer 仍然设好；剪贴板为空时右键报
+`clipboard is empty`（`paste-buffer` 既有路径）。README（中英）鼠标段落写明右键粘贴；README 的 `]` 行本就是"贴剪贴板"。
+
+## 结论（第三十二次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 192 → 193。

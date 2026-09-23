@@ -144,7 +144,8 @@ Mouse: click selects a pane, drag a border to resize, click a window name on
 the status line to select it, wheel scrolls (enters copy mode on the normal
 screen, sends arrow keys to full-screen programs, and is passed through to
 programs that ask for mouse events). Drag to select text; the selection is
-copied to the Windows clipboard on release.
+copied to the Windows clipboard on release, and a right click pastes the
+clipboard into the pane, as the terminal itself would.
 
 ## Resume after a reboot
 

@@ -5498,11 +5498,12 @@ impl Server {
             (KeyCode::Enter, _, _) | (KeyCode::Char('y'), false, false) | (KeyCode::Char('w'), true, _) => {
                 if c.anchor.is_some() {
                     match copy_selection(p) {
-                        Ok((n, text)) => {
+                        Ok((n, text, clipboard)) => {
                             // Both places, as tmux with set-clipboard does:
                             // a new paste buffer and the Windows clipboard.
                             self.set_buffer(None, &text, false);
-                            self.message(cid, &format!("copied {n} characters"));
+                            let note = clipboard.map(|e| format!(" ({e})")).unwrap_or_default();
+                            self.message(cid, &format!("copied {n} characters{note}"));
                         }
                         Err(e) => self.message(cid, &e),
                     }
@@ -5700,6 +5701,20 @@ impl Server {
             }
             return;
         }
+        // Right click pastes the clipboard, as the terminal itself would
+        // were the mouse not ours (Windows Terminal, conhost); copy mode
+        // ends first, the text is for the program, not the scrollback.
+        if pressed & BTN_RIGHT != 0 {
+            if in_copy {
+                exit_copy_mode(pane);
+            }
+            if let Outcome::Error(e) =
+                self.exec(Cmd::PasteBuffer { name: None, target: None, bracketed: true }, Some(cid))
+            {
+                self.message(cid, &e);
+            }
+            return;
+        }
         if pressed & BTN_LEFT != 0 {
             if !in_copy {
                 enter_copy_mode(pane);
@@ -5735,9 +5750,10 @@ impl Server {
                     exit_copy_mode(pane);
                 } else {
                     match copy_selection(pane) {
-                        Ok((n, text)) => {
+                        Ok((n, text, clipboard)) => {
                             self.set_buffer(None, &text, false);
-                            self.message(cid, &format!("copied {n} characters"));
+                            let note = clipboard.map(|e| format!(" ({e})")).unwrap_or_default();
+                            self.message(cid, &format!("copied {n} characters{note}"));
                         }
                         Err(e) => self.message(cid, &e),
                     }
@@ -6583,7 +6599,7 @@ fn copy_sel_view(rows: u16, cols: u16, cm: &CopyMode, cursor_abs: usize) -> Opti
 /// Copy the selected text to the clipboard; returns the character count.
 /// Returns the number of characters copied and the text, which the caller
 /// also stores as a paste buffer.
-fn copy_selection(p: &mut Pane) -> Result<(usize, String), String> {
+fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), String> {
     let cur_abs = copy_abs(p);
     let c = p.copy.as_ref().unwrap();
     let Some((abs_a, col_a)) = c.anchor else { return Err("no selection".into()) };
@@ -6624,8 +6640,11 @@ fn copy_selection(p: &mut Pane) -> Result<(usize, String), String> {
         }
     }
     let n = text.chars().count();
-    crate::clipboard::set_text(&text).map_err(|e| format!("clipboard: {e}"))?;
-    Ok((n, text))
+    // The clipboard can be busy (another program holding it, a clipboard
+    // manager reacting to the last change): the paste buffer is set either
+    // way, and the trouble is reported beside the count.
+    let clipboard = crate::clipboard::set_text(&text).err().map(|e| format!("clipboard: {e}"));
+    Ok((n, text, clipboard))
 }
 
 #[cfg(test)]
