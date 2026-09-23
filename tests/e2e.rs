@@ -2810,8 +2810,9 @@ async fn a_shutdown_saves_every_session_first() {
     h.cli(&["set", "-g", "autosave", "off"]).await;
     h.cli(&["send-keys", "-t", "bye:0", "echo after-autosave-off", "Enter"]).await;
     h.wait_capture("bye:0", "the second echo", |t| t.matches("after-autosave-off").count() >= 2).await;
-    let allowed =
-        tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) }).await.unwrap();
+    let allowed = tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) })
+        .await
+        .unwrap();
     assert_eq!(allowed, 1);
     assert!(!file().contains("after-autosave-off"), "autosave off is respected: {}", file());
     h.cli(&["kill-server"]).await;
