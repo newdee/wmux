@@ -106,6 +106,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `%` / `"` | split left-right / top-bottom |
 | `h` `j` `k` `l` or arrows / `o` / `;` | move between panes (vim keys) / next pane / last pane |
 | `H` `J` `K` `L`, `Alt`+arrows / `Ctrl`+arrows | resize the current pane by 5 / by 1 |
+| `Shift`+arrows | when the window is bigger than this terminal (`window-size` took another client's), pan this client's view by 5 rows / 10 columns; the view follows the cursor again at the next key |
 | (moving, resizing, `n` / `p` and `{` / `}` repeat: after the prefix, keep pressing the key for half a second, `repeat-time`) | |
 | `S` | toggle `synchronize-panes` (type into every pane of the window; `S` flag on the status line) |
 | `C-s` / `C-r` | save the session / restore saved sessions (see Resume) |
@@ -479,12 +480,14 @@ covered without a human at the keyboard.
 
 ## Not (yet) implemented
 
-Relative to tmux: multiple clients on the same session see the same size
-(`window-size latest|smallest|largest|manual` picks which client sets it:
-the one used last, the smallest, the largest, or none but `resize-window`;
-there is no per-client viewport, so `refresh-client -U`/`-D` do nothing),
-only the hooks listed above, the `choose-tree` filter is a substring rather
-than a format, and `display-popup` keeps the prefix key for wmux
-(`prefix prefix` sends it to the program in the box).
+Relative to tmux: multiple clients on the same session share one window
+size (`window-size latest|smallest|largest|manual` picks which client sets
+it: the one used last, the smallest, the largest, or none but
+`resize-window`; a client smaller than that sees its own view of the
+window, panned with `Shift`+arrows or `refresh-client -U/-D/-L/-R`, and
+following the cursor when a key goes to the pane), only the hooks listed
+above, the `choose-tree` filter is a substring rather than a format, and
+`display-popup` keeps the prefix key for wmux (`prefix prefix` sends it to
+the program in the box).
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.

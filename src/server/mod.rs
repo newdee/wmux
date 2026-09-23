@@ -281,6 +281,14 @@ struct Client {
     /// (`#{client_created}`, `#{client_activity}`).
     created: Instant,
     last_activity: Instant,
+    /// This client's view of a window bigger than it is: the window column
+    /// and row at its top-left corner (tmux's per-client offset, moved with
+    /// `refresh-client -U/-D/-L/-R`; it follows the active pane's cursor).
+    view_x: u16,
+    view_y: u16,
+    /// The view was panned by hand: leave it there until the next key goes
+    /// to a pane, when following the cursor makes sense again.
+    view_pinned: bool,
 }
 
 impl Client {
@@ -716,7 +724,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
 /// presses several times in a row.
 const REPEATABLE: &[&str] = &[
     "h", "j", "k", "l", "H", "J", "K", "L", "Up", "Down", "Left", "Right", "C-Up", "C-Down", "C-Left", "C-Right",
-    "M-Up", "M-Down", "M-Left", "M-Right", "n", "p", "o", "{", "}",
+    "M-Up", "M-Down", "M-Left", "M-Right", "S-Up", "S-Down", "S-Left", "S-Right", "n", "p", "o", "{", "}",
 ];
 
 fn default_bindings() -> HashMap<Key, Binding> {
@@ -753,6 +761,12 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("M-Down", "resize-pane -D 5"),
         ("M-Left", "resize-pane -L 5"),
         ("M-Right", "resize-pane -R 5"),
+        // A window bigger than this client (`window-size` gave the session
+        // another client's size): pan the view, as tmux does.
+        ("S-Up", "refresh-client -U 5"),
+        ("S-Down", "refresh-client -D 5"),
+        ("S-Left", "refresh-client -L 10"),
+        ("S-Right", "refresh-client -R 10"),
         ("n", "next-window"),
         ("p", "previous-window"),
         ("M-n", "next-window -a"),
@@ -1436,6 +1450,9 @@ impl Server {
                         window_hits: Vec::new(),
                         created: Instant::now(),
                         last_activity: Instant::now(),
+                        view_x: 0,
+                        view_y: 0,
+                        view_pinned: false,
                     },
                 );
             }
@@ -3211,6 +3228,46 @@ impl Server {
                 self.message(cid.unwrap_or(0), preset.name());
                 Outcome::Ok
             }
+            Cmd::ResizeWindow { target, width, height, adjust, largest, smallest } => {
+                let sid = match self.resolve_session(target.as_ref(), cid) {
+                    Ok(s) => s,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some((mut cols, mut rows)) = self.session(sid).map(|s| (s.cols, s.rows)) else {
+                    return Outcome::Error("no such session".into());
+                };
+                // `-A` / `-a`: the largest or smallest attached client.
+                if largest || smallest {
+                    let sizes = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| (c.cols, c.rows));
+                    let pick = if largest {
+                        sizes.reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)))
+                    } else {
+                        sizes.reduce(|a, b| (a.0.min(b.0), a.1.min(b.1)))
+                    };
+                    match pick {
+                        Some(s) => (cols, rows) = s,
+                        None => return Outcome::Error("resize-window: no client attached".into()),
+                    }
+                }
+                if let Some(w) = width {
+                    cols = w;
+                }
+                if let Some(h) = height {
+                    rows = h;
+                }
+                match adjust {
+                    Some((Dir::Left, n)) => cols = cols.saturating_sub(n),
+                    Some((Dir::Right, n)) => cols = cols.saturating_add(n),
+                    Some((Dir::Up, n)) => rows = rows.saturating_sub(n),
+                    Some((Dir::Down, n)) => rows = rows.saturating_add(n),
+                    None => {}
+                }
+                // The same floor `new -x/-y` has: anything smaller has no
+                // room for a pane and a status line.
+                self.resize_session(sid, cols.max(10), rows.max(3));
+                self.autosave_changed();
+                Outcome::Ok
+            }
             Cmd::SwapPane { up, target, source } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
@@ -3444,12 +3501,21 @@ impl Server {
                 self.autosave_changed();
                 Outcome::Ok
             }
-            Cmd::RefreshClient => {
-                if let Some(cid) = cid
-                    && let Some(c) = self.clients.get_mut(&cid)
-                {
-                    c.last_grid = None;
-                    c.last_cursor = None;
+            Cmd::RefreshClient { pan } => {
+                let Some(cid) = cid else { return Outcome::Ok };
+                let Some(c) = self.clients.get_mut(&cid) else { return Outcome::Ok };
+                c.last_grid = None;
+                c.last_cursor = None;
+                if let Some((dir, n)) = pan {
+                    // Pan the view; the render clamps it to the window and
+                    // keeps the cursor in sight, so overshooting is harmless.
+                    match dir {
+                        Dir::Up => c.view_y = c.view_y.saturating_sub(n),
+                        Dir::Down => c.view_y = c.view_y.saturating_add(n),
+                        Dir::Left => c.view_x = c.view_x.saturating_sub(n),
+                        Dir::Right => c.view_x = c.view_x.saturating_add(n),
+                    }
+                    c.view_pinned = true;
                 }
                 Outcome::Ok
             }
@@ -4553,6 +4619,10 @@ impl Server {
             self.popup_key(cid, &rec);
             return;
         }
+        // Typing into a pane: the view follows the cursor again.
+        if let Some(c) = self.clients.get_mut(&cid) {
+            c.view_pinned = false;
+        }
         self.write_active(sid, &input::encode_key_record(&rec));
     }
 
@@ -5373,6 +5443,9 @@ impl Server {
         let buttons = m.buttons & 0x7;
         let prev = c.mouse_buttons;
         c.mouse_buttons = buttons;
+        // The status line is drawn at this client's size, the panes at the
+        // session's: positions in the window area are shifted by the view.
+        let (crows, view_x, view_y) = (c.rows, c.view_x, c.view_y);
         if c.chooser.is_some() {
             // Wheel moves the selection; a click puts it on that line.
             let (cols, rows) = (c.cols, c.rows);
@@ -5408,7 +5481,7 @@ impl Server {
         if let Some(d) = c.drag.take()
             && buttons & BTN_LEFT != 0
         {
-            let pos = if d.horizontal { x as i32 } else { y as i32 };
+            let pos = if d.horizontal { (x + view_x) as i32 } else { (y + view_y) as i32 };
             let delta = pos - d.last;
             if delta != 0 {
                 let dir = match (d.horizontal, delta > 0) {
@@ -5426,17 +5499,15 @@ impl Server {
             return;
         }
 
-        let status_y = if self.opts.status {
-            Some(if self.opts.status_top { 0 } else { self.session(sid).map(|s| s.rows - 1).unwrap_or(0) })
-        } else {
-            None
-        };
+        let status_y =
+            if self.opts.status { Some(if self.opts.status_top { 0 } else { crows.saturating_sub(1) }) } else { None };
         if Some(y) == status_y {
             if pressed & BTN_LEFT != 0 {
                 self.status_click(cid, sid, x);
             }
             return;
         }
+        let (x, y) = (x.saturating_add(view_x), y.saturating_add(view_y));
 
         let mouse_opt = self.opts.mouse;
         let area = match self.session(sid) {
@@ -5730,6 +5801,7 @@ impl Server {
                 border_texts.insert(id, segs);
             }
         }
+        let sess_size = (self.sessions[spos].cols, self.sessions[spos].rows);
         let s = &mut self.sessions[spos];
         let Some(w) = s.window_mut() else { return };
         let active = w.active;
@@ -5761,9 +5833,46 @@ impl Server {
                 border_text: border_top.and_then(|top| border_texts.remove(id).map(|segs| (segs, top))),
             });
         }
-        let frame =
-            Frame { cols, rows, panes: views, status: status_line, status_top, border_fg, active_border_fg: active_fg };
-        let (mut grid, mut cursor, window_hits) = render::compose(&frame);
+        // A client the size of the session draws straight into its grid. A
+        // client of another size (`window-size` gave the session someone
+        // else's) draws the whole window at the session's size and shows
+        // the part its view is on; the status line is its own width.
+        let viewport = sess_size != (cols, rows);
+        let (mut grid, mut cursor, window_hits, mut crop) = if !viewport {
+            let frame = Frame {
+                cols,
+                rows,
+                panes: views,
+                status: status_line,
+                status_top,
+                border_fg,
+                active_border_fg: active_fg,
+            };
+            let (g, c, h) = render::compose(&frame);
+            (g, c, h, None)
+        } else {
+            let own = Frame {
+                cols,
+                rows,
+                panes: Vec::new(),
+                status: status_line,
+                status_top,
+                border_fg,
+                active_border_fg: active_fg,
+            };
+            let (own_grid, _, hits) = render::compose(&own);
+            let whole = Frame {
+                cols: sess_size.0,
+                rows: sess_size.1,
+                panes: views,
+                status: None,
+                status_top,
+                border_fg,
+                active_border_fg: active_fg,
+            };
+            let (g, c, _) = render::compose(&whole);
+            (g, c, hits, Some(own_grid))
+        };
         for p in &mut w.panes {
             if p.copy.is_some() {
                 p.parser.screen_mut().set_scrollback(0);
@@ -5795,6 +5904,47 @@ impl Server {
             cursor = None;
         }
         let area = self.window_area(cols, rows);
+        // The view: clamp it to the window, follow the active pane's cursor
+        // unless it was panned by hand, and cut that part out of the whole.
+        if let Some(mut own) = crop.take() {
+            let whole_area = self.window_area(sess_size.0, sess_size.1);
+            let c = self.clients.get_mut(&cid).unwrap();
+            let max_x = whole_area.w.saturating_sub(area.w);
+            let max_y = whole_area.h.saturating_sub(area.h);
+            let (mut vx, mut vy) = (c.view_x.min(max_x), c.view_y.min(max_y));
+            if !c.view_pinned
+                && let Some((cx, cy)) = cursor
+            {
+                let (cx, cy) = (cx.saturating_sub(whole_area.x), cy.saturating_sub(whole_area.y));
+                if cx < vx {
+                    vx = cx;
+                } else if area.w > 0 && cx >= vx + area.w {
+                    vx = cx + 1 - area.w;
+                }
+                if cy < vy {
+                    vy = cy;
+                } else if area.h > 0 && cy >= vy + area.h {
+                    vy = cy + 1 - area.h;
+                }
+                vx = vx.min(max_x);
+                vy = vy.min(max_y);
+            }
+            c.view_x = vx;
+            c.view_y = vy;
+            for y in 0..area.h {
+                for x in 0..area.w {
+                    let (sx, sy) = (whole_area.x + vx + x, whole_area.y + vy + y);
+                    if sx < grid.cols && sy < grid.rows {
+                        own.set(area.x + x, area.y + y, grid.get(sx, sy).clone());
+                    }
+                }
+            }
+            cursor = cursor.and_then(|(cx, cy)| {
+                let (cx, cy) = (cx.checked_sub(whole_area.x + vx)?, cy.checked_sub(whole_area.y + vy)?);
+                (cx < area.w && cy < area.h).then_some((area.x + cx, area.y + cy))
+            });
+            grid = own;
+        }
         let c = self.clients.get_mut(&cid).unwrap();
         c.window_hits = window_hits;
         if let Some(ch) = c.chooser.as_mut() {
@@ -6413,6 +6563,9 @@ mod tests {
             window_hits: Vec::new(),
             created: Instant::now(),
             last_activity: Instant::now(),
+            view_x: 0,
+            view_y: 0,
+            view_pinned: false,
         };
         (c, rx)
     }

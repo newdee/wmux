@@ -170,6 +170,19 @@ pub enum Cmd {
         mark: bool,
         unmark: bool,
     },
+    /// `resize-window [-t target] [-x width] [-y height] [-U|-D|-L|-R n]
+    /// [-A|-a]`: the session's window size (every window of a session is
+    /// one size here), which `window-size manual` then keeps; `-A` takes
+    /// the largest attached client's size, `-a` the smallest.
+    ResizeWindow {
+        target: Option<Target>,
+        width: Option<u16>,
+        height: Option<u16>,
+        /// `-U/-D/-L/-R n`: fewer or more rows / columns.
+        adjust: Option<(Dir, u16)>,
+        largest: bool,
+        smallest: bool,
+    },
     ResizePane {
         dir: Option<Dir>,
         amount: u16,
@@ -255,7 +268,11 @@ pub enum Cmd {
         target: Option<Target>,
     },
     /// `refresh-client`: redraw everything this client shows.
-    RefreshClient,
+    /// `refresh-client [-U|-D|-L|-R [n]]`: redraw; with a direction, pan
+    /// this client's view of a window bigger than the client by `n` cells.
+    RefreshClient {
+        pan: Option<(Dir, u16)>,
+    },
     /// `send-prefix [-t]`: send the prefix key itself to the pane.
     SendPrefix {
         target: Option<Target>,
@@ -750,6 +767,31 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
+            Cmd::ResizeWindow { target, width, height, adjust, largest, smallest } => {
+                f.write_str("resize-window")?;
+                if *largest {
+                    f.write_str(" -A")?;
+                }
+                if *smallest {
+                    f.write_str(" -a")?;
+                }
+                if let Some((dir, n)) = adjust {
+                    let flag = match dir {
+                        Dir::Up => "-U",
+                        Dir::Down => "-D",
+                        Dir::Left => "-L",
+                        Dir::Right => "-R",
+                    };
+                    write!(f, " {flag} {n}")?;
+                }
+                if let Some(w) = width {
+                    write!(f, " -x {w}")?;
+                }
+                if let Some(h) = height {
+                    write!(f, " -y {h}")?;
+                }
+                fmt_target(f, target)
+            }
             Cmd::ResizePane { dir, amount, zoom, target, width, height } => {
                 f.write_str("resize-pane")?;
                 if *zoom {
@@ -860,7 +902,19 @@ impl fmt::Display for Cmd {
                 write!(f, "rotate-window {}", if *down { "-D" } else { "-U" })?;
                 fmt_target(f, target)
             }
-            Cmd::RefreshClient => f.write_str("refresh-client"),
+            Cmd::RefreshClient { pan } => {
+                f.write_str("refresh-client")?;
+                if let Some((dir, n)) = pan {
+                    let flag = match dir {
+                        Dir::Up => "-U",
+                        Dir::Down => "-D",
+                        Dir::Left => "-L",
+                        Dir::Right => "-R",
+                    };
+                    write!(f, " {flag} {n}")?;
+                }
+                Ok(())
+            }
             Cmd::SendPrefix { target } => {
                 f.write_str("send-prefix")?;
                 fmt_target(f, target)
@@ -1419,6 +1473,7 @@ pub const COMMANDS: &[&str] = &[
     "rename-session",
     "rename-window",
     "resize-pane",
+    "resize-window",
     "restore-session",
     "resume",
     "run-shell",
@@ -1501,6 +1556,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "kill-pane" | "killp" => "kill-pane",
         "select-pane" | "selectp" => "select-pane",
         "resize-pane" | "resizep" => "resize-pane",
+        "resize-window" | "resizew" => "resize-window",
         "swap-pane" | "swapp" => "swap-pane",
         "break-pane" | "breakp" => "break-pane",
         "join-pane" | "joinp" => "join-pane",
@@ -1905,6 +1961,42 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::ResizePane { dir, amount, zoom, target, width, height }
         }
+        "resize-window" => {
+            let (mut target, mut width, mut height, mut adjust) = (None, None, None, None);
+            let (mut largest, mut smallest) = (false, false);
+            let size = |flag: &str, v: &str| -> Result<u16, String> {
+                v.parse::<u16>().ok().filter(|n| *n > 0).ok_or_else(|| format!("resize-window: bad {flag} '{v}'"))
+            };
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-x" => width = Some(size("-x", a.value("-x")?)?),
+                    "-y" => height = Some(size("-y", a.value("-y")?)?),
+                    f @ ("-U" | "-D" | "-L" | "-R") => {
+                        let dir = match f {
+                            "-U" => Dir::Up,
+                            "-D" => Dir::Down,
+                            "-L" => Dir::Left,
+                            _ => Dir::Right,
+                        };
+                        let n = if a.is_flag() {
+                            1
+                        } else {
+                            match a.next() {
+                                None => 1,
+                                Some(v) => size(f, v)?,
+                            }
+                        };
+                        adjust = Some((dir, n));
+                    }
+                    "-A" => largest = true,
+                    "-a" => smallest = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ResizeWindow { target, width, height, adjust, largest, smallest }
+        }
         "swap-pane" => {
             let (mut up, mut target, mut source) = (false, None, None);
             while a.is_flag() {
@@ -1952,15 +2044,39 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::RotateWindow { down, target }
         }
         "refresh-client" => {
+            let mut pan = None;
             while a.is_flag() {
-                // tmux has many flags here; none of them mean anything yet.
                 let f = a.next().unwrap();
-                if matches!(f, "-U" | "-D" | "-L" | "-R" | "-C" | "-t") {
-                    a.value(f)?;
+                match f {
+                    // Pan the view by the amount that follows (1 without one).
+                    "-U" | "-D" | "-L" | "-R" => {
+                        let dir = match f {
+                            "-U" => Dir::Up,
+                            "-D" => Dir::Down,
+                            "-L" => Dir::Left,
+                            _ => Dir::Right,
+                        };
+                        let n = if a.is_flag() {
+                            1
+                        } else {
+                            match a.next() {
+                                None => 1,
+                                Some(v) => v.parse::<u16>().map_err(|_| format!("refresh-client: bad amount '{v}'"))?,
+                            }
+                        };
+                        pan = Some((dir, n.max(1)));
+                    }
+                    // tmux's other flags (client size, flags, targets) mean
+                    // nothing here: every client draws itself.
+                    "-C" | "-t" | "-A" | "-B" | "-f" | "-l" => {
+                        a.value(f)?;
+                    }
+                    "-c" | "-S" => {}
+                    f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::RefreshClient
+            Cmd::RefreshClient { pan }
         }
         "send-prefix" => {
             let mut target = None;
@@ -2880,7 +2996,9 @@ mod tests {
         assert!(matches!(p("att"), Cmd::AttachSession { .. }));
         assert!(matches!(p("attach-s"), Cmd::AttachSession { .. }));
         assert!(matches!(p("spl -h"), Cmd::SplitWindow { horizontal: true, .. }));
-        assert!(matches!(p("resi -Z"), Cmd::ResizePane { zoom: true, .. }));
+        assert!(matches!(p("resize-p -Z"), Cmd::ResizePane { zoom: true, .. }));
+        assert!(matches!(p("resizew -x 100"), Cmd::ResizeWindow { width: Some(100), .. }));
+        assert!(parse_line("resi -Z").unwrap_err().starts_with("ambiguous command: resi"), "pane or window");
         assert!(matches!(p("choose-t"), Cmd::ChooseTree { .. }));
         assert!(matches!(p("swap-p -U"), Cmd::SwapPane { up: true, .. }));
         // The short aliases still win over the prefix rule.

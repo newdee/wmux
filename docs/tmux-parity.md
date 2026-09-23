@@ -57,10 +57,10 @@ Status: **yes** = works, **part** = works with a documented limit,
 | next-window / previous-window | yes | `-t`, `-a` (next window with an alert) |
 | paste-buffer | yes | `-b`, `-p`, `-t`; no `-s` separator |
 | pipe-pane | yes | `-o`, `-t`, `-O` (the pane's output to the command, the default), `-I` (the command's output typed into the pane), both together |
-| refresh-client | part | redraws; no `-U`/`-D` viewport moves, no `-C` size |
+| refresh-client | part | redraws; `-U`/`-D`/`-L`/`-R [n]` pan this client's view of a window bigger than it (the view follows the cursor again at the next key); no `-C` size |
 | rename-session / rename-window | yes | |
 | resize-pane | yes | `-L/-R/-U/-D`, `-x`, `-y`, `-Z`, `-t` |
-| resize-window | no | the window is the client's terminal here |
+| resize-window | yes | `-x`, `-y`, `-U`/`-D`/`-L`/`-R n`, `-A` (largest client), `-a` (smallest); sizes the whole session (its windows are one size), which `window-size manual` then keeps |
 | respawn-pane / respawn-window | yes | `-k`, `-t`, a command to run |
 | rotate-window | yes | `prefix C-o`, `M-o` |
 | run-shell | yes | `-b`, `-t` |
@@ -141,7 +141,7 @@ tmux's table, with what wmux does today.
 | `M-6` / `M-7` | mirrored layouts | no (master only) |
 | `M-n` / `M-p` | next/previous window with alert | yes |
 | `C-`/`M-` arrows | resize-pane | yes |
-| `S-`arrows | refresh-client -U/-D/-L/-R | no (no per-client viewport) |
+| `S-`arrows | refresh-client -U/-D/-L/-R | yes (5 rows / 10 columns a press, repeatable) |
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 wmux adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
@@ -258,7 +258,6 @@ line instead of ringing the terminal. Not there: `bell-action`,
 ## Still to do
 
 Nothing from tmux 3.5's command table is outstanding; what is left are the
-limits marked **part** above. The largest of them: no per-client viewport
-(`refresh-client -U`/`-D`, `S-`arrows; `window-size` says which client
-sizes the session) and the `choose-tree` filter being a substring rather
-than a format.
+limits marked **part** above, none of them large: the `choose-tree` filter
+is a substring rather than a format, `refresh-client` has no `-C`, and the
+prefix key inside a popup stays wmux's (`prefix prefix` passes it on).

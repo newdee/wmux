@@ -1560,3 +1560,51 @@ pwsh 缓冲说明；parity 表 choose-tree / display-popup / pipe-pane / swap-wi
 ## 结论（第二十九次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 185 → 186（lib 123 / console 4 / e2e 59）。
+
+# 第三十次验收（2026-09-23）— 布局字符串、每客户端视口、resize-window、20 分钟 soak
+
+## 做了什么
+
+1. **布局字符串**（`layout.rs`）：`#{window_layout}` 现在是 tmux 格式（`校验和,WxH,X,Y`，`{}` 左右、`[]` 上下，叶子带 pane id），
+   由窗口当前矩形反推；`select-layout <字符串>` 读回：有校验和就校验，格子数必须等于 pane 数，尺寸按现窗口缩放，pane 按顺序填入。
+2. **每客户端视口**：客户端比窗口小（`window-size` 听了别的客户端）时，整窗按 session 尺寸合成，再裁出该客户端的视口；
+   状态栏按客户端自身宽度画；鼠标坐标按视口偏移换算。`refresh-client -U/-D/-L/-R [n]` 平移并"钉住"，下一次敲键送 pane 时解钉、
+   视口跟着光标最小位移。默认绑定 `S-方向键`（5 行 / 10 列，可连按）。
+3. **resize-window**：探针发现文档（README 中英、parity、config 注释）都说 `window-size manual` 靠 `resize-window` 改尺寸，
+   而这条命令根本不存在。补上：`-x/-y`、`-U/-D/-L/-R n`（一次一个方向，同 tmux）、`-A`/`-a`（最大/最小客户端），下限 10×3。
+4. **soak**：release 二进制，4 个 pane 用 cmd 循环不停刷屏，另一个 session 每 10 秒分屏/缩放/关 pane/respawn，`history-limit 2000`，跑 20 分钟。
+
+## 修复过程中的发现（不计数）
+
+- 视口 e2e 在全量并行时挂过一次：`x` 的回显比渲染先到时光标在第 6 列而不是第 5 列，断言写死了列号 → 两种都接受。
+- `resi -Z` 变成歧义（resize-pane / resize-window），旧测试改为 `resize-p`，并断言歧义报错。
+- 探针脚本：soak 第一版把整条 cmd 命令当一个参数传给 split-window（没起来，内存曲线是空载的）；vpC 的"字符串相等"期待错
+  （字符串里带 pane id，应比尺寸）；`resize-window -L 10 -D 2` 期待两个方向同时生效，tmux 只认一个。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制 + 全量）
+
+数据：3 pane 窗口的字符串 `0f51,100x29,0,0[100x19,0,0,2,100x9,0,20{50x9,0,20,4,49x9,51,20,5}]`，切 tiled 再应用字符串后尺寸
+`100x19,50x9,49x9` 原样回来、字符串逐字相等；同一字符串套到 60x20 的 3 pane 窗口得 `60x13,29x5,30x5`；
+`refresh-client` 六种写法退出码 0，`-R abc` 报 `bad amount`；`list-keys` 列出四条 `-r` 的 S-方向键绑定。
+全量 188 项（lib 124 / console 4 / e2e 60）全过，clippy 无 warning，fmt 干净。
+e2e `a_small_client_has_its_own_view_of_a_big_window`：80x24 与 40x12 两客户端、`window-size largest` 下 session 保持 80x24，
+小客户端只见前 40 列，`-R 20` 后见 20..60 列且状态栏仍是 40 列整行，大客户端不受影响，敲一个键后视口回到光标处，`-R 500` 钉在右缘。
+e2e `window_size_picks_...`：`resize-window -x 100 -y 30` → 100x30，`-L 10` 再 `-D 2` → 90x32，`-a` → 70x22，`-x 1 -y 1` → 10x3，`-x wide` 报错。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：整套 e2e（60 条，含视口测试并行）+ 17 条布局/刷新单元测试连跑 3 次，去掉耗时后输出完全一致（distinct = 1）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界 + 长时稳定
+
+数据：单 pane 字符串套回自身 OK；2 格套 1 pane 报"has 2 panes, the window 1"；坏校验和、无主体、`1x,0,0,0` 各报对应解析错误；
+预设名仍优先；11 pane 深嵌套字符串套到同尺寸 11 pane 窗口后尺寸逐一相同，缩到 20x6 时 11 个 pane 全在（最小 1x1）、其字符串仍可解析；
+未 attach 的脚本客户端 `refresh-client -R 10` 无害；server 全程存活。
+soak 20 分钟：私有内存后半段 52.6 MB → 52.6 MB（+0.0），句柄 240 → 240，线程 47 → 45，chatty pane 的 scrollback 恰为 2000 行，
+kill-server 后进程退出。
+**遗留（非本批引入）**：窗口被压到 6 行再放大回 300x80 后各 pane 比例丢失（尺寸被夹成 1 后再等比放大），极端缩放的既有行为，
+tmux 亦类似，记录在案不修。
+
+## 结论（第三十次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 186 → 188（lib 124 / console 4 / e2e 60）。

@@ -2682,6 +2682,82 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// A client smaller than the session's window (`window-size largest` gave
+/// the session the big client's size) sees a part of it: its own view,
+/// panned with `refresh-client -L/-R/-U/-D`, following the cursor when a
+/// key goes to the pane. The big client is not affected.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_client_has_its_own_view_of_a_big_window() {
+    let h = Harness::start("viewport").await;
+    h.cli(&["set", "-g", "window-size", "largest"]).await;
+    let mut big = h.connect().await;
+    big.attach(&["new", "-s", "vp"]).await;
+    big.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    let mut small = h.connect().await;
+    small.attach(&["attach", "-t", "vp"]).await;
+    small.screen = vt100::Parser::new(12, 40, 0);
+    small.send(ClientMsg::Resize { cols: 40, rows: 12 }).await;
+    small.wait_for("small prompt", |s| s.contents().contains("wmux>")).await;
+    // The session stays 80x24 (largest): the small client shows 40 columns.
+    assert_eq!(
+        h.cli(&["display-message", "-p", "-t", "vp:0", "#{window_width}x#{window_height}"]).await.1.trim(),
+        "80x24"
+    );
+    let long = "0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+    big.type_str(&format!("echo {long}")).await;
+    big.enter().await;
+    big.wait_for("the long line", |s| s.contents().contains(long)).await;
+    small
+        .wait_for("the first 40 columns", |s| {
+            let t = s.contents();
+            t.contains("0123456789abcdefghijklmnopqrstuvwxyz0123") && !t.contains("ABCDE")
+        })
+        .await;
+    // Pan right by 20: columns 20..60 of the window.
+    small.prefix(':').await;
+    small.type_str("refresh-client -R 20").await;
+    small.enter().await;
+    small
+        .wait_for("panned", |s| {
+            let t = s.contents();
+            t.contains("klmnopqrstuvwxyz0123456789ABCDEFGHIJ") && !t.lines().any(|l| l.starts_with("0123456789abc"))
+        })
+        .await;
+    // The status line is still the client's own width, whole.
+    let status = small.screen.screen().rows(0, 40).nth(11).unwrap_or_default();
+    assert!(status.starts_with("[vp] 0:"), "status at 40 columns: {status:?}");
+    // The big client saw none of that.
+    assert!(big.text().contains(long), "{}", big.text());
+    // A key to the pane brings the cursor back into view: the view moves
+    // left to the cursor (after the prompt), no further.
+    small.type_str("x").await;
+    small
+        .wait_for("follows the cursor", |s| {
+            let t = s.contents();
+            // The cursor sat at column 5 (after "wmux>") or, when cmd had
+            // echoed the x before the render, at 6: the view moved to it.
+            t.lines().any(|l| {
+                l.starts_with("56789abcdefghijklmnopqrstuvwxyz") || l.starts_with("6789abcdefghijklmnopqrstuvwxyz")
+            })
+        })
+        .await;
+    // S-Right is bound to a pan of 10; the bindings survive list-keys.
+    let (_, keys, _) = h.cli(&["list-keys"]).await;
+    assert!(
+        keys.lines().any(|l| l.contains("-r ") && l.contains(" S-Right ") && l.ends_with("refresh-client -R 10")),
+        "{keys}"
+    );
+    // Panning past the edge is clamped: the far right end stays put.
+    small.prefix(':').await;
+    small.type_str("refresh-client -R 500").await;
+    small.enter().await;
+    // (80 - 40 = 40: the row shows the line from its 41st character.)
+    small
+        .wait_for("clamped at the right edge", |s| s.contents().lines().any(|l| l.starts_with("456789ABCDEFGHIJ")))
+        .await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// `swap-window` across sessions, `pipe-pane -I`, the prefix key reaching a
 /// popup's program, and folding a session in the tree.
 #[tokio::test(flavor = "multi_thread")]
@@ -2962,6 +3038,21 @@ async fn window_size_picks_which_client_sizes_the_session() {
     small.type_str("x").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(size(&h).await, "60x20", "manual ignores the client");
+    // resize-window is what sets the size then: absolute, relative, and
+    // from the attached client (-A / -a), with the same floor as new -x/-y.
+    let (code, _, err) = h.cli(&["resize-window", "-t", "sz", "-x", "100", "-y", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(size(&h).await, "100x30");
+    h.cli(&["resize-window", "-t", "sz", "-L", "10"]).await;
+    h.cli(&["resize-window", "-t", "sz", "-D", "2"]).await;
+    assert_eq!(size(&h).await, "90x32");
+    h.cli(&["resize-window", "-t", "sz", "-a"]).await;
+    assert_eq!(size(&h).await, "70x22", "the (only) attached client's size");
+    h.cli(&["resize-window", "-t", "sz", "-x", "1", "-y", "1"]).await;
+    assert_eq!(size(&h).await, "10x3", "the floor");
+    let (code, _, err) = h.cli(&["resize-window", "-t", "sz", "-x", "wide"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("bad -x"), "{err}");
     let (code, _, err) = h.cli(&["set", "-g", "window-size", "sideways"]).await;
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("bad window-size"), "{err}");

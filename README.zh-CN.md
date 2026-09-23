@@ -80,6 +80,7 @@ wmux kill-server
 | `%` / `"` | 左右分 / 上下分 |
 | `h` `j` `k` `l`（或方向键）/ `o` / `;` | 在 pane 之间移动（vim 键位）/ 下一个 pane / 刚才那个 pane |
 | `H` `J` `K` `L`、`Alt`+方向键 / `Ctrl`+方向键 | 调整当前 pane 大小，每次 5 格 / 1 格 |
+| `Shift`+方向键 | 窗口比这个终端大时（`window-size` 听了别的客户端），平移自己的视口，每次 5 行 / 10 列；敲键时视口自动跟着光标 |
 | 移动、改大小、`n` / `p`、`{` / `}` 都能连按 | 按一次前缀之后半秒内（`repeat-time`）接着按同一个键就行，不用再按前缀 |
 | `z` | 当前 pane 放大到整个窗口，再按一次还原 |
 | `x` | 关掉当前 pane |
@@ -289,6 +290,6 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：多个客户端接同一个 session 时看到的尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`；没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`display-popup` 里前缀键还是 wmux 的（连按两次前缀可以把它送给弹窗里的程序）。
+和 tmux 比：多个客户端接同一个 session 时窗口尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`）；比窗口小的客户端看到的是自己的一块视口，`Shift`+方向键（`refresh-client -U/-D/-L/-R`）平移，敲键时跟着光标走；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`display-popup` 里前缀键还是 wmux 的（连按两次前缀可以把它送给弹窗里的程序）。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。
