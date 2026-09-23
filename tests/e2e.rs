@@ -3049,7 +3049,10 @@ async fn capture_pane_dash_j_joins_wrapped_lines() {
     // 50 x's in a 30-column pane: two screen rows, one line.
     let long = "x".repeat(50);
     h.cli(&["send-keys", "-t", "j:0", &format!("echo {long}"), "Enter"]).await;
-    h.wait_capture("j:0", "the echo", |t| t.matches("xxxxxxxxxx").count() >= 4).await;
+    // Wait for the echo's own second row (20 x's alone on a row): the typed
+    // command has the 50 x's too, wrapped as 20 after the prompt then 30, so
+    // counting x's would be satisfied before cmd has answered (CI did that).
+    h.wait_capture("j:0", "the echo", |t| t.lines().any(|l| l.trim_end() == "x".repeat(20))).await;
     let (_, split, _) = h.cli(&["capture-pane", "-p", "-t", "j:0"]).await;
     let (_, joined, _) = h.cli(&["capture-pane", "-p", "-J", "-t", "j:0"]).await;
     assert!(split.lines().any(|l| l.trim_end() == "x".repeat(30)), "wrapped at 30: {split}");
