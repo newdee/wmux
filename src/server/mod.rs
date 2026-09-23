@@ -3167,6 +3167,31 @@ impl Server {
                 let preset = match name {
                     Some(n) => match layout::Preset::parse(&n) {
                         Some(p) => p,
+                        // Not a name: a tmux layout string (`#{window_layout}`
+                        // of this or another window, or one out of a script),
+                        // which must hold as many cells as the window has panes.
+                        None if n.contains('x') && n.contains(',') => {
+                            let mut tree = match layout::parse_layout(&n) {
+                                Ok(t) => t,
+                                Err(e) => return Outcome::Error(format!("select-layout: {e}")),
+                            };
+                            let panes = w.layout.panes();
+                            let cells = tree.panes().len();
+                            if cells != panes.len() {
+                                return Outcome::Error(format!(
+                                    "select-layout: the layout has {cells} panes, the window {}",
+                                    panes.len()
+                                ));
+                            }
+                            tree.set_panes(&panes);
+                            let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                            w.layout = tree;
+                            w.layout_preset = None;
+                            w.zoomed = false;
+                            self.relayout_session(sid);
+                            self.autosave_changed();
+                            return Outcome::Ok;
+                        }
                         None => {
                             let all: Vec<&str> = layout::PRESETS.iter().map(|(n, _)| *n).collect();
                             return Outcome::Error(format!("unknown layout: {n} (one of {})", all.join(", ")));
@@ -4319,7 +4344,8 @@ impl Server {
         ctx.window_activity_time = unix(w.last_output);
         ctx.window_start = widx == 0;
         ctx.window_end = widx + 1 == sess.windows.len();
-        ctx.window_layout = w.layout_preset.map(|p| p.name().to_string()).unwrap_or_default();
+        // tmux's layout string, which `select-layout` takes back.
+        ctx.window_layout = layout::layout_string(&w.layout, &w.rects);
         let pid = pid.unwrap_or(w.active);
         let order = w.layout.panes();
         ctx.pane_index = order.iter().position(|p| *p == pid).unwrap_or(0) + self.opts.pane_base_index;

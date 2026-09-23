@@ -355,6 +355,154 @@ impl Node {
     }
 }
 
+/// tmux's checksum over a layout string (the four hex digits in front).
+fn layout_checksum(s: &str) -> u16 {
+    let mut csum: u16 = 0;
+    for b in s.bytes() {
+        csum = (csum >> 1).wrapping_add((csum & 1) << 15);
+        csum = csum.wrapping_add(b as u16);
+    }
+    csum
+}
+
+/// A tmux layout string for this tree: `csum,WxH,X,Y` per cell, a leaf
+/// ending in `,paneid`, a left-to-right split in `{}` and a top-to-bottom
+/// one in `[]`. `rects` are the panes' rectangles; a split's is the box
+/// around its children. What tmux's `#{window_layout}` shows and its
+/// `select-layout` takes back.
+pub fn layout_string(node: &Node, rects: &[(PaneId, Rect)]) -> String {
+    fn bounds(node: &Node, rects: &[(PaneId, Rect)]) -> Rect {
+        match node {
+            Node::Leaf(id) => rects.iter().find(|(i, _)| i == id).map(|(_, r)| *r).unwrap_or_default(),
+            Node::Split { children, .. } => {
+                let bs: Vec<Rect> = children.iter().map(|c| bounds(c, rects)).collect();
+                let x = bs.iter().map(|r| r.x).min().unwrap_or(0);
+                let y = bs.iter().map(|r| r.y).min().unwrap_or(0);
+                let x2 = bs.iter().map(|r| r.x + r.w).max().unwrap_or(0);
+                let y2 = bs.iter().map(|r| r.y + r.h).max().unwrap_or(0);
+                Rect { x, y, w: x2 - x, h: y2 - y }
+            }
+        }
+    }
+    fn dump(node: &Node, rects: &[(PaneId, Rect)], out: &mut String) {
+        let r = bounds(node, rects);
+        out.push_str(&format!("{}x{},{},{}", r.w, r.h, r.x, r.y));
+        match node {
+            Node::Leaf(id) => out.push_str(&format!(",{id}")),
+            Node::Split { horizontal, children, .. } => {
+                let (open, close) = if *horizontal { ('{', '}') } else { ('[', ']') };
+                out.push(open);
+                for (i, c) in children.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    dump(c, rects, out);
+                }
+                out.push(close);
+            }
+        }
+    }
+    let mut body = String::new();
+    dump(node, rects, &mut body);
+    format!("{:04x},{body}", layout_checksum(&body))
+}
+
+/// Read a tmux layout string back into a tree. The checksum, when there is
+/// one, must match; the pane ids in it are ignored (the window's panes are
+/// put in, in order) but their number must be the window's. Sizes are the
+/// cells' widths or heights, which `layout` scales to whatever the window
+/// is now.
+pub fn parse_layout(s: &str) -> Result<Node, String> {
+    let s = s.trim();
+    let body = match s.split_once(',') {
+        Some((sum, rest)) if sum.len() == 4 && sum.chars().all(|c| c.is_ascii_hexdigit()) => {
+            let want = u16::from_str_radix(sum, 16).map_err(|e| e.to_string())?;
+            if layout_checksum(rest) != want {
+                return Err("layout checksum does not match".into());
+            }
+            rest
+        }
+        _ => s,
+    };
+    struct P<'a> {
+        s: &'a [u8],
+        i: usize,
+    }
+    impl P<'_> {
+        fn peek(&self) -> Option<u8> {
+            self.s.get(self.i).copied()
+        }
+        fn eat(&mut self, c: u8) -> Result<(), String> {
+            if self.peek() == Some(c) {
+                self.i += 1;
+                Ok(())
+            } else {
+                Err(format!("expected '{}' at {} in layout", c as char, self.i))
+            }
+        }
+        fn number(&mut self) -> Result<u32, String> {
+            let start = self.i;
+            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                self.i += 1;
+            }
+            std::str::from_utf8(&self.s[start..self.i])
+                .ok()
+                .and_then(|t| t.parse().ok())
+                .ok_or_else(|| format!("expected a number at {start} in layout"))
+        }
+        /// One cell: its size and the tree under it.
+        fn cell(&mut self, depth: usize) -> Result<(Node, u16, u16), String> {
+            if depth > 64 {
+                return Err("layout is nested too deep".into());
+            }
+            let w = self.number()? as u16;
+            self.eat(b'x')?;
+            let h = self.number()? as u16;
+            self.eat(b',')?;
+            self.number()?; // x
+            self.eat(b',')?;
+            self.number()?; // y
+            match self.peek() {
+                Some(b',') => {
+                    self.i += 1;
+                    self.number()?; // the pane id, which is not ours to keep
+                    Ok((Node::Leaf(0), w, h))
+                }
+                Some(open @ (b'{' | b'[')) => {
+                    self.i += 1;
+                    let horizontal = open == b'{';
+                    let close = if horizontal { b'}' } else { b']' };
+                    let (mut children, mut sizes) = (Vec::new(), Vec::new());
+                    loop {
+                        let (child, cw, ch) = self.cell(depth + 1)?;
+                        children.push(child);
+                        sizes.push(if horizontal { cw } else { ch }.max(1));
+                        match self.peek() {
+                            Some(b',') => self.i += 1,
+                            Some(c) if c == close => {
+                                self.i += 1;
+                                break;
+                            }
+                            _ => return Err(format!("expected ',' or '{}' at {} in layout", close as char, self.i)),
+                        }
+                    }
+                    if children.len() < 2 {
+                        return Err("a split in the layout has fewer than two cells".into());
+                    }
+                    Ok((Node::Split { horizontal, children, sizes }, w, h))
+                }
+                _ => Err(format!("expected ',' '{{' or '[' at {} in layout", self.i)),
+            }
+        }
+    }
+    let mut p = P { s: body.as_bytes(), i: 0 };
+    let (node, _, _) = p.cell(0)?;
+    if p.i != body.len() {
+        return Err(format!("trailing text at {} in layout", p.i));
+    }
+    Ok(node)
+}
+
 /// Scale `sizes` so they sum to `avail`, keeping every entry >= 1 where possible.
 fn fit_sizes(sizes: &mut [u16], avail: u16) {
     if sizes.is_empty() {
@@ -770,6 +918,43 @@ mod tests {
         assert_eq!(neighbour(&r, 3, Dir::Up), Some(2));
         assert_eq!(neighbour(&r, 1, Dir::Left), None);
         assert_eq!(neighbour(&r, 1, Dir::Up), None);
+    }
+
+    #[test]
+    fn layout_strings_round_trip_and_read_tmux_ones() {
+        // [1 | [2 / 3]] in 80x24, dumped the way tmux writes it.
+        let mut n = Node::Leaf(1);
+        let r = rects(&mut n, 80, 24);
+        n.split(1, true, 2, rect_of(&r, 1));
+        let r = rects(&mut n, 80, 24);
+        n.split(2, false, 3, rect_of(&r, 2));
+        let r = rects(&mut n, 80, 24);
+        let s = layout_string(&n, &r);
+        let body = &s[5..];
+        assert_eq!(body, "80x24,0,0{40x24,0,0,1,39x24,41,0[39x12,41,0,2,39x11,41,13,3]}");
+        assert_eq!(&s[..5], &format!("{:04x},", layout_checksum(body)));
+        // Back in: the same shape and sizes, the pane ids from the window.
+        let mut back = parse_layout(&s).unwrap();
+        back.set_panes(&[1, 2, 3]);
+        assert_eq!(rects(&mut back, 80, 24), r, "the same rectangles come out");
+        // ...and the shape survives a different window size.
+        assert_tiling(&rects(&mut back, 120, 40), 120, 40);
+        // A string tmux itself produced (checksum included), and one without.
+        let body = "159x48,0,0{79x48,0,0,0,79x48,80,0[79x24,80,0,1,79x23,80,25,2]}";
+        let tmux = format!("{:04x},{body}", layout_checksum(body));
+        let mut t = parse_layout(&tmux).unwrap();
+        assert_eq!(t.panes().len(), 3);
+        t.set_panes(&[7, 8, 9]);
+        assert_tiling(&rects(&mut t, 80, 24), 80, 24);
+        assert!(parse_layout("159x48,0,0{79x48,0,0,0,79x48,80,0,1}").is_ok(), "no checksum is fine");
+        // Bad ones say what is wrong instead of panicking.
+        assert!(parse_layout("0000,159x48,0,0,0").unwrap_err().contains("checksum"));
+        assert!(parse_layout("159x48,0,0{79x48,0,0,0}").unwrap_err().contains("fewer than two"));
+        assert!(parse_layout("159x48,0,0{79x48,0,0,0,79x48,80,0,1").unwrap_err().contains("expected"));
+        assert!(parse_layout("tiled").unwrap_err().contains("expected"));
+        assert!(parse_layout("").is_err());
+        let deep = "{".repeat(100);
+        assert!(parse_layout(&format!("1x1,0,0{deep}")).is_err());
     }
 
     #[test]

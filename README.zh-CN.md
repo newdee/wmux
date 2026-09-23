@@ -289,6 +289,6 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：多个客户端接同一个 session 时看到的尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`；没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`select-layout` 只有那五种命名布局加 `-E`，不支持 tmux 的布局字符串；`display-popup` 里前缀键还是 wmux 的（连按两次前缀可以把它送给弹窗里的程序）。
+和 tmux 比：多个客户端接同一个 session 时看到的尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`；没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`display-popup` 里前缀键还是 wmux 的（连按两次前缀可以把它送给弹窗里的程序）。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。

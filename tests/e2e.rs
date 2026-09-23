@@ -3319,10 +3319,31 @@ async fn the_newer_variables_come_from_the_live_tree() {
     // The window flags: first of two, not last; the second the other way.
     assert_eq!(ask("v:0", "#{window_start_flag}#{window_end_flag}").await, "10");
     assert_eq!(ask("v:1", "#{window_start_flag}#{window_end_flag}").await, "01");
-    // A layout given by name is remembered by name.
-    assert_eq!(ask("v:0", "[#{window_layout}]").await, "[]");
+    // window_layout is tmux's layout string: checksum, then the cells, a
+    // top-to-bottom split in [] (the window was split that way)...
+    let before = ask("v:0", "#{window_layout}").await;
+    assert!(
+        before.len() > 5
+            && before[..4].chars().all(|c| c.is_ascii_hexdigit())
+            && before.starts_with(&format!("{},80x", &before[..4])),
+        "{before}"
+    );
+    assert!(before.contains('[') && !before.contains('{'), "{before}");
+    // ...and a left-to-right one in {} after even-horizontal.
     h.cli(&["select-layout", "-t", "v:0", "even-horizontal"]).await;
-    assert_eq!(ask("v:0", "#{window_layout}").await, "even-horizontal");
+    let even = ask("v:0", "#{window_layout}").await;
+    assert!(even.contains('{') && !even.contains('['), "{even}");
+    // select-layout takes the string back: the old arrangement returns, and
+    // one with the wrong number of panes is refused.
+    let (code, _, err) = h.cli(&["select-layout", "-t", "v:0", &before]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(ask("v:0", "#{window_layout}").await, before, "the layout string round-trips");
+    let (code, _, err) = h.cli(&["select-layout", "-t", "v:0", "80x24,0,0,0"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("has 1 panes, the window 2"), "{err}");
+    let (code, _, err) = h.cli(&["select-layout", "-t", "v:0", "0000,80x24,0,0{40x24,0,0,0,39x24,41,0,1}"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("checksum"), "{err}");
     // The cursor sits after the prompt; the scrollback grows with output.
     h.wait_capture("v:1", "prompt", |t| t.contains("wmux>")).await;
     assert_eq!(ask("v:1", "#{cursor_x},#{history_size},#{history_limit}").await, "5,0,5000");

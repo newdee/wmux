@@ -2953,6 +2953,9 @@ mod tests {
             }
         );
         assert_eq!(p("swap-pane -U -t work"), Cmd::SwapPane { up: true, target: t("work"), source: None });
+        // A tmux layout string is one word to the parser, braces and all.
+        let s = "bf3a,80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]}";
+        assert!(matches!(p(&format!("select-layout {s}")), Cmd::SelectLayout { name: Some(n), .. } if n == s));
         // The pair form: -s and -t are two panes; it prints back without -U/-D.
         let pair = p("swap-pane -s v:0.1 -t v:1.0");
         assert_eq!(pair, Cmd::SwapPane { up: false, target: t("v:1.0"), source: t("v:0.1") });

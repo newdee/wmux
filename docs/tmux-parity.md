@@ -64,7 +64,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | respawn-pane / respawn-window | yes | `-k`, `-t`, a command to run |
 | rotate-window | yes | `prefix C-o`, `M-o` |
 | run-shell | yes | `-b`, `-t` |
-| select-layout | part | five named layouts and `-E`; no layout strings |
+| select-layout | yes | the five named layouts, `-E`, `-n`/`-p`, and tmux layout strings (what `#{window_layout}` shows; the checksum is checked when present) |
 | select-pane | yes | direction, `next`/`last`/index, `-t session:window.pane`, `-T`, `-m`, `-M` |
 | select-window | yes | index, name, `+`, `-`, `!` |
 | send-keys | part | key names, `-l`, `-X` copy commands; no `-H` (hex) |
@@ -260,5 +260,5 @@ line instead of ringing the terminal. Not there: `bell-action`,
 Nothing from tmux 3.5's command table is outstanding; what is left are the
 limits marked **part** above. The largest of them: no per-client viewport
 (`refresh-client -U`/`-D`, `S-`arrows; `window-size` says which client
-sizes the session), no layout strings for `select-layout`, and the
-`choose-tree` filter being a substring rather than a format.
+sizes the session) and the `choose-tree` filter being a substring rather
+than a format.

@@ -484,8 +484,7 @@ Relative to tmux: multiple clients on the same session see the same size
 the one used last, the smallest, the largest, or none but `resize-window`;
 there is no per-client viewport, so `refresh-client -U`/`-D` do nothing),
 only the hooks listed above, the `choose-tree` filter is a substring rather
-than a format, `select-layout` has the five named layouts and `-E` but not
-tmux's layout strings, and `display-popup` keeps the prefix key for wmux
+than a format, and `display-popup` keeps the prefix key for wmux
 (`prefix prefix` sends it to the program in the box).
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.
