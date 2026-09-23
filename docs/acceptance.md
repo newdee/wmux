@@ -1697,3 +1697,36 @@ A、B、C 三轮连续零发现，验收通过。测试 188 → 192（lib 127 / 
 ## 结论（第三十二次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 192 → 193。
+
+# 第三十三次验收（2026-09-24）— 滚轮选中被滚的 pane；copy mode 里 `C-b C-b` 上翻页（用户报告）
+
+## 发现与修复
+
+用户报告"翻历史时 C-b/C-f/j/k 都不动"。根因：滚轮在**非活动** pane 上滚会让那个 pane 进 copy mode，但键盘只看活动 pane
+（`in_copy` 取 active pane），键全进了另一个 pane 的 shell。修：滚轮事件和按键一样先把鼠标下的 pane 设为活动（tmux 的
+`WheelUpPane` 绑定也是先 `select-pane -t=`）。另外 `C-b` 本身是前缀键，copy mode 里单按 C-b 永远是前缀（tmux 同样如此）；
+补一条：copy mode 里 `C-b C-b`（前缀两次）交给 copy mode，即上翻页；C-f、PageUp/PageDown、C-u/C-d 本来就有。README 中英写明。
+
+## 修复过程中的发现（不计数）
+
+- 右键粘贴 e2e 在状态栏那一步的 `set_text` 没重试，剪贴板忙时 `EmptyClipboard failed`；统一走重试。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路
+
+数据：e2e `the_wheel_selects_the_pane_it_scrolls_and_the_prefix_twice_pages_up`：左右两 pane、右侧活动，左侧灌 60 行；
+在左侧滚轮一格后 `#{pane_index}` 从 1 变 0、左上角出现 `[3/` 指示；`C-f` 翻到 `[0/`；`C-b C-b` 翻回非 0；`k`/`j` 让反显光标
+上一行/回原行；Escape 退出。全量 194 项（lib 127 / console 4 / e2e 63）全过，clippy 无 warning，fmt 干净。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：整套 e2e（63 条并行）连跑 4 次全过。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界 + 静态一致性
+
+数据：单 pane 时滚轮行为不变（`mouse_selects_pane_and_copy_mode_scrolls` 仍过）；`mouse off` 时滚轮不选 pane（守卫 `mouse_opt`）；
+程序自己要鼠标事件时滚轮仍原样转发（那条分支在前）；不在 copy mode 时 `C-b C-b` 仍把 C-b 送给 pane/弹窗（原行为）。
+README 中英 copy mode 段补上翻页键与 `C-b C-b` 说明。
+
+## 结论（第三十三次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 193 → 194。

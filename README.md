@@ -133,8 +133,11 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
 In copy mode: `h` `j` `k` `l` and the arrows move, `w` `b` `e` walk words,
-`0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, a count repeats
-(`3j`), `Space` or `v` starts a selection, `C-v` makes it a rectangle,
+`0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, `PageUp` /
+`PageDown` and `C-b` / `C-f` page, `C-u` / `C-d` half-page (with `C-b` as
+the prefix, press it twice: `C-b C-b` is copy mode's page-up), a count
+repeats (`3j`), `Space` or `v` starts a selection, `C-v` makes it a
+rectangle,
 `Enter` or `y` copies (to a paste buffer and the Windows clipboard), `/`
 searches forward and `?` back through the scrollback with `n` / `N` to
 repeat, `q` leaves. A script can drive all of it with

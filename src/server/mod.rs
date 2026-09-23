@@ -4550,7 +4550,15 @@ impl Server {
                 if k == self.opts.prefix {
                     // Send the prefix key itself to the pane, or to the popup
                     // when one is open: that is how a program in the box gets
-                    // the one key the popup keeps for wmux.
+                    // the one key the popup keeps for wmux. In copy mode the
+                    // key is copy mode's: `C-b C-b` pages up when C-b is the
+                    // prefix, as the vi table says C-b does.
+                    if in_copy {
+                        if let Some(pid) = self.session(sid).and_then(|s| s.window()).map(|w| w.active) {
+                            self.copy_key(cid, pid, k);
+                        }
+                        return;
+                    }
                     let bytes = input::encode_key_record(&rec);
                     match self.clients.get_mut(&cid).and_then(|c| c.popup.as_mut()).filter(|p| !p.finished) {
                         Some(p) => p.pane.write_input(&bytes),
@@ -5620,8 +5628,10 @@ impl Server {
         let rect = w.rect_of(pid).unwrap();
         let (px, py) = (x - rect.x, y - rect.y);
 
-        // Select the pane on any button press.
-        if pressed != 0 && mouse_opt && pid != w.active {
+        // Select the pane on any button press, and on the wheel: scrolling
+        // a pane back puts it in copy mode, whose keys go to the active
+        // pane (tmux's WheelUpPane binding selects the pane first too).
+        if (pressed != 0 || wheel.is_some()) && mouse_opt && pid != w.active {
             w.last_pane = Some(w.active);
             w.active = pid;
         }

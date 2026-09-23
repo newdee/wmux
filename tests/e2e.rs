@@ -2692,6 +2692,51 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Scrolling an inactive pane back with the wheel makes it the active pane,
+/// so the copy-mode keys (j, k, C-f, PageUp) work in it; and with C-b as
+/// the prefix, `C-b C-b` in copy mode is copy mode's page-up.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_wheel_selects_the_pane_it_scrolls_and_the_prefix_twice_pages_up() {
+    let h = Harness::start("wheelsel").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "ws"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // A second pane on the right, which becomes active; fill the LEFT one.
+    h.cli(&["split-window", "-h", "-t", "ws:0"]).await;
+    h.wait_capture("ws:0.1", "right prompt", |t| t.contains("wmux>")).await;
+    h.cli(&["send-keys", "-t", "ws:0.0", "for /l %i in (1,1,60) do @echo left-%i", "Enter"]).await;
+    h.wait_capture("ws:0.0", "left filled", |t| t.contains("left-60")).await;
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "ws:0", "#{pane_index}"]).await.1.trim(), "1", "right is active");
+    // Wheel up over the left pane (x=2): it scrolls back and is the active
+    // pane now, with the copy-mode indicator in its top-right corner.
+    c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 5, buttons: (120u32) << 16, ctrl: 0, flags: 4 })).await;
+    c.wait_for("left in copy mode", |s| s.rows(0, COLS / 2).next().unwrap().contains("[3/")).await;
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "ws:0", "#{pane_index}"]).await.1.trim(), "0", "left is active");
+    // Keys reach that pane's copy mode: C-f pages down (to the bottom), k
+    // scrolls... no: k moves the cursor; C-b C-b pages up again.
+    c.key(b'F' as u16, '\x06', LEFT_CTRL_PRESSED).await;
+    c.wait_for("C-f paged down", |s| s.rows(0, COLS / 2).next().unwrap().contains("[0/")).await;
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    c.wait_for("C-b C-b paged up", |s| {
+        let top = s.rows(0, COLS / 2).next().unwrap();
+        top.contains("[") && !top.contains("[0/")
+    })
+    .await;
+    // j and k move the cursor in that pane (the inverted cell moves).
+    let cursor_row = |s: &vt100::Screen| -> Option<u16> {
+        (0..ROWS - 1).find(|y| (0..COLS / 2).any(|x| s.cell(*y, x).is_some_and(|c| c.inverse())))
+    };
+    let before = cursor_row(c.screen.screen()).expect("a cursor in copy mode");
+    c.type_str("k").await;
+    c.wait_for("k moved up", |s| cursor_row(s).is_some_and(|r| r + 1 == before)).await;
+    c.type_str("j").await;
+    c.wait_for("j moved down", |s| cursor_row(s) == Some(before)).await;
+    c.key(VK_ESCAPE, '\x1b', 0).await;
+    c.wait_for("copy mode left", |s| !s.rows(0, COLS / 2).next().unwrap().contains("[")).await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// A right click pastes the clipboard into the pane, the way the terminal
 /// itself would were the mouse not wmux's; from copy mode too, which it
 /// leaves first.
@@ -2710,18 +2755,21 @@ async fn a_right_click_pastes_the_clipboard() {
     // Other tests copy text in parallel and the clipboard is one for the
     // whole machine, so what lands may be theirs: set, click, look, and
     // try again (after clearing cmd's line) when it was something else.
+    // The clipboard may be busy for a moment as well.
+    async fn set_clipboard(text: &str) {
+        let mut set = wmux::clipboard::set_text(text);
+        for _ in 0..20 {
+            if set.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            set = wmux::clipboard::set_text(text);
+        }
+        set.expect("the clipboard stayed busy");
+    }
     async fn right_click_pastes(c: &mut Conn, text: &str) {
         for attempt in 0..8 {
-            // The clipboard may be busy for a moment as well.
-            let mut set = wmux::clipboard::set_text(text);
-            for _ in 0..20 {
-                if set.is_ok() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                set = wmux::clipboard::set_text(text);
-            }
-            set.expect("the clipboard stayed busy");
+            set_clipboard(text).await;
             // Right button down and up (bit 2 of the buttons mask).
             c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 2, ctrl: 0, flags: 0 })).await;
             c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 0, ctrl: 0, flags: 0 })).await;
@@ -2749,7 +2797,7 @@ async fn a_right_click_pastes_the_clipboard() {
     assert!(!c.row(0).contains("[3/"), "copy mode ended: {:?}", c.row(0));
     c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its input line on Escape
     // On the status line a right click is not a paste.
-    wmux::clipboard::set_text("echo not-this-one").unwrap();
+    set_clipboard("echo not-this-one").await;
     c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: ROWS as i16 - 1, buttons: 2, ctrl: 0, flags: 0 })).await;
     c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: ROWS as i16 - 1, buttons: 0, ctrl: 0, flags: 0 })).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
