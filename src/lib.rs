@@ -3,6 +3,7 @@
 pub mod client;
 pub mod clipboard;
 pub mod command;
+pub mod completion;
 pub mod config;
 pub mod console;
 pub mod format;

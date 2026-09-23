@@ -2682,6 +2682,59 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Tab at the `:` prompt completes a command name (one candidate typed in
+/// whole, several typed as far as they agree and shown in the label) and
+/// a target after -t; `wmux completion powershell` prints the shell's
+/// completer with every command in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
+    let h = Harness::start("complete").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "alpha"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    h.cli(&["new", "-d", "-s", "beta", "-n", "build"]).await;
+    let status = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default();
+    // One candidate: typed in whole, with a space after it.
+    c.prefix(':').await;
+    c.type_str("spl").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("spl completed", |s| status(s).starts_with(":split-window ")).await;
+    // Several: the common part is typed, the candidates take the label.
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await; // C-u: clear
+    c.type_str("list-s").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("candidates shown", |s| status(s).starts_with("(list-saved list-sessions) list-s")).await;
+    c.type_str("e").await;
+    c.wait_for("label back after a key", |s| status(s).starts_with(":list-se")).await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("then one", |s| status(s).starts_with(":list-sessions ")).await;
+    // None: says so, types nothing.
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+    c.type_str("zzz").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("no completion", |s| status(s).starts_with("(no completion) zzz")).await;
+    // A target after -t: sessions and session:window.
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+    c.type_str("select-window -t b").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("beta targets", |s| status(s).starts_with("(beta beta:0 beta:build) select-window -t beta")).await;
+    c.type_str(":b").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("beta:build", |s| status(s).starts_with(":select-window -t beta:build")).await;
+    c.key(VK_ESCAPE, '\x1b', 0).await;
+    // The shell completer is a script listing every command and the flags.
+    let out =
+        std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["completion", "powershell"]).output().unwrap();
+    let script = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(script.contains("Register-ArgumentCompleter -Native -CommandName wmux"), "{script}");
+    assert!(script.contains("'split-window'") && script.contains("'completion'"), "{script}");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["completion", "bash"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no script for 'bash'"));
+    h.cli(&["kill-server"]).await;
+}
+
 /// A client smaller than the session's window (`window-size largest` gave
 /// the session the big client's size) sees a part of it: its own view,
 /// panned with `refresh-client -L/-R/-U/-D`, following the cursor when a

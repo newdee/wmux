@@ -1507,6 +1507,141 @@ pub const COMMANDS: &[&str] = &[
     "wait-for",
 ];
 
+/// The flags each command takes, for completion (the shell's and the `:`
+/// prompt's). A test checks every entry against the parser, so a flag
+/// added there without being listed here, or listed here without being
+/// taken there, fails the build's tests rather than misleading a Tab.
+pub const FLAGS: &[(&str, &[&str])] = &[
+    ("attach-session", &["-d", "-t"]),
+    ("break-pane", &["-t"]),
+    ("bind-key", &["-n", "-r", "-T"]),
+    ("capture-pane", &["-p", "-e", "-J", "-S", "-t"]),
+    ("choose-buffer", &[]),
+    ("choose-client", &[]),
+    ("choose-jobs", &[]),
+    ("choose-session", &["-s", "-w", "-Z"]),
+    ("clock-mode", &["-t"]),
+    ("choose-tree", &["-s", "-w", "-Z"]),
+    ("choose-window", &["-s", "-w", "-Z"]),
+    ("clear-history", &["-t"]),
+    ("command-prompt", &["-p", "-I"]),
+    ("copy-mode", &["-u", "-t"]),
+    ("confirm-before", &["-p"]),
+    ("delete-buffer", &["-b"]),
+    ("delete-saved", &[]),
+    ("detach-client", &["-a", "-t"]),
+    ("display-menu", &["-T"]),
+    ("display-message", &["-p", "-t"]),
+    ("display-popup", &["-C", "-E", "-w", "-h", "-x", "-y", "-d"]),
+    ("display-panes", &["-d"]),
+    ("find-text", &["-t"]),
+    ("find-window", &["-t"]),
+    ("focus-pane", &[]),
+    ("has-session", &["-t"]),
+    ("if-shell", &["-b", "-F", "-t"]),
+    ("jobs", &["-t", "-F"]),
+    ("join-pane", &["-h", "-v", "-b", "-d", "-s", "-t"]),
+    ("kill-pane", &["-a", "-t"]),
+    ("kill-server", &[]),
+    ("kill-session", &["-a", "-t"]),
+    ("kill-window", &["-a", "-t"]),
+    ("last-pane", &["-t"]),
+    ("last-window", &["-t"]),
+    ("list-buffers", &[]),
+    ("list-clients", &[]),
+    ("list-commands", &[]),
+    ("list-keys", &[]),
+    ("list-panes", &["-a", "-s", "-t"]),
+    ("list-plugins", &[]),
+    ("list-saved", &[]),
+    ("list-sessions", &[]),
+    ("list-windows", &["-a", "-t"]),
+    ("load-buffer", &["-b"]),
+    ("load-plugin", &[]),
+    ("move-pane", &["-h", "-v", "-b", "-d", "-s", "-t"]),
+    ("move-window", &["-s", "-t"]),
+    ("new-session", &["-d", "-s", "-n", "-c", "-A", "-x", "-y"]),
+    ("new-window", &["-d", "-n", "-c", "-t", "-a"]),
+    ("next-layout", &["-t"]),
+    ("next-window", &["-a", "-t"]),
+    ("notify", &["-T"]),
+    ("paste-buffer", &["-b", "-p", "-t"]),
+    ("pipe-pane", &["-o", "-I", "-O", "-t"]),
+    ("previous-layout", &["-t"]),
+    ("previous-window", &["-a", "-t"]),
+    ("record", &["-t"]),
+    ("refresh-client", &["-U", "-D", "-L", "-R", "-S", "-C", "-t"]),
+    ("respawn-pane", &["-k", "-t", "-c"]),
+    ("respawn-window", &["-k", "-t", "-c"]),
+    ("rotate-window", &["-D", "-U", "-t"]),
+    ("rename-session", &["-t"]),
+    ("rename-window", &["-t"]),
+    ("resize-pane", &["-D", "-U", "-L", "-R", "-Z", "-x", "-y", "-t"]),
+    ("resize-window", &["-x", "-y", "-U", "-D", "-L", "-R", "-A", "-a", "-t"]),
+    ("restore-session", &["-a"]),
+    ("resume", &[]),
+    ("run-shell", &["-b", "-t"]),
+    ("save-buffer", &["-a", "-b"]),
+    ("save-session", &["-a", "-t"]),
+    ("select-layout", &["-n", "-p", "-E", "-t"]),
+    ("select-pane", &["-U", "-D", "-L", "-R", "-l", "-m", "-M", "-T", "-t"]),
+    ("select-window", &["-t"]),
+    ("send-keys", &["-l", "-R", "-t"]),
+    ("send-prefix", &["-t"]),
+    ("set-buffer", &["-b", "-a"]),
+    ("set-cwd", &["-t"]),
+    ("set-environment", &["-g", "-u"]),
+    ("set-hook", &["-g", "-u"]),
+    ("set-option", &["-g", "-a", "-w", "-s", "-t"]),
+    ("set-window-option", &["-g", "-a", "-t"]),
+    ("show-buffer", &["-b"]),
+    ("show-environment", &["-g"]),
+    ("show-hooks", &["-g"]),
+    ("show-messages", &[]),
+    ("show-options", &["-g", "-v", "-q", "-w", "-s"]),
+    ("show-window-options", &["-g", "-v"]),
+    ("source-file", &["-q"]),
+    ("split-window", &["-h", "-v", "-b", "-d", "-f", "-c", "-t"]),
+    ("start-server", &[]),
+    ("swap-pane", &["-U", "-D", "-d", "-s", "-t"]),
+    ("swap-window", &["-d", "-s", "-t"]),
+    ("switch-client", &["-n", "-p", "-l", "-t"]),
+    ("unbind-key", &["-n", "-T"]),
+    ("version", &[]),
+    ("wait-for", &["-L", "-U", "-S"]),
+];
+
+/// The flags of a command, for completion.
+pub fn flags_of(command: &str) -> &'static [&'static str] {
+    FLAGS.iter().find(|(c, _)| *c == command).map(|(_, f)| *f).unwrap_or(&[])
+}
+
+/// Every command name starting with `prefix`, sorted: what a Tab offers.
+pub fn complete_command(prefix: &str) -> Vec<&'static str> {
+    let mut hits: Vec<&'static str> = COMMANDS.iter().copied().filter(|c| c.starts_with(prefix)).collect();
+    hits.sort_unstable();
+    hits
+}
+
+/// The longest prefix every candidate shares: what a Tab can type when
+/// there are several.
+pub fn common_prefix<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
+    let mut it = items.into_iter();
+    let Some(first) = it.next() else { return String::new() };
+    let mut end = first.len();
+    for s in it {
+        end = first
+            .char_indices()
+            .zip(s.chars())
+            .take_while(|((_, a), b)| a == b)
+            .map(|((i, a), _)| i + a.len_utf8())
+            .last()
+            .unwrap_or(0)
+            .min(end);
+    }
+    first[..end].to_string()
+}
+
 /// tmux lets any unambiguous prefix stand for a command name, so `att` is
 /// `attach-session` and `splitw` is `split-window`. Several matches is an
 /// error rather than a guess.
@@ -2988,6 +3123,39 @@ mod tests {
         assert!(matches!(p("killp -a -t :.1"), Cmd::KillPane { all_but: true, .. }));
         assert!(matches!(p("kill-session -a"), Cmd::KillSession { all_but: true, .. }));
         assert!(matches!(p("send -l Enter"), Cmd::SendKeys { literal: true, .. }));
+    }
+
+    /// The completion table and the parser agree: every command is in the
+    /// table, and every flag in it is one the parser takes (the parser may
+    /// still complain about what follows, never about the flag itself).
+    #[test]
+    fn the_flag_table_matches_the_parser() {
+        for c in COMMANDS {
+            assert!(FLAGS.iter().any(|(n, _)| n == c), "{c} has no entry in FLAGS");
+        }
+        let mut bad = Vec::new();
+        for (cmd, flags) in FLAGS {
+            assert!(COMMANDS.contains(cmd), "{cmd} is in FLAGS but not a command");
+            for f in *flags {
+                assert!(f.starts_with('-') && f.len() == 2, "{cmd}: flag {f}");
+                let words: Vec<String> = [cmd, f, "1", "x"].iter().map(|s| s.to_string()).collect();
+                if let Err(e) = parse(&words)
+                    && e.contains("unknown flag")
+                {
+                    bad.push(format!("{cmd} {f}"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "flags the parser does not take:\n{}", bad.join("\n"));
+        assert_eq!(complete_command("spl"), vec!["split-window"]);
+        assert_eq!(complete_command("list-s"), vec!["list-saved", "list-sessions"]);
+        assert!(complete_command("zzz").is_empty());
+        assert_eq!(common_prefix(["list-saved", "list-sessions"]), "list-s");
+        assert_eq!(common_prefix(["abc"]), "abc");
+        assert_eq!(common_prefix(["abc", "xyz"]), "");
+        assert_eq!(common_prefix(std::iter::empty::<&str>()), "");
+        assert_eq!(flags_of("split-window").len(), 7);
+        assert!(flags_of("nope").is_empty());
     }
 
     #[test]

@@ -94,6 +94,8 @@ struct Prompt {
     label: String,
     input: String,
     cursor: usize,
+    /// Shown in place of the label until the next key: what Tab found.
+    hint: Option<String>,
 }
 
 struct Drag {
@@ -3778,7 +3780,13 @@ impl Server {
                 let label = if label.ends_with(' ') || label == ":" { label } else { format!("{label} ") };
                 if let Some(c) = self.clients.get_mut(&cid) {
                     let cursor = initial.chars().count();
-                    c.prompt = Some(Prompt { kind: PromptKind::Command { template }, label, input: initial, cursor });
+                    c.prompt = Some(Prompt {
+                        kind: PromptKind::Command { template },
+                        label,
+                        input: initial,
+                        cursor,
+                        hint: None,
+                    });
                 }
                 Outcome::Ok
             }
@@ -3792,6 +3800,7 @@ impl Server {
                         label: format!("{label} "),
                         input: String::new(),
                         cursor: 0,
+                        hint: None,
                     });
                 }
                 Outcome::Ok
@@ -4686,6 +4695,9 @@ impl Server {
     fn prompt_key(&mut self, cid: ClientId, k: Key) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(p) = c.prompt.as_mut() else { return };
+        if k.code != KeyCode::Tab {
+            p.hint = None; // Tab's candidates stay up for one key only
+        }
         match &p.kind {
             PromptKind::Confirm(_) => {
                 let prompt = c.prompt.take().unwrap();
@@ -4741,6 +4753,12 @@ impl Server {
                             Err(e) => self.message(cid, &e),
                         }
                     }
+                    // Tab at the command prompt: a command name, or a target
+                    // after -t/-s, as far as it is unambiguous; the rest of
+                    // the candidates go on the status line.
+                    (KeyCode::Tab, false, false) if matches!(p.kind, PromptKind::Command { .. }) => {
+                        self.complete_prompt(cid);
+                    }
                     (KeyCode::BSpace, false, false) | (KeyCode::Char('h'), true, _) => {
                         if p.cursor > 0 {
                             p.cursor -= 1;
@@ -4794,6 +4812,64 @@ impl Server {
         {
             ch.filter = input.clone();
         }
+    }
+
+    /// Tab at the `:` prompt. The word under the cursor is completed as a
+    /// command name when it is the first word, or as a target (a session,
+    /// or `session:window`) after `-t` or `-s`. One candidate is typed in
+    /// whole (a command gets a space after it); several are typed as far
+    /// as they agree and listed on the status line; none says so.
+    fn complete_prompt(&mut self, cid: ClientId) {
+        let Some((input, cursor)) =
+            self.clients.get(&cid).and_then(|c| c.prompt.as_ref()).map(|p| (p.input.clone(), p.cursor))
+        else {
+            return;
+        };
+        let at = char_index(&input, cursor);
+        let head = &input[..at];
+        let start = head.rfind(' ').map(|i| i + 1).unwrap_or(0);
+        let word = &head[start..];
+        let earlier: Vec<&str> = head[..start].split_whitespace().collect();
+        let candidates: Vec<String> = match earlier.last() {
+            None => crate::command::complete_command(word).into_iter().map(str::to_string).collect(),
+            Some(&"-t") | Some(&"-s") => {
+                let mut names = Vec::new();
+                for s in &self.sessions {
+                    names.push(s.name.clone());
+                    for (i, w) in s.windows.iter().enumerate() {
+                        names.push(format!("{}:{}", s.name, i + self.opts.base_index));
+                        names.push(format!("{}:{}", s.name, w.name));
+                    }
+                }
+                names.sort();
+                names.dedup();
+                names.into_iter().filter(|n| n.starts_with(word)).collect()
+            }
+            _ => Vec::new(),
+        };
+        // The prompt's row is the status line, so the candidates take the
+        // label's place until the next key.
+        let (replacement, hint) = match candidates.as_slice() {
+            [] => (String::new(), Some("(no completion) ".to_string())),
+            [one] => (format!("{one}{}", if earlier.is_empty() { " " } else { "" }), None),
+            many => {
+                let shown: Vec<&str> = many.iter().take(6).map(String::as_str).collect();
+                let more = many.len().saturating_sub(shown.len());
+                let tail = if more > 0 { format!(" +{more}") } else { String::new() };
+                (
+                    crate::command::common_prefix(many.iter().map(String::as_str)),
+                    Some(format!("({}{tail}) ", shown.join(" "))),
+                )
+            }
+        };
+        let Some(p) = self.clients.get_mut(&cid).and_then(|c| c.prompt.as_mut()) else { return };
+        p.hint = hint;
+        if replacement.len() <= word.len() {
+            return; // nothing more to type yet
+        }
+        let new_input = format!("{}{replacement}{}", &input[..start], &input[at..]);
+        p.cursor = cursor + replacement.chars().count() - word.chars().count();
+        p.input = new_input;
     }
 
     /// `/` `?` `n` `N` in copy mode: move the cursor to the next line holding
@@ -5087,6 +5163,7 @@ impl Server {
                     label: "(filter) ".into(),
                     input: prev,
                     cursor,
+                    hint: None,
                 });
             }
             // The task board and the tree act on the tagged lines, else the
@@ -5406,6 +5483,7 @@ impl Server {
                         label: if back { "?".into() } else { "/".into() },
                         input: String::new(),
                         cursor: 0,
+                        hint: None,
                     });
                 }
             }
@@ -5736,7 +5814,9 @@ impl Server {
             let c = self.clients.get(&cid).unwrap();
             (
                 c.message.as_ref().map(|(m, _)| m.clone()),
-                c.prompt.as_ref().map(|p| (p.label.clone(), p.input.clone(), p.cursor)),
+                c.prompt
+                    .as_ref()
+                    .map(|p| (p.hint.clone().unwrap_or_else(|| p.label.clone()), p.input.clone(), p.cursor)),
             )
         };
         // (The alerts of the window being drawn were cleared by the sweep at

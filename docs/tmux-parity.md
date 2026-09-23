@@ -25,7 +25,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | clear-history | yes | |
 | clear-prompt-history | no | wmux keeps no prompt history |
 | clock-mode | yes | `prefix t`, any key leaves |
-| command-prompt | part | `-p`, `-I`, `%%` template; no `-k`, no numbered `%1` |
+| command-prompt | part | `-p`, `-I`, `%%` template, Tab completes the command name and a `-t`/`-s` target; no `-k`, no numbered `%1` |
 | confirm-before | yes | `-p` |
 | copy-mode | yes | `-u`, `-t` |
 | customize-mode | no | a whole options UI; `show-options` covers the need |
@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 

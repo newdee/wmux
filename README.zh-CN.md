@@ -96,7 +96,7 @@ wmux kill-server
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
 | `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
-| `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类） |
+| `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类；Tab 补命令名和 `-t` 后的目标） |
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
 | `d` | 脱离 |
 | `?` | 列出所有按键 |
@@ -133,6 +133,14 @@ wmux startup off         # 取消
 ```
 
 它只在当前用户的 `Run` 注册表键下写一个值——不需要管理员，不碰任务计划——通过 `conhost --headless` 启动 server，登录时不会闪出控制台窗口。重启之后 `wmux attach` 进去，东西都在。
+
+PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名）由程序自己吐出一段补全脚本，`$PROFILE` 里加一行就有：
+
+```powershell
+wmux completion powershell | Out-String | Invoke-Expression
+```
+
+wmux 里面 `:` 命令行按 Tab 也能补：命令名、`-t` 后面的目标；多个候选时补到相同的部分为止，候选列在提示符里。
 
 想让 wmux 出现在 Windows Terminal 的下拉菜单里：
 

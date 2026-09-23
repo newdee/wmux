@@ -1614,3 +1614,49 @@ A、B、C 三轮连续零发现，验收通过。测试 186 → 188（lib 124 / 
 runner 上视口 e2e 挂了：`x` 敲进去后视口回到了第 0 列。原因是"光标在视口外就跟随"过于敏感——cmd 重画提示行时光标瞬间在第 0 列，
 慢机器恰好在那一刻渲染，视口就被拽到 0。改为：敲键送 pane 时下一次渲染立即跟随；其余情况光标离开视口持续 150 ms 才跟随。
 本地整套 e2e 连跑 5 次全过；release 门禁按设计拒绝了红 CI 的 tag，tag 移到修复提交后重发。
+
+# 第三十一次验收（2026-09-24）— Tab 补全：PowerShell 补全脚本 + `:` 命令行补全
+
+## 做了什么
+
+1. `wmux completion powershell` 输出一段 `Register-ArgumentCompleter -Native` 脚本（`$PROFILE` 里
+   `wmux completion powershell | Out-String | Invoke-Expression`）：补命令名（含 client 本地的 completion / startup / windows-terminal）、
+   正在敲的 flag（按命令查表）、`-t`/`-s` 后从运行中的 server 取 session、`session:序号`、`session:窗口名`、`-L` 后列出正在跑的
+   socket（扫命名管道）、`completion` 后列 shell。`-L`/`-f` 全局参数会被跳过。
+2. 命令名 / flag 表 `command::FLAGS` 与解析器绑死：单元测试对表里每条 `命令 flag 1 x` 走一遍解析，出现 `unknown flag` 即失败；
+   第一版表里 8 个凭印象写的 flag 被这个测试当场抓出来删掉（`attach -c`、`capture-pane -E`、`new-window -b`、`select-window -n/-p/-l`、
+   `split-window -l/-p`）。
+3. `:` 命令行的 Tab：第一个词补命令名，`-t`/`-s` 后补目标；唯一候选整词填入（命令后带空格），多个候选填到公共前缀、候选列表
+   暂时顶替提示符标签（下一个键恢复），没有候选显示 `(no completion)`。
+
+## 修复过程中的发现（不计数）
+
+- 补全脚本第一版在"空词"时也列 flag，导致 `resize-window -x <Tab>` 出 flag 列表；改为只在正在敲 `-` 时列 flag。
+- 探针：`Get-ArgumentCompleter` 这个 cmdlet 不存在；哈希脚本把字节数组摊进了管道（31 个"哈希"）；`list-commands` 不带 `-L`
+  打到了用户机器上还在跑的老版本 server（它没有 resize-window）——这也说明升级后老 server 进程会一直跑到 kill-server/重启为止。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（真实 PowerShell 里加载 release 二进制吐出的脚本，用 CompleteInput 问）
+
+数据：`wmux spl` → split-window；`list-s` → list-saved,list-sessions；`split-window -` → 7 个 flag；活 server 上
+`select-window -t ` → alpha,beta,alpha:0,alpha:pwsh,beta:0,beta:build,beta:1,beta:test；`kill-session -t b` → 5 个 beta 开头；
+`completion ` → powershell；`-L ` → 正在跑的 socket；`-L x ne` → 4 个 ne 开头的命令。
+全量 192 项（lib 127 / console 4 / e2e 61）全过，clippy 无 warning，fmt 干净。
+e2e `tab_completes_at_the_prompt_and_the_shell_gets_a_completer`：`spl`+Tab → `:split-window `；`list-s`+Tab → 提示符变
+`(list-saved list-sessions) list-s`，再敲 e 标签恢复，再 Tab → `:list-sessions `；`zzz` → `(no completion)`；
+`select-window -t b`+Tab → `(beta beta:0 beta:build) select-window -t beta`，`:b`+Tab → `beta:build`；
+子进程 `wmux completion powershell` 含 Register-ArgumentCompleter 与全部命令，`completion bash` 退出码 1。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：脚本连吐 3 次 SHA-256 完全相同（6740 字节）；e2e + 3 条单元测试连跑 3 次输出一致（distinct = 1）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界
+
+数据：脚本 Invoke-Expression 两遍不报错；PowerShell 解析器 0 个错误；`-t` 指向没有 server 的 socket、命令后空词、`-x` 后空词
+均无报错（补全器不给候选时 PowerShell 自己退回文件名补全，是 PowerShell 的默认行为，tmux 的 bash 补全同样如此）；
+带引号的半个词返回空；`-f 文件` 被跳过后 `ki` 仍补出 4 个 kill-*；无 shell / 未知 shell / 多余参数各报对应错误退出码 1；
+`pwsh` 与 `powershell` 同一份脚本。
+
+## 结论（第三十一次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 188 → 192（lib 127 / console 4 / e2e 61）。

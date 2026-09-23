@@ -149,6 +149,7 @@ fn main() {
     let local = match args[0].as_str() {
         "startup" => Some(wmux::startup::run(&socket, &args[1..])),
         "windows-terminal" | "wt" => Some(wmux::wt::run(&socket, &args[1..])),
+        "completion" => Some(wmux::completion::run(&args[1..])),
         _ => None,
     };
     if let Some(result) = local {

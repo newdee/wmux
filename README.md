@@ -123,7 +123,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
 | `t` / `~` / `r` | clock / recent messages / redraw |
 | `]` | paste the clipboard |
-| `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...) |
+| `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command and a `-t` target) |
 | `d` | detach |
 | `?` | list key bindings |
 | `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `-`/`+` or Left/Right fold and unfold a session) |
@@ -184,6 +184,18 @@ This writes one value under the per-user `Run` registry key (no
 administrator rights, nothing in Task Scheduler), running the server
 through `conhost --headless` so no console window appears at logon. After a
 reboot, `wmux attach` finds everything as it was.
+
+Tab completion in PowerShell (command names, each command's flags, and
+`-t` targets from the running server) comes from a completer the program
+prints; one line in `$PROFILE` loads it:
+
+```powershell
+wmux completion powershell | Out-String | Invoke-Expression
+```
+
+Inside wmux, Tab at the `:` prompt completes the command name and a
+target after `-t`; several candidates are typed as far as they agree and
+listed in the prompt.
 
 And to have wmux in the Windows Terminal dropdown:
 
