@@ -289,6 +289,12 @@ struct Client {
     /// The view was panned by hand: leave it there until the next key goes
     /// to a pane, when following the cursor makes sense again.
     view_pinned: bool,
+    /// A key just went to the pane: the next render brings the cursor into
+    /// view. Otherwise the view only moves once the cursor has been out of
+    /// it for a moment (since `cursor_out`), so a program's momentary cursor
+    /// hop (a prompt being redrawn from column 0) does not drag it about.
+    view_follow: bool,
+    cursor_out: Option<Instant>,
 }
 
 impl Client {
@@ -1453,6 +1459,8 @@ impl Server {
                         view_x: 0,
                         view_y: 0,
                         view_pinned: false,
+                        view_follow: false,
+                        cursor_out: None,
                     },
                 );
             }
@@ -4619,9 +4627,10 @@ impl Server {
             self.popup_key(cid, &rec);
             return;
         }
-        // Typing into a pane: the view follows the cursor again.
+        // Typing into a pane: the view follows the cursor again, right now.
         if let Some(c) = self.clients.get_mut(&cid) {
             c.view_pinned = false;
+            c.view_follow = true;
         }
         self.write_active(sid, &input::encode_key_record(&rec));
     }
@@ -5912,10 +5921,19 @@ impl Server {
             let max_x = whole_area.w.saturating_sub(area.w);
             let max_y = whole_area.h.saturating_sub(area.h);
             let (mut vx, mut vy) = (c.view_x.min(max_x), c.view_y.min(max_y));
-            if !c.view_pinned
-                && let Some((cx, cy)) = cursor
-            {
-                let (cx, cy) = (cx.saturating_sub(whole_area.x), cy.saturating_sub(whole_area.y));
+            let seen = cursor.map(|(cx, cy)| (cx.saturating_sub(whole_area.x), cy.saturating_sub(whole_area.y)));
+            let outside = seen.is_some_and(|(cx, cy)| {
+                cx < vx || cy < vy || (area.w > 0 && cx >= vx + area.w) || (area.h > 0 && cy >= vy + area.h)
+            });
+            let now = Instant::now();
+            if !outside {
+                c.cursor_out = None;
+            }
+            let out_for = *c.cursor_out.get_or_insert(now);
+            let long_enough = outside && now.duration_since(out_for) >= Duration::from_millis(150);
+            let follow = !c.view_pinned && (c.view_follow || long_enough);
+            c.view_follow = false;
+            if follow && let Some((cx, cy)) = seen {
                 if cx < vx {
                     vx = cx;
                 } else if area.w > 0 && cx >= vx + area.w {
@@ -5928,6 +5946,7 @@ impl Server {
                 }
                 vx = vx.min(max_x);
                 vy = vy.min(max_y);
+                c.cursor_out = None;
             }
             c.view_x = vx;
             c.view_y = vy;
@@ -6566,6 +6585,8 @@ mod tests {
             view_x: 0,
             view_y: 0,
             view_pinned: false,
+            view_follow: false,
+            cursor_out: None,
         };
         (c, rx)
     }
