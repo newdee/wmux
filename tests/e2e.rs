@@ -289,8 +289,11 @@ async fn cli_lifecycle() {
     let (code, _, _) = h.cli(&["kill-session", "-t", "renamed"]).await;
     assert_eq!(code, 0);
     // The server exits when its last session dies.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert!(ClientOptions::new().open(pipe_name(&h.socket)).is_err(), "server should have exited");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ClientOptions::new().open(pipe_name(&h.socket)).is_ok() {
+        assert!(Instant::now() < deadline, "server should have exited");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2329,9 +2332,17 @@ async fn record_writes_an_asciinema_file() {
     let (code, out, err) = h.cli(&["record", "-t", "r:0.0"]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("recording stopped"), "{out}");
-    tokio::time::sleep(Duration::from_millis(300)).await; // the writer thread flushes on close
-
-    let text = std::fs::read_to_string(&cast).expect("the cast file");
+    // The writer thread flushes on close: wait for the resize event to be
+    // in the file rather than for a fixed time (slow runners).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let text = loop {
+        let text = std::fs::read_to_string(&cast).unwrap_or_default();
+        if text.lines().skip(1).any(|l| l.contains("\"r\"")) && text.ends_with('\n') {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the cast never got its resize event:\n{text}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     let mut lines = text.lines();
     let header: serde_json::Value = serde_json::from_str(lines.next().expect("header")).expect("header is JSON");
     assert_eq!(header["version"], 2, "{header}");
