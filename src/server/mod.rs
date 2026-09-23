@@ -158,11 +158,31 @@ struct Chooser {
     /// Items marked with `t`, which `x` (and `r`) act on instead of the
     /// current one. Kept by identity, so a live rebuild does not lose them.
     tagged: Vec<ChooserItem>,
+    /// Sessions folded with `-` (or Left) in the tree: their windows are
+    /// not listed until `+` (or Right) opens them again.
+    collapsed: HashSet<SessionId>,
 }
 
 impl Chooser {
     fn new(kind: ChooserKind, items: Vec<ChooserItem>, lines: Vec<String>, sel: usize) -> Chooser {
-        Chooser { kind, items, lines, sel, top: 0, filter: String::new(), tagged: Vec::new() }
+        Chooser {
+            kind,
+            items,
+            lines,
+            sel,
+            top: 0,
+            filter: String::new(),
+            tagged: Vec::new(),
+            collapsed: HashSet::new(),
+        }
+    }
+
+    /// The session of the current line, when the picker is the tree.
+    fn current_session(&self) -> Option<SessionId> {
+        match self.items.get(self.sel) {
+            Some(ChooserItem::Tree(sid, _)) => Some(*sid),
+            _ => None,
+        }
     }
 
     fn is_tagged(&self, item: &ChooserItem) -> bool {
@@ -1297,6 +1317,20 @@ impl Server {
         match ev {
             // A respawned pane keeps its id, so the generation says whether
             // this came from the process that is running now.
+            Event::Pane(PaneEvent::Input(id, bytes)) => {
+                // `pipe-pane -I`: the command's output is typed into the
+                // pane; an empty chunk is its end, which closes an
+                // input-only pipe (an -IO one stays for the output side).
+                if let Some(p) = self.find_pane_mut(id) {
+                    if bytes.is_empty() {
+                        if p.pipe.as_ref().is_some_and(|pipe| !pipe.output) {
+                            p.pipe = None;
+                        }
+                    } else {
+                        p.write_input(&bytes);
+                    }
+                }
+            }
             Event::Pane(PaneEvent::Output(id, generation, bytes)) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && p.generation == generation
@@ -2795,17 +2829,43 @@ impl Server {
                     }
                 };
                 if ssid != dsid {
-                    if !move_it {
-                        return Outcome::Error("swap-window works inside one session".into());
-                    }
-                    // Move a window to another session: take it out, put it in
-                    // at the destination index, and leave no empty session.
                     let Some(spos) = self.sessions.iter().position(|s| s.id == ssid) else {
                         return Outcome::Error("no such session".into());
                     };
                     let Some(dpos) = self.sessions.iter().position(|s| s.id == dsid) else {
                         return Outcome::Error("no such session".into());
                     };
+                    if !move_it {
+                        // Swap across sessions: each window takes the other's
+                        // place, and each session keeps looking at the window
+                        // it was looking at (which may have just arrived).
+                        if di >= self.sessions[dpos].windows.len() {
+                            return Outcome::Error(format!("no window {}", di + self.opts.base_index));
+                        }
+                        let curs =
+                            [spos, dpos].map(|p| self.sessions[p].windows.get(self.sessions[p].cur).map(|w| w.id));
+                        {
+                            // Two sessions at once: split the list so both
+                            // can be borrowed mutably.
+                            let (lo, hi) = self.sessions.split_at_mut(spos.max(dpos));
+                            let (sa, sb) =
+                                if spos < dpos { (&mut lo[spos], &mut hi[0]) } else { (&mut hi[0], &mut lo[dpos]) };
+                            std::mem::swap(&mut sa.windows[si], &mut sb.windows[di]);
+                        }
+                        for (p, cur) in [spos, dpos].into_iter().zip(curs) {
+                            let s = &mut self.sessions[p];
+                            s.last = None;
+                            if let Some(i) = cur.and_then(|id| s.windows.iter().position(|w| w.id == id)) {
+                                s.cur = i;
+                            }
+                        }
+                        self.relayout_session(ssid);
+                        self.relayout_session(dsid);
+                        self.autosave_changed();
+                        return Outcome::Ok;
+                    }
+                    // Move a window to another session: take it out, put it in
+                    // at the destination index, and leave no empty session.
                     // Both sessions keep looking at the window they were
                     // looking at, whatever the move does to the indexes.
                     let src_cur = self.sessions[spos].windows.get(self.sessions[spos].cur).map(|w| w.id);
@@ -3369,13 +3429,21 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::SendPrefix { target } => {
-                let (sid, _, pid) = match self.resolve(target.as_ref(), cid) {
+                let bytes = input::encode_key(self.opts.prefix, false);
+                // With a popup open (and no target named), the prefix is for
+                // the program in the box: `prefix prefix` is how it gets the
+                // key the popup otherwise keeps for wmux.
+                if target.is_none()
+                    && let Some(p) = cid.and_then(|c| self.clients.get_mut(&c)).and_then(|c| c.popup.as_mut())
+                    && !p.finished
+                {
+                    p.pane.write_input(&bytes);
+                    return Outcome::Ok;
+                }
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
-                let key = self.opts.prefix;
-                let bytes = input::encode_key(key, false);
-                let _ = sid;
                 if let Some(p) = self.find_pane_mut(pid) {
                     p.write_input(&bytes);
                 }
@@ -3766,7 +3834,7 @@ impl Server {
                 if self.buffers.is_empty() {
                     return Outcome::Error("no buffers".into());
                 }
-                let (items, lines) = self.chooser_lines(&ChooserKind::Buffers).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&ChooserKind::Buffers, &HashSet::new()).unwrap_or_default();
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
@@ -3798,7 +3866,7 @@ impl Server {
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
                     return Outcome::Error("choose-jobs: client not attached".into());
                 }
-                let (items, lines) = self.chooser_lines(&ChooserKind::Jobs).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&ChooserKind::Jobs, &HashSet::new()).unwrap_or_default();
                 // Start on the client's own pane.
                 let sel = self
                     .resolve(None, Some(cid))
@@ -3818,7 +3886,7 @@ impl Server {
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
                     return Outcome::Error("choose-client: client not attached".into());
                 }
-                let (items, lines) = self.chooser_lines(&ChooserKind::Clients).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&ChooserKind::Clients, &HashSet::new()).unwrap_or_default();
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
@@ -3902,7 +3970,7 @@ impl Server {
                 c.popup = Some(Popup { pane, rect, width, height, x, y, close_on_exit, finished: false });
                 Outcome::Ok
             }
-            Cmd::PipePane { target, command, toggle } => {
+            Cmd::PipePane { target, command, toggle, input, output } => {
                 let pid = match self.resolve(target.as_ref(), cid) {
                     Ok((_, _, p)) => p,
                     Err(e) => return Outcome::Error(e),
@@ -3924,7 +3992,7 @@ impl Server {
                         p.pipe = None;
                         Outcome::Ok
                     }
-                    Some(c) => match p.pipe_to(&c, &env) {
+                    Some(c) => match p.pipe_to(&c, &env, input, output) {
                         Ok(()) => Outcome::Ok,
                         Err(e) => Outcome::Error(format!("{e:#}")),
                     },
@@ -3982,7 +4050,7 @@ impl Server {
                 };
                 let expand = windows || !sessions;
                 let kind = ChooserKind::Tree { expand };
-                let (items, lines) = self.chooser_lines(&kind).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&kind, &HashSet::new()).unwrap_or_default();
                 // Start on the current window (or session).
                 let cur = self.session(sid).and_then(|s| s.window()).map(|w| w.id).filter(|_| expand);
                 let sel = items.iter().position(|i| *i == ChooserItem::Tree(sid, cur)).unwrap_or(0);
@@ -4371,8 +4439,14 @@ impl Server {
                 c.prefix = false;
                 c.swallow_up.insert(rec.vk);
                 if k == self.opts.prefix {
-                    // Send the prefix key itself to the pane.
-                    self.write_active(sid, &input::encode_key_record(&rec));
+                    // Send the prefix key itself to the pane, or to the popup
+                    // when one is open: that is how a program in the box gets
+                    // the one key the popup keeps for wmux.
+                    let bytes = input::encode_key_record(&rec);
+                    match self.clients.get_mut(&cid).and_then(|c| c.popup.as_mut()).filter(|p| !p.finished) {
+                        Some(p) => p.pane.write_input(&bytes),
+                        None => self.write_active(sid, &bytes),
+                    }
                     return;
                 }
                 match self.prefix_binds.get(&k).cloned() {
@@ -4725,7 +4799,11 @@ impl Server {
     /// The items and bare lines of a live picker; `chooser_view` filters
     /// and numbers them. None for the fixed lists (`find-window` hits, a
     /// menu), which are built where they are opened.
-    fn chooser_lines(&self, kind: &ChooserKind) -> Option<(Vec<ChooserItem>, Vec<String>)> {
+    fn chooser_lines(
+        &self,
+        kind: &ChooserKind,
+        collapsed: &HashSet<SessionId>,
+    ) -> Option<(Vec<ChooserItem>, Vec<String>)> {
         let mut items = Vec::new();
         let mut lines = Vec::new();
         let expand = match kind {
@@ -4767,15 +4845,16 @@ impl Server {
         };
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
+            let open = expand && !collapsed.contains(&s.id);
             items.push(ChooserItem::Tree(s.id, None));
             lines.push(format!(
                 "{} {}: {} windows{}",
-                if expand { "-" } else { "+" },
+                if open { "-" } else { "+" },
                 s.name,
                 s.windows.len(),
                 if attached { " (attached)" } else { "" }
             ));
-            if !expand {
+            if !open {
                 continue;
             }
             for (i, w) in s.windows.iter().enumerate() {
@@ -4805,7 +4884,7 @@ impl Server {
     /// (a session stays when one of its windows matches, and its windows
     /// stay when it does), numbered for the digit keys, tagged ones marked.
     fn chooser_view(&self, ch: &Chooser) -> Option<(Vec<ChooserItem>, Vec<String>)> {
-        let (items, lines) = self.chooser_lines(&ch.kind)?;
+        let (items, lines) = self.chooser_lines(&ch.kind, &ch.collapsed)?;
         let keep = chooser_filter(&items, &lines, &ch.filter);
         let mut out_items = Vec::new();
         let mut out_lines = Vec::new();
@@ -4874,6 +4953,25 @@ impl Server {
                 }
             }
             (KeyCode::Char('T'), false, false) if ch.kind.live() => ch.tagged.clear(),
+            // Fold and unfold one session of the tree; the cursor goes to
+            // its line, since its windows are gone from the list.
+            (KeyCode::Left, _, _) | (KeyCode::Char('-'), false, false)
+                if matches!(ch.kind, ChooserKind::Tree { expand: true }) =>
+            {
+                if let Some(sid) = ch.current_session() {
+                    ch.collapsed.insert(sid);
+                    if let Some(i) = ch.items.iter().position(|it| *it == ChooserItem::Tree(sid, None)) {
+                        ch.sel = i;
+                    }
+                }
+            }
+            (KeyCode::Right, _, _) | (KeyCode::Char('+'), false, false) | (KeyCode::Char('='), false, false)
+                if matches!(ch.kind, ChooserKind::Tree { expand: true }) =>
+            {
+                if let Some(sid) = ch.current_session() {
+                    ch.collapsed.remove(&sid);
+                }
+            }
             // `f` types a filter on the status line; the list follows it as
             // it is typed, Enter keeps it, Escape puts the old one back.
             (KeyCode::Char('f'), false, false) if ch.kind.live() => {

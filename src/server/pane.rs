@@ -12,6 +12,8 @@ use std::sync::mpsc::Sender;
 pub enum PaneEvent {
     Output(PaneId, u32, Vec<u8>),
     Exit(PaneId, u32, u32),
+    /// What a `pipe-pane -I` command printed: input for the pane.
+    Input(PaneId, Vec<u8>),
 }
 
 /// What the printer of a resumed pane's saved output (`wmux __replay`)
@@ -246,6 +248,8 @@ pub struct Pipe {
     tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     /// Output dropped because the command was not keeping up.
     pub dropped: u64,
+    /// `-O`: the pane's output is sent to the command at all.
+    pub output: bool,
 }
 
 /// The wmux.exe that runs `__replay`: this executable when it is wmux,
@@ -545,7 +549,10 @@ impl Pane {
     /// Start a `pipe-pane` command for this pane, replacing any running one.
     /// The old pipe stops first, so a failed start never leaves the previous
     /// command quietly running instead of the one that was asked for.
-    pub fn pipe_to(&mut self, command: &str, env: &[(String, String)]) -> Result<()> {
+    ///
+    /// `output` feeds the pane's output to the command (`-O`); `input`
+    /// feeds what the command prints to the pane as if typed (`-I`).
+    pub fn pipe_to(&mut self, command: &str, env: &[(String, String)], input: bool, output: bool) -> Result<()> {
         use std::process::{Command, Stdio};
         self.pipe = None;
         let (exe, args): (&str, Vec<String>) = match crate::config::which("pwsh.exe") {
@@ -558,24 +565,56 @@ impl Pane {
             },
         };
         let mut c = Command::new(exe);
-        c.args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        c.args(&args)
+            .stdin(if output { Stdio::piped() } else { Stdio::null() })
+            .stdout(if input { Stdio::piped() } else { Stdio::null() })
+            .stderr(Stdio::null());
         for (k, v) in env {
             c.env(k, v);
         }
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
         let mut child = c.spawn().with_context(|| format!("pipe-pane: {exe}"))?;
-        let mut stdin = child.stdin.take().context("pipe-pane: no stdin")?;
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let id = self.id;
+        if let Some(mut out) = stdout {
+            // `-I`: the command's output arrives as pane input through the
+            // event channel, on the server thread like every other write.
+            let events = self.tx.clone();
+            std::thread::Builder::new()
+                .name(format!("pane-{id}-pipe-in"))
+                .spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match out.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if events.send(PaneEvent::Input(id, buf[..n].to_vec())).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    // Nothing more to come: an empty chunk says so, and an
+                    // input-only pipe ends with it.
+                    let _ = events.send(PaneEvent::Input(id, Vec::new()));
+                })
+                .context("pipe-pane: spawn reader thread")?;
+        }
         // Bounded: a command that stops reading costs at most this much
         // memory (each chunk is one read from the pty, up to 64 KiB) before
-        // output starts being dropped, which is reported.
+        // output starts being dropped, which is reported. Without `-O` the
+        // channel only holds the command's lifetime.
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
-        let id = self.id;
         std::thread::Builder::new()
             .name(format!("pane-{id}-pipe"))
             .spawn(move || {
+                let mut stdin = stdin;
                 for b in rx {
-                    if stdin.write_all(&b).is_err() {
+                    if let Some(s) = stdin.as_mut()
+                        && s.write_all(&b).is_err()
+                    {
                         break;
                     }
                 }
@@ -583,7 +622,7 @@ impl Pane {
                 let _ = child.wait();
             })
             .context("pipe-pane: spawn writer thread")?;
-        self.pipe = Some(Pipe { command: command.to_string(), tx, dropped: 0 });
+        self.pipe = Some(Pipe { command: command.to_string(), tx, dropped: 0, output });
         Ok(())
     }
 
@@ -593,6 +632,9 @@ impl Pane {
     /// first time output is lost, so the loss is reported rather than silent.
     pub fn pipe_write(&mut self, bytes: &[u8]) -> Option<String> {
         let p = self.pipe.as_mut()?;
+        if !p.output {
+            return None; // `-I` only: nothing goes to the command
+        }
         match p.tx.try_send(bytes.to_vec()) {
             Ok(()) => None,
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -865,6 +907,7 @@ mod tests {
             match rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(PaneEvent::Output(_, _, b)) => pane.process_output(&b),
                 Ok(PaneEvent::Exit(_, _, c)) => pane.exit_code = Some(c),
+                Ok(PaneEvent::Input(_, b)) => pane.write_input(&b),
                 Err(_) => {}
             }
         }

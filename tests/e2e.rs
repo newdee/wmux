@@ -2682,6 +2682,91 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `swap-window` across sessions, `pipe-pane -I`, the prefix key reaching a
+/// popup's program, and folding a session in the tree.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_last_small_tmux_gaps_are_closed() {
+    let h = Harness::start("gaps2").await;
+    h.cli(&["new", "-d", "-s", "a", "-n", "a0"]).await;
+    h.cli(&["new-window", "-d", "-t", "a", "-n", "a1"]).await;
+    h.cli(&["new", "-d", "-s", "b", "-n", "b0"]).await;
+    h.cli(&["new-window", "-d", "-t", "b", "-n", "b1"]).await;
+    // swap-window across sessions: a:1 and b:0 change places, both sessions
+    // keep their current window, no window is lost.
+    let (code, _, err) = h.cli(&["swap-window", "-s", "a:1", "-t", "b:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, wa, _) = h.cli(&["list-windows", "-t", "a"]).await;
+    let (_, wb, _) = h.cli(&["list-windows", "-t", "b"]).await;
+    // a was looking at a0 (which stayed); b was looking at b0, whose place
+    // a1 took, so b looks at a1 now (the index keeps the mark, as in tmux).
+    assert!(wa.lines().any(|l| l.starts_with("0: a0*")) && wa.lines().any(|l| l.starts_with("1: b0 ")), "{wa}");
+    assert!(wb.lines().any(|l| l.starts_with("0: a1*")) && wb.lines().any(|l| l.starts_with("1: b1 ")), "{wb}");
+    assert_eq!(h.cli(&["list-panes", "-a"]).await.1.lines().count(), 4);
+    // pipe-pane -I: what the command prints is typed into the pane.
+    h.wait_capture("a:0", "prompt", |t| t.contains("wmux>")).await;
+    let (code, _, err) = h.cli(&["pipe-pane", "-I", "-t", "a:0", "cmd.exe /c echo echo typed-by-the-pipe"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("a:0", "the piped input ran", |t| t.matches("typed-by-the-pipe").count() >= 2).await;
+    // ...and, its output over, the input-only pipe is gone: a plain
+    // pipe-pane with a command starts a new one rather than reporting
+    // the old one (which `-o` would toggle off).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (code, _, _) = h.cli(&["pipe-pane", "-o", "-I", "-t", "a:0", "cmd.exe /c echo echo second-pipe"]).await;
+        assert_eq!(code, 0);
+        let (_, out, _) = h.cli(&["capture-pane", "-p", "-t", "a:0"]).await;
+        if out.matches("second-pipe").count() >= 2 {
+            break; // -o started (not stopped) one: the old pipe had ended
+        }
+        assert!(Instant::now() < deadline, "the input-only pipe never ended: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["pipe-pane", "-t", "a:0"]).await;
+    // The prefix reaches a popup's program when pressed twice: a program
+    // reading one key sees the prefix (C-b is 2).
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "b"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.prefix(':').await;
+    c.type_str("display-popup -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.enter().await;
+    c.wait_for("popup", |s| s.contents().contains("pip>")).await;
+    // cmd prints ^B for a C-b typed at its prompt only on some builds, so
+    // ask PowerShell inside the popup to read one key and say its code.
+    c.type_str("powershell -NoProfile -Command \"$k=[Console]::ReadKey($true); 'code=' + [int]$k.KeyChar\"").await;
+    c.enter().await;
+    tokio::time::sleep(Duration::from_millis(1500)).await; // powershell start-up
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await; // the prefix...
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await; // ...and the prefix again
+    c.wait_for("the popup saw C-b", |s| s.contents().contains("code=2")).await;
+    let (_, behind, _) = h.cli(&["capture-pane", "-p", "-t", "b:1"]).await;
+    assert!(!behind.contains("code="), "the pane behind saw nothing: {behind}");
+    c.type_str("exit").await;
+    c.enter().await;
+    c.wait_for("popup closed", |s| !s.contents().contains("pip>")).await;
+    // Folding a session in the tree: `-` hides its windows, `+` shows them.
+    c.prefix('w').await;
+    c.wait_for("tree", |s| s.contents().contains("/6] j/k move")).await;
+    c.type_str("g").await; // session a's line
+    c.key(0xBD, '-', 0).await;
+    c.wait_for("a folded", |s| {
+        let t = s.contents();
+        t.contains("/4] j/k move") && t.contains("(0) + a: 2 windows") && t.contains("(1) - b: 2 windows")
+    })
+    .await;
+    assert!(!c.text().contains("- 0: a0"), "{}", c.text());
+    c.key(0xBB, '+', SHIFT_PRESSED).await;
+    c.wait_for("a open again", |s| {
+        s.contents().contains("/6] j/k move") && s.contents().contains("(0) - a: 2 windows")
+    })
+    .await;
+    c.type_str("j").await; // a:0; Left folds its session from a window line too
+    c.key(0x25, '\0', 0).await;
+    c.wait_for("folded from a window line", |s| s.contents().contains("[1/4] j/k move")).await;
+    c.type_str("q").await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// `list-panes -s/-a`, `swap-pane -s A -t B` (in one window and across
 /// windows), `set -t` for synchronize-panes, and where `display-popup
 /// -x/-y` puts the box.

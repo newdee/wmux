@@ -99,7 +99,7 @@ wmux kill-server
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
 | `d` | 脱离 |
 | `?` | 列出所有按键 |
-| `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消；`f` 输入子串过滤（边打边筛，`Enter` 留下，`Esc` 还原），`t` 给当前行打标记（`T` 清掉），`x` 杀掉标记的行（没标记就是当前行） |
+| `s` / `w` | 弹出 session / 窗口列表挑一个：`j` `k`（或方向键）上下，`g` `G` 到头到尾，数字直接跳，`Enter` 选中，`q` 取消；`f` 输入子串过滤（边打边筛，`Enter` 留下，`Esc` 还原），`t` 给当前行打标记（`T` 清掉），`x` 杀掉标记的行（没标记就是当前行），`-` / `+`（或左右方向键）折叠、展开一个 session |
 | `(` / `)` | 切到上一个 / 下一个 session |
 | `D` | 列出连着的客户端，挑一个踢下线 |
 | `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
@@ -248,7 +248,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 脚本和按键绑定里常用、但不那么显眼的几个命令（`wmux list-commands` 会列出全部 85 个，命令名写前缀就行）：
 
-- `pipe-pane [-o] [-t 目标] [命令]`：把 pane 打印的所有东西灌进一个命令的标准输入；不给命令就是停。`wmux pipe-pane "$input | Add-Content build.log"` 就能一边编译一边留日志。
+- `pipe-pane [-o] [-I] [-O] [-t 目标] [命令]`：把 pane 打印的所有东西灌进一个命令的标准输入（`-O`，默认）；不给命令就是停。`wmux pipe-pane "$input | Add-Content build.log"` 就能一边编译一边留日志（PowerShell 会先把输入读完再跑，所以这个文件是管道停下时才写；想逐行落盘用 `cmd.exe /c findstr ... > 文件` 这种命令）。`-I` 反过来：命令打印什么就往 pane 里敲什么，命令输出完管道就结束（`-IO` 两个方向都要）。
 - `wait-for [-L|-U|-S] 通道`：挂在那儿等别人发信号（或者解锁），两个脚本可以互相等：一边 `wmux wait-for ready`，另一边 `wmux wait-for -S ready` 放行。
 - `display-menu [-T 标题] 名字 键 命令 ...`：在窗口上弹个菜单，名字给空字符串就是一条分隔线。`display-popup [-E] [-w 宽] [-h 高] [-x 列] [-y 行] [-d 目录] [命令]` 是在窗口上开个小框跑程序（`-E` 程序退出就关，`-C` 从外面关掉；`-x` / `-y` 可以是列号/行号、百分比、`C` 居中、`R` / `B` 贴右边/底边，不给就居中）。
 - `choose-client`：列出连着的客户端，选一个踢下线。
@@ -289,6 +289,6 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-和 tmux 比：多个客户端接同一个 session 时看到的尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`；没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`swap-window` 只在同一个 session 内生效（`move-window` 可以跨 session）；`choose-tree` 不能单独折叠某个 session（过滤是按子串，不是 tmux 的格式串）；`select-layout` 只有那五种命名布局加 `-E`，不支持 tmux 的布局字符串；`bind -r` 只是“这个键能连按”，没有 tmux 那种每个键单独的重复次数；`pipe-pane` 只能把 pane 的输出灌给命令，没有反方向的 `-I`；`display-popup` 里前缀键还是 wmux 的，不会进到弹窗里的程序。
+和 tmux 比：多个客户端接同一个 session 时看到的尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`；没有每个客户端自己的视口，所以 `refresh-client -U` / `-D` 没作用）；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`select-layout` 只有那五种命名布局加 `-E`，不支持 tmux 的布局字符串；`display-popup` 里前缀键还是 wmux 的（连按两次前缀可以把它送给弹窗里的程序）。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。

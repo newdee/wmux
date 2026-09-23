@@ -339,6 +339,11 @@ pub enum Cmd {
         command: Option<String>,
         /// `-o`: stop instead of starting if this pane is already piped.
         toggle: bool,
+        /// `-I`: what the command prints goes to the pane as input;
+        /// `-O`: what the pane prints goes to the command (the default
+        /// when neither is given, as in tmux). Both may be set.
+        input: bool,
+        output: bool,
     },
     /// `wait-for [-L|-S|-U] channel`: block a client until another one signals
     /// (or unlocks) the channel, so scripts can wait for each other.
@@ -961,10 +966,16 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::PipePane { target, command, toggle } => {
+            Cmd::PipePane { target, command, toggle, input, output } => {
                 f.write_str("pipe-pane")?;
                 if *toggle {
                     f.write_str(" -o")?;
+                }
+                if *input {
+                    f.write_str(" -I")?;
+                }
+                if *output && *input {
+                    f.write_str(" -O")?; // -O alone is the default and is left out
                 }
                 fmt_target(f, target)?;
                 if let Some(c) = command {
@@ -2239,18 +2250,28 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::DisplayPopup { close, close_on_exit, width, height, x, y, cwd, argv }
         }
         "pipe-pane" => {
-            let (mut target, mut toggle) = (None, false);
+            let (mut target, mut toggle, mut input, mut output) = (None, false, false, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-o" => toggle = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-O" => {} // pane output into the command: the only direction
-                    "-I" => return Err("pipe-pane: -I (command output into the pane) is not supported".into()),
+                    "-O" => output = true,
+                    "-I" => input = true,
+                    "-IO" | "-OI" => (input, output) = (true, true),
                     f => return Err(bad_flag(n, f)),
                 }
             }
+            if !input {
+                output = true; // tmux: -O when neither is given
+            }
             let command = a.rest().join(" ");
-            Cmd::PipePane { target, command: if command.is_empty() { None } else { Some(command) }, toggle }
+            Cmd::PipePane {
+                target,
+                command: if command.is_empty() { None } else { Some(command) },
+                toggle,
+                input,
+                output,
+            }
         }
         "wait-for" => {
             let (mut lock, mut unlock, mut signal) = (false, false, false);
@@ -3128,11 +3149,27 @@ mod tests {
 
         assert_eq!(
             p("pipe-pane -o -t x cat"),
-            Cmd::PipePane { target: Some(Target::parse("x")), command: Some("cat".into()), toggle: true }
+            Cmd::PipePane {
+                target: Some(Target::parse("x")),
+                command: Some("cat".into()),
+                toggle: true,
+                input: false,
+                output: true
+            }
         );
-        assert_eq!(p("pipe-pane"), Cmd::PipePane { target: None, command: None, toggle: false });
-        // Writing into a pane is not supported and says so.
-        assert!(parse_line("pipe-pane -I cat").unwrap_err().contains("not supported"));
+        assert_eq!(
+            p("pipe-pane"),
+            Cmd::PipePane { target: None, command: None, toggle: false, input: false, output: true }
+        );
+        // -I, -O and both; -O alone is the default and prints back as nothing.
+        let i = p("pipe-pane -I cmd.exe /c echo hi");
+        assert!(matches!(i, Cmd::PipePane { input: true, output: false, .. }), "{i:?}");
+        assert_eq!(i.to_string(), "pipe-pane -I \"cmd.exe /c echo hi\"");
+        assert!(matches!(p("pipe-pane -O x"), Cmd::PipePane { input: false, output: true, .. }));
+        let both = p("pipe-pane -IO x");
+        assert!(matches!(both, Cmd::PipePane { input: true, output: true, .. }));
+        assert_eq!(both.to_string(), "pipe-pane -I -O x");
+        assert_eq!(p(&both.to_string()), both);
 
         assert_eq!(p("wait-for -S x"), Cmd::WaitFor { channel: "x".into(), lock: false, unlock: false, signal: true });
         assert!(parse_line("wait-for").is_err());

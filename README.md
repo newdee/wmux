@@ -125,7 +125,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...) |
 | `d` | detach |
 | `?` | list key bindings |
-| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one) |
+| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `-`/`+` or Left/Right fold and unfold a session) |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -373,10 +373,14 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 Commands a script or a binding reaches for, beyond the obvious ones
 (`wmux list-commands` prints all 85, and any unambiguous prefix works):
 
-- `pipe-pane [-o] [-t target] [command]` copies everything a pane prints into
-  a command's standard input; with no command it stops. `wmux pipe-pane
-  "$input | Add-Content build.log"` keeps a build log without touching the
-  build.
+- `pipe-pane [-o] [-I] [-O] [-t target] [command]` copies everything a pane
+  prints into a command's standard input (`-O`, the default); with no
+  command it stops. `wmux pipe-pane "$input | Add-Content build.log"` keeps
+  a build log without touching the build (PowerShell reads all of its input
+  before it runs, so that file is written when the pipe stops; a `cmd.exe /c
+  findstr ... > file` command writes as lines arrive). `-I` goes the other way: what the
+  command prints is typed into the pane, and the pipe ends with the
+  command's output (`-IO` does both).
 - `wait-for [-L|-U|-S] channel` blocks until another client signals the
   channel (or unlocks it), so two scripts can take turns: `wmux wait-for
   ready` waits, `wmux wait-for -S ready` releases it.
@@ -479,12 +483,9 @@ Relative to tmux: multiple clients on the same session see the same size
 (`window-size latest|smallest|largest|manual` picks which client sets it:
 the one used last, the smallest, the largest, or none but `resize-window`;
 there is no per-client viewport, so `refresh-client -U`/`-D` do nothing),
-only the hooks listed above, `swap-window` works inside one session
-(`move-window` crosses sessions), `bind -r` has no per-key repeat count,
-`choose-tree` has no per-session collapsing (its filter is a substring, not
-a format), `select-layout` has the five named layouts and `-E` but not
-tmux's layout strings, `pipe-pane` copies pane output into a command but
-has no `-I` the other way, and `display-popup` gives the prefix key to wmux
-rather than to the program in the box.
+only the hooks listed above, the `choose-tree` filter is a substring rather
+than a format, `select-layout` has the five named layouts and `-E` but not
+tmux's layout strings, and `display-popup` keeps the prefix key for wmux
+(`prefix prefix` sends it to the program in the box).
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.

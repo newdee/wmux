@@ -21,7 +21,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | capture-pane | part | `-p`, `-S`, `-e`, `-J`; no buffer output (`-b`) |
 | choose-buffer | yes | `prefix =`; Enter pastes |
 | choose-client | yes | `prefix D`; Enter detaches the client picked |
-| choose-tree | part | `-s`, `-w`; `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged; no per-session collapse |
+| choose-tree | part | `-s`, `-w`; `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged, `-`/`+` (Left/Right) fold and unfold a session |
 | clear-history | yes | |
 | clear-prompt-history | no | wmux keeps no prompt history |
 | clock-mode | yes | `prefix t`, any key leaves |
@@ -34,7 +34,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | display-menu | part | `-T` title, name/key/command triples, `""` separators; always drawn over the window (no `-x`/`-y`) |
 | display-message | yes | `-p`, `-t`, formats |
 | display-panes | yes | `prefix q`, digit selects |
-| display-popup | part | `-E`, `-C`, `-w`, `-h`, `-x`, `-y` (a column/row, `N%`, `C`, `R`/`B`), `-d`; the prefix key stays wmux's |
+| display-popup | yes | `-E`, `-C`, `-w`, `-h`, `-x`, `-y` (a column/row, `N%`, `C`, `R`/`B`), `-d`; the prefix key stays wmux's, `prefix prefix` sends it to the program in the box |
 | find-window | yes | `prefix f`; one hit jumps, several open the picker |
 | has-session | yes | |
 | if-shell | yes | `-F` formats and shell exit status; `-b` runs inline |
@@ -56,7 +56,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | next-layout / previous-layout | yes | also `select-layout -n` / `-p`, `prefix Space` |
 | next-window / previous-window | yes | `-t`, `-a` (next window with an alert) |
 | paste-buffer | yes | `-b`, `-p`, `-t`; no `-s` separator |
-| pipe-pane | part | `-o`, `-t`, a command fed the pane output; no `-I` the other way |
+| pipe-pane | yes | `-o`, `-t`, `-O` (the pane's output to the command, the default), `-I` (the command's output typed into the pane), both together |
 | refresh-client | part | redraws; no `-U`/`-D` viewport moves, no `-C` size |
 | rename-session / rename-window | yes | |
 | resize-pane | yes | `-L/-R/-U/-D`, `-x`, `-y`, `-Z`, `-t` |
@@ -81,7 +81,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | start-server | part | any client starts it |
 | suspend-client | no | no SIGTSTP on Windows |
 | swap-pane | yes | `-U` / `-D`, and the `-s src -t dst` pair (across windows and sessions too) |
-| swap-window | part | inside one session |
+| swap-window | yes | inside one session or across two; each session keeps its current index |
 | switch-client | yes | `-n`, `-p`, `-l`, `-t` |
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
@@ -260,6 +260,5 @@ line instead of ringing the terminal. Not there: `bell-action`,
 Nothing from tmux 3.5's command table is outstanding; what is left are the
 limits marked **part** above. The largest of them: no per-client viewport
 (`refresh-client -U`/`-D`, `S-`arrows; `window-size` says which client
-sizes the session), no layout strings for `select-layout`, `choose-tree`
-without per-session collapse, `pipe-pane` without `-I`, and the prefix key
-inside a `display-popup` still being wmux's.
+sizes the session), no layout strings for `select-layout`, and the
+`choose-tree` filter being a substring rather than a format.

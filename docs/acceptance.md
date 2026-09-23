@@ -1518,3 +1518,45 @@ parity 表 display-popup / list-panes / swap-pane / set-window-option 行与 Sti
 ## 结论（第二十八次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 181 → 185（lib 123 / console 4 / e2e 58）。
+
+# 第二十九次验收（2026-09-23）— tmux 最后几个小差距：跨 session swap-window、pipe-pane -I、弹窗里的前缀、树折叠
+
+## 做了什么
+
+1. `swap-window -s a:1 -t b:0` 跨 session：两个窗口互换位置（`split_at_mut` 同时借两个 session），
+   每个 session 的当前窗口按下标保留（tmux 同样是位置带标记）。
+2. `pipe-pane -I`：命令打印什么就往 pane 里敲什么（命令 stdout 由读线程经 `PaneEvent::Input` 送回 server 线程写入，
+   命令输出结束时发空块，仅 `-I` 的管道随之结束）；`-O` 是默认；`-IO` 双向。`Pipe.output` 为假时 pane 输出不再送给命令。
+3. 弹窗里前缀键：连按两次前缀（以及 `send-prefix` 无 `-t`）把前缀送给弹窗里的程序，而不是后面的 pane。
+4. `choose-tree` 折叠：`-`/Left 折叠当前行所在 session，`+`/`=`/Right 展开；折叠时光标跳到 session 行。
+5. 去掉了 README 里"`bind -r` 没有每键重复次数"这条——tmux 本身也没有这个概念，是过去写错的限制。
+
+## 修复过程中的发现（不计数）
+
+- e2e 里 `-o` 循环没带 `-I`，第二条管道跑的是 `-O` 什么也不会敲进去——测试写错，改 `-o -I`。
+- 探针 g2A：PowerShell 双引号里 `$g` 被展开、pwsh `-Command` 会把 stdin 读完才执行（README 的 `$input | Add-Content`
+  例子因此只在管道停下时落盘——是既有行为，已在 README 中英两处注明，并给出 `cmd.exe /c findstr` 这种逐行落盘的替代）。
+- 探针 g2A 的 `-IO` 用 powershell `ReadLine` 同样被吞，换成 `cmd /c "set /p l= & echo ..."` 后 266 ms 内双向打通。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制 + 全量）
+
+数据：跨 session swap 后 a = `a0*, b0`、b = `a1*, b1`，server 仍 4 个 pane；`-I` 278 ms 内把 `echo from-the-pipe` 敲进 pane 并执行；
+仅 `-I` 的管道结束后 `-o -I` 起的是新管道（`second` 257 ms 出现）；`-O` 停管道后日志 213 ms 内落盘；`-IO` 266 ms 内一来一回。
+全量 186 项（lib 123 / console 4 / e2e 59）全过，clippy 无 warning，fmt 干净。
+e2e `the_last_small_tmux_gaps_are_closed`：四项各自断言，弹窗里 `powershell ReadKey` 收到 `code=2`（C-b）且后面的 pane 没收到；
+树上 `-` 后 6 行变 4 行、`+` 回 6 行、在窗口行按 Left 折叠并把光标带到 session 行。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：6 条相关 e2e + 4 条解析单元测试连跑 3 次，去掉耗时后输出完全一致（distinct = 1）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界
+
+数据：swap-window 和自己换退出码 0 无输出；换到不存在的下标报 `no window 5`；两个 session 各只有一个窗口时互换正常；
+`-I` 跑一个不存在的程序退出码 0、pane 照常应答；`-I` 打进已退出的 pane 文字不变；运行中的 `-O` 管道被新管道替换后
+只有新日志拿到输出；全程 server 存活。文档：README（中英）"还没做的"删四项、picker 按键行加折叠、pipe-pane 段加 `-I/-O` 与
+pwsh 缓冲说明；parity 表 choose-tree / display-popup / pipe-pane / swap-window 行与 Still to do 段同步；站点计数 185 → 186。
+
+## 结论（第二十九次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 185 → 186（lib 123 / console 4 / e2e 59）。
