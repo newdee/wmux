@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: newdee.wmux
 PackageVersion: 0.10.0
 InstallerType: wix
@@ -17,4 +17,4 @@ Installers:
   InstallerSha256: AC45923DAD7A4338E2FD10D191B4C97263AE41A3739B9CB61469147B24C996FD
   ProductCode: '{BF1D9598-5B74-411E-8BB9-5A294FCD072F}'
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0

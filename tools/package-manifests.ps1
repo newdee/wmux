@@ -94,16 +94,16 @@ $scoopDir = Join-Path $OutDir "scoop"
 New-Item -ItemType Directory -Force $scoopDir | Out-Null
 
 $versionYaml = @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
 PackageIdentifier: newdee.wmux
 PackageVersion: $Version
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
 "@
 
 $installerYaml = @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: newdee.wmux
 PackageVersion: $Version
 InstallerType: wix
@@ -122,11 +122,11 @@ Installers:
   InstallerSha256: $($msiSha.ToUpper())
   ProductCode: '$productCode'
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
 "@
 
 $localeYaml = @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: newdee.wmux
 PackageVersion: $Version
 PackageLocale: en-US
@@ -154,7 +154,7 @@ Tags:
 - conpty
 ReleaseNotesUrl: https://github.com/$Repo/releases/tag/v$Version
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
 "@
 
 # LF line endings and no BOM: what winget-pkgs' validation wants.
