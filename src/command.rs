@@ -389,14 +389,14 @@ pub enum Cmd {
         cmd: Box<Cmd>,
     },
     BindKey {
-        root: bool,
+        table: KeyTable,
         key: String,
         /// `-r`: the key repeats without the prefix for `repeat-time`.
         repeat: bool,
         cmd: Box<Cmd>,
     },
     UnbindKey {
-        root: bool,
+        table: KeyTable,
         key: String,
     },
     SetOption {
@@ -1077,21 +1077,17 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " {}", quote(&cmd.to_string()))
             }
-            Cmd::BindKey { root, key, repeat, cmd } => {
+            Cmd::BindKey { table, key, repeat, cmd } => {
                 f.write_str("bind-key")?;
-                if *root {
-                    f.write_str(" -n")?;
-                }
+                f.write_str(table.flag())?;
                 if *repeat {
                     f.write_str(" -r")?;
                 }
                 write!(f, " {} {}", quote(key), cmd)
             }
-            Cmd::UnbindKey { root, key } => {
+            Cmd::UnbindKey { table, key } => {
                 f.write_str("unbind-key")?;
-                if *root {
-                    f.write_str(" -n")?;
-                }
+                f.write_str(table.flag())?;
                 write!(f, " {}", quote(key))
             }
             Cmd::SetOption { name, value, append, target } => {
@@ -1397,14 +1393,35 @@ fn bad_flag(name: &str, flag: &str) -> String {
     format!("{name}: unknown flag '{flag}'")
 }
 
-/// `-T table` for bind-key / unbind-key: true for the root table. wmux has
-/// only root and prefix; a `.tmux.conf` line for `copy-mode-vi` must be
-/// refused, not quietly bound under the prefix.
-fn key_table(name: &str, table: &str) -> Result<bool, String> {
+/// The key tables: the keys after the prefix, keys without it, and the
+/// keys of copy mode (tmux's `copy-mode-vi`; `copy-mode`, its emacs table,
+/// is taken as the same one, wmux's copy mode being vi-style).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KeyTable {
+    Prefix,
+    Root,
+    Copy,
+}
+
+impl KeyTable {
+    /// How `list-keys` and a printed command spell the table.
+    pub fn flag(self) -> &'static str {
+        match self {
+            KeyTable::Prefix => "",
+            KeyTable::Root => " -n",
+            KeyTable::Copy => " -T copy-mode-vi",
+        }
+    }
+}
+
+/// `-T table` for bind-key / unbind-key. An unknown table is refused, not
+/// quietly bound under the prefix.
+fn key_table(name: &str, table: &str) -> Result<KeyTable, String> {
     match table {
-        "root" => Ok(true),
-        "prefix" => Ok(false),
-        other => Err(format!("{name}: key table '{other}' is not supported (wmux has root and prefix)")),
+        "root" => Ok(KeyTable::Root),
+        "prefix" => Ok(KeyTable::Prefix),
+        "copy-mode-vi" | "copy-mode" => Ok(KeyTable::Copy),
+        other => Err(format!("{name}: key table '{other}' is not supported (wmux has root, prefix and copy-mode-vi)")),
     }
 }
 
@@ -2646,32 +2663,32 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ConfirmBefore { prompt, cmd: Box::new(parse(&inner)?) }
         }
         "bind-key" => {
-            let (mut root, mut repeat) = (false, false);
+            let (mut table, mut repeat) = (KeyTable::Prefix, false);
             while a.is_flag() {
                 match a.next().unwrap() {
-                    "-n" => root = true,
+                    "-n" => table = KeyTable::Root,
                     "-r" => repeat = true,
-                    "-T" => root = key_table(n, a.value("-T")?)?,
+                    "-T" => table = key_table(n, a.value("-T")?)?,
                     f => return Err(bad_flag(n, f)),
                 }
             }
             let key = a.next().ok_or("bind-key: key required")?.to_string();
             let rest = a.rest();
             let inner = if rest.len() == 1 { tokenize(&rest[0])? } else { rest };
-            Cmd::BindKey { root, key, repeat, cmd: Box::new(parse(&inner)?) }
+            Cmd::BindKey { table, key, repeat, cmd: Box::new(parse(&inner)?) }
         }
         "unbind-key" => {
-            let mut root = false;
+            let mut table = KeyTable::Prefix;
             while a.is_flag() {
                 match a.next().unwrap() {
-                    "-n" => root = true,
-                    "-T" => root = key_table(n, a.value("-T")?)?,
+                    "-n" => table = KeyTable::Root,
+                    "-T" => table = key_table(n, a.value("-T")?)?,
                     f => return Err(bad_flag(n, f)),
                 }
             }
             let key = a.next().ok_or("unbind-key: key required")?.to_string();
             a.none_left(n)?;
-            Cmd::UnbindKey { root, key }
+            Cmd::UnbindKey { table, key }
         }
         "set-option" => {
             // -g / -s / -w are accepted and ignored; -a appends, and tmux
@@ -3297,7 +3314,7 @@ mod tests {
         assert_eq!(
             p("bind-key -n M-h select-pane -L"),
             Cmd::BindKey {
-                root: true,
+                table: KeyTable::Root,
                 key: "M-h".into(),
                 repeat: false,
                 cmd: Box::new(Cmd::SelectPane { sel: PaneSel::Dir(Dir::Left) })
@@ -3306,7 +3323,7 @@ mod tests {
         assert_eq!(
             p("bind h \"select-pane -L\""),
             Cmd::BindKey {
-                root: false,
+                table: KeyTable::Prefix,
                 key: "h".into(),
                 repeat: false,
                 cmd: Box::new(Cmd::SelectPane { sel: PaneSel::Dir(Dir::Left) })
@@ -3315,7 +3332,7 @@ mod tests {
         assert_eq!(
             p("bind -r C-h resize-pane -L 5"),
             Cmd::BindKey {
-                root: false,
+                table: KeyTable::Prefix,
                 key: "C-h".into(),
                 repeat: true,
                 cmd: Box::new(Cmd::ResizePane {
@@ -3505,13 +3522,20 @@ mod tests {
         assert!(matches!(p("start-s"), Cmd::StartServer));
         // tmux's window-scoped spellings are the same command here.
         assert_eq!(p("setw -g mode-keys vi"), p("set -g mode-keys vi"));
-        // Only the two key tables wmux has; a copy-mode table from a
-        // .tmux.conf is refused rather than bound under the prefix.
-        assert!(matches!(p("bind -T root M-x kill-pane"), Cmd::BindKey { root: true, .. }));
-        assert!(matches!(p("bind -T prefix x kill-pane"), Cmd::BindKey { root: false, .. }));
-        let e = parse_line("bind -T copy-mode-vi v send -X begin-selection").unwrap_err();
-        assert!(e.contains("copy-mode-vi") && e.contains("not supported"), "{e}");
-        assert!(parse_line("unbind -T copy-mode-vi v").is_err());
+        // The three key tables; copy-mode (emacs) is taken as copy-mode-vi,
+        // and a table wmux does not have is refused, not bound elsewhere.
+        assert!(matches!(p("bind -T root M-x kill-pane"), Cmd::BindKey { table: KeyTable::Root, .. }));
+        assert!(matches!(p("bind -T prefix x kill-pane"), Cmd::BindKey { table: KeyTable::Prefix, .. }));
+        let vi = p("bind -T copy-mode-vi v send -X begin-selection");
+        assert!(
+            matches!(&vi, Cmd::BindKey { table: KeyTable::Copy, cmd, .. } if matches!(**cmd, Cmd::CopyCommand { .. }))
+        );
+        assert_eq!(vi.to_string(), "bind-key -T copy-mode-vi v send-keys -X begin-selection");
+        assert_eq!(p(&vi.to_string()), vi, "list-keys output reads back");
+        assert!(matches!(p("bind -T copy-mode y send -X copy-selection"), Cmd::BindKey { table: KeyTable::Copy, .. }));
+        assert!(matches!(p("unbind -T copy-mode-vi v"), Cmd::UnbindKey { table: KeyTable::Copy, .. }));
+        let e = parse_line("bind -T off-pane x kill-pane").unwrap_err();
+        assert!(e.contains("off-pane") && e.contains("not supported"), "{e}");
         assert!(matches!(p("showw -gv mouse"), Cmd::ShowOptions { .. }));
         for name in COMMANDS {
             // Listed means the parser knows it (it may still want arguments)

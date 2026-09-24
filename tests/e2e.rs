@@ -2272,16 +2272,24 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
         keys.contains("-T prefix | split-window -h -c \"#{pane_current_path}\""),
         "the continued line was joined: {keys}"
     );
-    // ...the copy-mode-vi lines did not leak into the prefix table...
+    // ...the copy-mode-vi lines are in the copy-mode table, not the prefix one...
     assert!(!keys.lines().any(|l| l.contains("-T prefix v ")), "{keys}");
     assert!(!keys.lines().any(|l| l.contains("-T prefix y ")), "{keys}");
+    assert!(
+        keys.lines().any(|l| l.starts_with("bind-key -T copy-mode-vi v") && l.contains("begin-selection")),
+        "{keys}"
+    );
+    assert!(
+        keys.lines().any(|l| l.starts_with("bind-key -T copy-mode-vi y") && l.contains("copy-selection")),
+        "{keys}"
+    );
     // ...the %if chain is evaluated: the host is not "nowhere" (status
     // stays on), it is itself (display-time 4321), the %else is not taken...
     assert_eq!(h.cli(&["show", "-gv", "status"]).await.1.trim(), "on");
     assert_eq!(h.cli(&["show", "-gv", "display-time"]).await.1.trim(), "4321");
     // ...and what was skipped is listed, not thrown at every attach.
     let (_, msgs, _) = h.cli(&["show-messages"]).await;
-    assert!(msgs.contains("copy-mode-vi"), "the refused table is named: {msgs}");
+    assert!(!msgs.contains("copy-mode-vi"), "copy-mode-vi lines are applied now, not skipped: {msgs}");
     assert!(msgs.contains("@plugin tmux-plugins/tpm"), "the missing plugin is named: {msgs}");
     let mut c = h.connect().await;
     c.attach(&["attach", "-t", "t"]).await;
@@ -2290,7 +2298,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
         t.contains("tmux.conf:") && t.contains("lines wmux could not use were skipped")
     })
     .await;
-    assert!(!c.text().contains("copy-mode-vi"), "the details stay in show-messages: {}", c.text());
+    assert!(!c.text().contains("@plugin"), "the details stay in show-messages: {}", c.text());
 
     // A file that sources itself is refused, not recursed into, and one
     // with an unclosed %if says so instead of quietly dropping the rest.
@@ -2692,6 +2700,68 @@ async fn a_resumed_session_keeps_its_saved_size() {
     assert_eq!(code, 0, "{err}");
     let (_, out, _) = h.cli(&["display-message", "-p", "-t", "sz:0", "#{window_width}x#{window_height}"]).await;
     assert_eq!(out.trim(), "100x30");
+    h.cli(&["kill-server"]).await;
+}
+
+/// `bind -T copy-mode-vi`: a key bound there runs its command in copy mode
+/// (a `send -X` motion or any other command) and nowhere else; unbinding
+/// gives the key back to copy mode; tmux's mouse-key lines are taken.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_copy_mode_vi_table_binds_keys_in_copy_mode() {
+    let h = Harness::start("copytable").await;
+    for line in [
+        "bind -T copy-mode-vi i send -X cancel",
+        "bind -T copy-mode-vi C-t display-message from-the-copy-table",
+        "bind-key -T copy-mode-vi MouseDragEnd1Pane send -X copy-selection-and-cancel",
+        "unbind -T copy-mode-vi MouseDown1Pane",
+    ] {
+        let argv: Vec<String> = wmux::command::tokenize(line).unwrap();
+        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, _, err) = h.cli(&args).await;
+        assert_eq!(code, 0, "{line}: {err}");
+    }
+    let (_, keys, _) = h.cli(&["list-keys"]).await;
+    assert!(
+        keys.lines().any(|l| l.starts_with("bind-key -T copy-mode-vi i") && l.ends_with("send-keys -X cancel")),
+        "{keys}"
+    );
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "ct"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    let in_copy = |s: &vt100::Screen| s.rows(0, COLS).next().unwrap().contains("[0/");
+    // Outside copy mode, i is just typed.
+    c.type_str("i").await;
+    c.wait_for("i typed into the shell", |s| s.contents().contains("wmux>i")).await;
+    c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its line
+    c.wait_for("the line cleared", |s| !s.contents().contains("wmux>i")).await;
+    // In copy mode, i is bound: it leaves copy mode.
+    c.prefix('[').await;
+    c.wait_for("copy mode", in_copy).await;
+    c.type_str("i").await;
+    c.wait_for("i left copy mode", |s| !in_copy(s)).await;
+    assert!(!c.text().contains("wmux>i"), "i did not reach the shell: {}", c.text());
+    // Any command can be bound, not only send -X.
+    c.prefix('[').await;
+    c.wait_for("copy mode", in_copy).await;
+    c.key(b'T' as u16, '\x14', LEFT_CTRL_PRESSED).await;
+    c.wait_for("the bound message", |s| s.contents().contains("from-the-copy-table")).await;
+    // A key bound to the motion it already has does not loop: send -X
+    // goes to copy mode's own motions, never back through the table.
+    h.cli(&["bind", "-T", "copy-mode-vi", "k", "send", "-X", "cursor-up"]).await;
+    let cursor_row = |s: &vt100::Screen| -> Option<u16> {
+        (0..ROWS - 1).find(|y| (0..COLS).any(|x| s.cell(*y, x).is_some_and(|c| c.inverse())))
+    };
+    let before = cursor_row(c.screen.screen()).expect("a copy-mode cursor");
+    c.type_str("k").await;
+    c.wait_for("k moved up once", |s| cursor_row(s).is_some_and(|r| r + 1 == before)).await;
+    assert_eq!(h.cli(&["display-message", "-p", "ok"]).await.1.trim(), "ok", "the server answers");
+    // Unbound again, i is copy mode's own (not a way out).
+    h.cli(&["unbind", "-T", "copy-mode-vi", "i"]).await;
+    c.type_str("i").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.wait_for("still in copy mode", in_copy).await;
+    c.type_str("q").await;
+    c.wait_for("q leaves", |s| !in_copy(s)).await;
     h.cli(&["kill-server"]).await;
 }
 

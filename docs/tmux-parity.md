@@ -16,7 +16,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | tmux | wmux | note |
 | --- | --- | --- |
 | attach-session | yes | |
-| bind-key | yes | `-n`, `-r`, `-T root/prefix`; no other key tables |
+| bind-key | yes | `-n`, `-r`, `-T root/prefix/copy-mode-vi` (`copy-mode` = `copy-mode-vi`); mouse key names accepted, no effect |
 | break-pane | yes | `-t`; no `-W` |
 | capture-pane | part | `-p`, `-S`, `-e`, `-J`; no buffer output (`-b`) |
 | choose-buffer | yes | `prefix =`; Enter pastes |
@@ -179,9 +179,11 @@ line, `%if` / `%elif` / `%else` / `%endif` pick their branch by the
 condition (a format, true when it expands to something other than nothing
 or `0`; `#{==:#{host},box}` and the other comparisons work), and every line
 wmux cannot use is skipped with a note in
-`show-messages` plus a one-line count on the first attach. `bind -T` with
-any table other than `root` or `prefix` is refused, so a `copy-mode-vi`
-line never ends up bound under the prefix.
+`show-messages` plus a one-line count on the first attach. `bind -T` takes
+`root`, `prefix` and `copy-mode-vi` (`copy-mode` is taken as the same
+table, wmux's copy mode being vi-style); any other table is refused rather
+than bound somewhere else. Mouse key names (`MouseDragEnd1Pane`,
+`WheelUpPane`, ...) are accepted and do nothing.
 
 ## Options
 

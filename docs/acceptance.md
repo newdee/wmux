@@ -1836,3 +1836,42 @@ console 测试（真实进程 + ConPTY）：attach 中的客户端收到重启�
 ## 结论（第三十五次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 199 → 205。版本号升到 0.10.0（发布在后面各项做完后）。
+
+# 第三十六次验收（2026-09-24）— server.log 轮转；copy-mode-vi 键表
+
+## 做了什么
+
+1. **日志轮转**（`logger.rs`）：进程内计已写字节，超过 5 MB（`WMUX_LOG_MAX` 可改）把 `server.log` 改名为 `server.log.1`（覆盖上一个）再开新文件；
+   启动时已超限的旧日志先轮转。std 打开文件带 FILE_SHARE_DELETE，打开中的日志可以改名；改名失败就继续写原文件（能记总比不记好）。
+   `WMUX_LOG_DIR` 可改目录（测试用）。
+2. **copy-mode-vi 键表**：`bind-key`/`unbind-key` 的 `root: bool` 改为 `KeyTable { Prefix, Root, Copy }`；`-T copy-mode-vi`（`copy-mode` 同表）
+   绑定在 copy mode 里先查表，命中就执行命令（`send -X ...` 直达内建动作，绑定不会再次查表，所以不会自递归），未命中走内建按键；
+   `list-keys` 列出 `bind-key -T copy-mode-vi ...`，可原样读回。tmux 的鼠标"键"（`MouseDragEnd1Pane`、`WheelUpPane` 等）bind/unbind 照收、不起作用，
+   不再在加载配置时报错。其它未知表仍拒绝。
+
+## 修复过程中的发现（不计数）
+
+- 既有 `.tmux.conf` e2e 断言"copy-mode-vi 行被跳过并记入 show-messages"——行为有意改变，断言改为"进 copy 表、不进 prefix 表、不再记为跳过"。
+- 新 e2e 第一版：进 copy mode 前 cmd 还没处理完清行的 Escape，copy mode 冻结的画面里还有 `wmux>i`；改为先等清行。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路
+
+数据：真实 server、`WMUX_LOG_MAX=3000`、debug 级别、80 条命令：`server.log.1` 2925 字节、`server.log` 138 字节，最新一行是 `server exiting`；
+10000 字节的旧日志在启动时轮转（`.1` = 10000，新文件 226）。单元测试 100 行、上限 1000：两文件都 ≤1000、最新行在当前文件、最旧行已丢、没有 `.2`。
+e2e `the_copy_mode_vi_table_binds_keys_in_copy_mode`：copy mode 外 `i` 进 shell；copy mode 里绑定的 `i` 退出 copy mode 且不进 shell；
+绑定任意命令（`C-t` → display-message）生效；`k` 绑到 `send -X cursor-up` 只上移一行、server 正常应答；解绑后 `i` 回到 copy mode 本身；
+鼠标键两行加载退出码 0；`list-keys` 含该表。`.tmux.conf` e2e：v/y 两行进 copy 表，show-messages 不再有 copy-mode-vi。
+全量 207 项（lib 136 / console 6 + 1 忽略 / e2e 65）全过，clippy 无 warning，fmt 干净。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：整套 e2e 连跑 3 次、两条 copy 表 e2e 再连跑 3 次，全过。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界 + 静态一致性
+
+数据：重复绑定同一动作不递归（上）；未知表 `off-pane` 仍拒绝且报错写出三张可用表；`copy-mode`（emacs）与 `copy-mode-vi` 同表；
+`list-keys` 输出读回等于原命令（单元测试）；日志改名失败时继续写原文件（代码路径）；README（中英）配置与日志段、parity 的 bind-key 行与配置段同步。
+
+## 结论（第三十六次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 205 → 207。

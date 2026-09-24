@@ -527,6 +527,9 @@ pub struct Server {
     opts: Options,
     prefix_binds: HashMap<Key, Binding>,
     root_binds: HashMap<Key, Binding>,
+    /// `bind -T copy-mode-vi`: keys in copy mode that run a command instead
+    /// of copy mode's own meaning.
+    copy_binds: HashMap<Key, Binding>,
     sessions: Vec<Session>,
     clients: HashMap<ClientId, Client>,
     next_id: u32,
@@ -864,6 +867,7 @@ impl Server {
             opts: Options::default(),
             prefix_binds: default_bindings(),
             root_binds: HashMap::new(),
+            copy_binds: HashMap::new(),
             sessions: Vec::new(),
             clients: HashMap::new(),
             next_id: 1,
@@ -972,6 +976,14 @@ impl Server {
         crate::resurrect::SavedFile::new(saved).save(&path)?;
         self.last_saved.insert(path.to_string_lossy().into_owned(), key);
         Ok(path)
+    }
+
+    fn binds_mut(&mut self, table: crate::command::KeyTable) -> &mut HashMap<Key, Binding> {
+        match table {
+            crate::command::KeyTable::Prefix => &mut self.prefix_binds,
+            crate::command::KeyTable::Root => &mut self.root_binds,
+            crate::command::KeyTable::Copy => &mut self.copy_binds,
+        }
     }
 
     /// Save every session, history included, whatever changed: the session
@@ -3846,19 +3858,24 @@ impl Server {
                 }
                 Outcome::Text(self.expand_format_at(&msg, target.as_ref(), cid))
             }
-            Cmd::BindKey { root, key, repeat, cmd } => match Key::parse(&key) {
+            Cmd::BindKey { table, key, repeat, cmd } => match Key::parse(&key) {
                 Some(k) => {
                     let b = Binding { cmd: *cmd, repeat };
-                    if root { &mut self.root_binds } else { &mut self.prefix_binds }.insert(k, b);
+                    self.binds_mut(table).insert(k, b);
                     Outcome::Ok
                 }
+                // tmux's mouse "keys" (MouseDragEnd1Pane, WheelUpPane, ...):
+                // wmux's mouse handling is fixed, so a config line for one
+                // is taken and does nothing, instead of an error at load.
+                None if is_mouse_key(&key) => Outcome::Ok,
                 None => Outcome::Error(format!("unknown key: {key}")),
             },
-            Cmd::UnbindKey { root, key } => match Key::parse(&key) {
+            Cmd::UnbindKey { table, key } => match Key::parse(&key) {
                 Some(k) => {
-                    if root { &mut self.root_binds } else { &mut self.prefix_binds }.remove(&k);
+                    self.binds_mut(table).remove(&k);
                     Outcome::Ok
                 }
+                None if is_mouse_key(&key) => Outcome::Ok,
                 None => Outcome::Error(format!("unknown key: {key}")),
             },
             Cmd::SetOption { name, value, append, target } if append && name != "synchronize-panes" => {
@@ -4182,6 +4199,8 @@ impl Server {
                 lines.extend(self.root_binds.iter().map(|(k, b)| {
                     format!("bind-key {}-T root   {k:<10} {}", if b.repeat { "-r " } else { "" }, b.cmd)
                 }));
+                lines
+                    .extend(self.copy_binds.iter().map(|(k, b)| format!("bind-key -T copy-mode-vi {k:<10} {}", b.cmd)));
                 lines.sort();
                 Outcome::Text(lines.join("\n"))
             }
@@ -4637,7 +4656,14 @@ impl Server {
             }
             if in_copy {
                 c.swallow_up.insert(rec.vk);
-                if let Some(pid) = self.session(sid).and_then(|s| s.window()).map(|w| w.active) {
+                // A key bound in the copy-mode-vi table runs its command
+                // (usually `send -X ...`, which goes to the built-in motions
+                // below directly, so a binding never finds itself again);
+                // any other key is copy mode's own.
+                if let Some(b) = self.copy_binds.get(&k).cloned() {
+                    let out = self.exec(b.cmd, Some(cid));
+                    self.reply(cid, out);
+                } else if let Some(pid) = self.session(sid).and_then(|s| s.window()).map(|w| w.active) {
                     self.copy_key(cid, pid, k);
                 }
                 return;
@@ -6291,6 +6317,13 @@ fn align_columns(rows: &[Vec<String>]) -> Vec<String> {
             line.trim_end().to_string()
         })
         .collect()
+}
+
+/// tmux's names for mouse events as keys (`MouseDown1Pane`,
+/// `MouseDragEnd1Pane`, `WheelUpPane`, `DoubleClick1Pane`, ...).
+fn is_mouse_key(name: &str) -> bool {
+    let n = name.trim_start_matches("C-").trim_start_matches("M-").trim_start_matches("S-");
+    ["Mouse", "Wheel", "DoubleClick", "TripleClick", "SecondClick"].iter().any(|p| n.starts_with(p))
 }
 
 /// Which picker lines a filter keeps: those holding it, case-insensitively,

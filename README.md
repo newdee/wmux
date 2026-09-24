@@ -264,9 +264,12 @@ it on the status line.
 the file named by `WMUX_CONFIG`) holds one command per line, tmux syntax.
 With no wmux config at all, an existing `~/.tmux.conf` (or
 `~/.config/tmux/tmux.conf`) is read instead: what wmux understands is
-applied, and what it cannot use (`bind -T copy-mode-vi`, TPM's `@plugin`
-lines, `%if` blocks) is skipped and listed in `show-messages` rather than
-thrown at you on every attach.
+applied (`%if` blocks are evaluated, and `bind -T copy-mode-vi v send -X
+begin-selection`-style lines bind keys in copy mode), and what it cannot
+use (TPM's `@plugin` lines for plugins it does not have, options tmux has
+and wmux does not) is skipped and listed in `show-messages` rather than
+thrown at you on every attach. Mouse "keys" such as `MouseDragEnd1Pane`
+are taken and do nothing: wmux's mouse handling is fixed.
 
 ```tmux
 set -g prefix C-a
@@ -506,6 +509,8 @@ Environment inside panes: `WMUX` (socket name) and `WMUX_PANE` (pane id). A
 `wmux` command run inside a pane talks to the server that owns it, the way
 `$TMUX` works for tmux, so `wmux ls` from a script or a plugin needs no `-L`.
 Server log: `%LOCALAPPDATA%\wmux\server.log` (`WMUX_LOG=debug` for more).
+Past 5 MB it becomes `server.log.1` and a new one starts, so a server that
+runs for months keeps at most about 10 MB of log.
 
 The pipe carries a DACL that admits only the creating user (and SYSTEM), the
 Windows equivalent of tmux's mode-0700 socket directory. Every pane runs in a
