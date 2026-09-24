@@ -31,11 +31,52 @@ run inside panes with full key fidelity.
   `C-b M-n` jumps to it), a pane whose program dies can keep its output and
   exit code (`remain-on-exit`), and a resumed session comes back with what
   each pane had on screen (`save-history`).
+- **Your panes on your phone**: `wmux web` prints a QR code; scan it on the
+  same Wi-Fi and the phone's browser lists every pane, shows any of them as
+  it is on the screen, and types into it. No app to install.
 
 <p align="center">
   <img src="docs/img/wmux-alerts.gif" width="880"
        alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
 </p>
+
+## On your phone
+
+Leave a build, a deploy or an agent running, and check on it from the sofa:
+
+```powershell
+wmux web
+```
+
+prints a QR code in the terminal. Scan it with the phone's camera (same
+network) and the browser opens a page that lists every pane with the program
+running in it. Tap one to see its screen, colours and all, kept up to date;
+type into it from the box at the bottom, or with the row of keys the phone
+keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
++ menu splits the pane, opens a window or closes the pane. Everything runs
+on the computer; the phone only shows and types. "Add to Home Screen" makes
+it open like an app.
+
+<p align="center">
+  <img src="docs/img/phone.png" width="620"
+       alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log, with a row of keys and a box to type in">
+</p>
+
+The code carries the address and a key made fresh at each start (128 random
+bits); nothing but the page itself answers without it, and the phone can only
+look, type into a pane and use that menu: no command of its own reaches wmux.
+It is off until started and stops with Ctrl+C.
+
+```powershell
+wmux web --read-only     # look, but not type
+wmux web --keep-key      # the same code next time, so a bookmark keeps working
+wmux web --port 8080 --bind 192.168.1.23   # another port, or another network card
+```
+
+It is plain HTTP, meant for your own network: on a shared one, someone
+watching the traffic could read the key. From elsewhere, put a private
+network such as Tailscale in between and bind to its address. Windows asks
+once whether wmux may use the network; allow it for private networks.
 
 ## Install
 
@@ -512,7 +553,9 @@ Commands a script or a binding reaches for, beyond the obvious ones
 
 Every window and pane command accepts `-t target` as in tmux:
 `session`, `session:window`, `:window`, `session:window.pane`, and the window
-part may be an index, a name, `+`, `-` or `!`. The one exception is
+part may be an index, a name, `+`, `-` or `!`. `%N` is a pane by its id (as
+`list-panes` shows it), which stays the same pane as others come and go;
+`list-panes -F` prints a format for each pane. The one exception is
 `select-pane`, whose `-t` takes the pane to move to (`next`, `last` or an
 index) rather than a window target, next to `-L` `-R` `-U` `-D`.
 

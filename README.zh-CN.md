@@ -19,11 +19,37 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 - **重启电脑也不怕。** 每个 session 的布局会自动存盘，开机后 `wmux resume` 就回来了，连每个 pane 屏幕上的输出一起（`save-history`，默认 500 行）。
 - **后台的事会主动告诉你。** 没在看的窗口有输出就在状态栏标 `#`，响铃 `!`，太久没动静 `~`（`monitor-activity`），`prefix M-n` 直接跳过去；程序挂了 pane 也能留着写明退出码（`remain-on-exit`），不会无声无息地消失。
 - **能装插件。** 和 tmux 一样，插件就是一个目录加几个脚本，用 `run-shell`、hook 和状态栏格式串往里挂东西。
+- **手机上也能看、也能敲。** `wmux web` 在终端里打出一个二维码，同一个 Wi-Fi 下手机扫一下，浏览器里就能看到所有 pane，点进去看屏幕、往里输入。不用装 App。
 
 <p align="center">
   <img src="docs/img/wmux-alerts.gif" width="880"
        alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
 </p>
+
+## 在手机上用
+
+编译、部署或者 AI 助手在电脑上跑着，人走开了也想看一眼、回一句：
+
+```powershell
+wmux web
+```
+
+终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：列出所有 pane，以及每个 pane 里正在跑的程序。点进一个，就能看到它的屏幕，颜色都在，实时刷新；底部的输入框可以往里打字，还有一排手机键盘上没有的键（Esc、Tab、Shift+Tab、方向键、Ctrl+C、y / n / 1 / 2 / 3）。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
+
+<p align="center">
+  <img src="docs/img/phone-zh.png" width="620"
+       alt="手机上的 wmux web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，下方是一排按键和输入框">
+</p>
+
+二维码里是地址加一个密钥，密钥每次启动重新生成（128 位随机数）。除了页面本身，没有密钥什么都拿不到；手机只能看、往 pane 里输入、用那个 + 菜单，发不了任何自己的 wmux 命令。不启动就不开，按 Ctrl+C 就关。
+
+```powershell
+wmux web --read-only     # 只能看，不能输入
+wmux web --keep-key      # 下次还用同一个二维码，收藏的网页一直能用
+wmux web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
+```
+
+用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络，绑定到它的地址。第一次运行时 Windows 会问是否允许 wmux 联网，选“专用网络”允许即可。
 
 ## 安装
 
@@ -232,7 +258,7 @@ source-file ~/.wmux/themes/nord.conf
 
 `.tmux.conf` 里常见但 wmux 用不上的选项（`escape-time`、`default-terminal` 这些）会被接受然后忽略，所以现成的 tmux 配置可以直接拿来改。
 
-所有窗口和 pane 命令都支持 tmux 风格的 `-t`：`session`、`session:window`、`:window`、`session:window.pane`，窗口那一段可以是编号、名字、`+`、`-` 或 `!`。
+所有窗口和 pane 命令都支持 tmux 风格的 `-t`：`session`、`session:window`、`:window`、`session:window.pane`，窗口那一段可以是编号、名字、`+`、`-` 或 `!`。`%N` 是按编号指定 pane（`list-panes` 里显示的那个），别的 pane 增减时它指的还是同一个；`list-panes -F` 按格式串逐个 pane 输出。
 
 ### 状态栏
 

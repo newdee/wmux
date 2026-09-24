@@ -346,6 +346,13 @@ figcaption {
   margin: 28px 0 0;
 }
 
+/* Two phone screens side by side: narrower than the terminal shots, centred. */
+.phone-shot {
+  max-width: 620px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .pair {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -43,8 +43,8 @@
         <h1 data-i18n="hero.title">tmux, on Windows.</h1>
         <p class="lede" data-i18n="hero.lede">
           Split a terminal into panes, walk between them with <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>,
-          close the window and find everything still running when you come back. PowerShell, cmd and WSL all
-          live inside panes, with every keystroke arriving intact.
+          close the window and find everything still running when you come back, or check on it from your
+          phone. PowerShell, cmd and WSL all live inside panes, with every keystroke arriving intact.
         </p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/wmux/releases/latest" data-i18n="hero.download">Download for Windows</a>
@@ -63,7 +63,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>221</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>227</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -89,9 +89,30 @@
         </ul>
       </section>
 
-      <section class="chapter">
+      <section class="chapter phone">
         <header class="chapter-head">
           <span class="num">02</span>
+          <h2 data-i18n="cw.title">Your panes, on your phone</h2>
+          <p data-i18n="cw.sub">
+            Leave a build, a deploy or an agent running and walk away. <code>wmux web</code> prints a QR code;
+            scan it on the same Wi-Fi and the phone's browser lists every pane, shows any of them as it is on
+            the screen, and types into it. No app to install.
+          </p>
+        </header>
+        <figure class="shot phone-shot">
+          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log, with a row of keys and a box to type in" />
+        </figure>
+        <ul class="points">
+          <li data-i18n="cw.p1"><b>What is on the screen, live.</b> Colours and all, refreshed as it changes; scroll up for what went by.</li>
+          <li data-i18n="cw.p2"><b>Keys the phone lacks.</b> Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3 in a row under the screen, and a box for anything longer. The <b>+</b> menu splits, opens a window or closes the pane.</li>
+          <li data-i18n="cw.p3"><b>Runs here, only shows there.</b> The phone looks and types; no command of its own reaches wmux. <code>--read-only</code> makes it look only.</li>
+          <li data-i18n="cw.p4"><b>Off until you start it.</b> The code carries a key made fresh each time (128 random bits); Ctrl+C stops it. Plain HTTP for your own network; from elsewhere, through Tailscale or the like.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">03</span>
           <h2 data-i18n="c2.title">Full screen, a list, or a menu</h2>
           <p data-i18n="c2.sub">
             <kbd>C-b z</kbd> blows the current pane up to the whole window and back. <kbd>C-b w</kbd> opens the
@@ -118,7 +139,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">03</span>
+          <span class="num">04</span>
           <h2 data-i18n="c3.title">Close the terminal. Nothing dies.</h2>
           <p data-i18n="c3.sub">
             <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>wmux attach</code>
@@ -138,7 +159,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">04</span>
+          <span class="num">05</span>
           <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
           <p data-i18n="c35.sub">
             A window you are not looking at can say so: <code>monitor-activity</code> marks it with
@@ -162,7 +183,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">05</span>
+          <span class="num">06</span>
           <h2 data-i18n="c4.title">Your .tmux.conf, more or less</h2>
           <p data-i18n="c4.sub">
             The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
@@ -190,7 +211,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">06</span>
+          <span class="num">07</span>
           <h2 data-i18n="c6.title">A status line that knows the machine</h2>
           <p data-i18n="c6.sub">
             The branch you are on, where the pane is, how busy the machine is, the battery when there is one.
@@ -208,7 +229,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter install">
         <header class="chapter-head">
-          <span class="num">07</span>
+          <span class="num">08</span>
           <h2 data-i18n="c5.title">Install</h2>
         </header>
         <div class="cards">

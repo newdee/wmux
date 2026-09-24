@@ -6,7 +6,7 @@ const ZH = {
   "hero.eyebrow": "开源 · 原生 Windows",
   "hero.title": "Windows 上的 tmux。",
   "hero.lede":
-    "把一个终端切成几块，用 h j k l 在它们之间走；关掉窗口，回来的时候东西都还在跑。PowerShell、cmd、WSL 都能在 pane 里正常用，按键一个不丢。",
+    "把一个终端切成几块，用 h j k l 在它们之间走；关掉窗口，回来的时候东西都还在跑，人不在电脑前也能用手机看一眼。PowerShell、cmd、WSL 都能在 pane 里正常用，按键一个不丢。",
   "hero.download": "下载 Windows 版",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe",
@@ -23,6 +23,13 @@ const ZH = {
     "<b>每块都是真终端。</b> 每个 pane 就是一个 ConPTY，所以 PSReadLine 的组合键、中文输入法、全屏程序，表现和不用 wmux 时一样。",
   "c1.p2":
     "<b>鼠标也管用。</b> 点一下选中 pane，拖边框调大小，拖选一段文字松手就进了 Windows 剪贴板。",
+  "cw.title": "手机上看，手机上敲",
+  "cw.sub":
+    "编译、部署、AI 助手在电脑上跑着，人走开了也能看。<code>wmux web</code> 打出一个二维码，同一个 Wi-Fi 下手机扫一下，浏览器里就能看到所有 pane，点进去看屏幕、往里输入。不用装 App。",
+  "cw.p1": "<b>屏幕原样，实时刷新。</b> 颜色都在，内容一变就更新；往上滑能看刚才滚过去的输出。",
+  "cw.p2": "<b>手机键盘上没有的键。</b> Esc、Tab、Shift+Tab、方向键、Ctrl+C、y / n / 1 / 2 / 3 排在屏幕下方，长一点的内容在输入框里敲。<b>+</b> 菜单可以分屏、开新窗口、关掉当前 pane。",
+  "cw.p3": "<b>在电脑上执行，手机只负责看和敲。</b> 手机发不了任何自己的 wmux 命令。加 <code>--read-only</code> 就只能看。",
+  "cw.p4": "<b>不启动就不开。</b> 二维码里带着每次重新生成的密钥（128 位随机数），Ctrl+C 就关。普通 HTTP，给自家网络用；在外面就走 Tailscale 这类私有网络。",
   "c1.p3": "<b>一次敲进所有 pane。</b> <kbd>C-b S</kbd> 或 <code>:set sync</code>（Tab 补全选项名）打开 synchronize-panes，这个窗口里的每块都收到同样的输入；<code>split-window -N 3</code> 一次再开三个 pane 并平铺。",
 
   "c2.title": "铺满屏幕、从列表里挑，或者弹个菜单",
@@ -97,6 +104,9 @@ const ZH = {
 
 const nodes = Array.from(document.querySelectorAll("[data-i18n]"));
 const EN = new Map(nodes.map((n) => [n, n.innerHTML]));
+// Pictures of a page that has words of its own come in both languages.
+const pictures = Array.from(document.querySelectorAll("img[data-src-zh]"));
+const EN_SRC = new Map(pictures.map((i) => [i, i.getAttribute("src")]));
 
 function apply(lang) {
   for (const n of nodes) {
@@ -104,6 +114,7 @@ function apply(lang) {
     if (lang === "zh" && ZH[key]) n.innerHTML = ZH[key];
     else n.innerHTML = EN.get(n);
   }
+  for (const i of pictures) i.setAttribute("src", lang === "zh" ? i.dataset.srcZh : EN_SRC.get(i));
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   document.getElementById("lang").textContent = lang === "zh" ? "EN" : "中文";
   try {
