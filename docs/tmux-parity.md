@@ -46,7 +46,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | list-clients | yes | |
 | list-commands | yes | |
 | list-keys | part | no `-N` notes, no `-T` filter |
-| list-panes | yes | `-s` (the session's windows, `window.` prefixed), `-a` (every pane, `session:window.` prefixed) |
+| list-panes | yes | `-s` (the session's windows, `window.` prefixed), `-a` (every pane, `session:window.` prefixed), `-F` format per pane |
 | list-sessions / list-windows | yes | |
 | load-buffer / save-buffer | yes | |
 | lock-client / lock-server / lock-session | no | no equivalent of a Unix screen lock here |
@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as wmux reads it, for a key that does nothing), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as wmux reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 

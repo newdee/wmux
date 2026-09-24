@@ -139,7 +139,7 @@ fn needs_server(argv: &[String]) -> bool {
 pub const RESTARTING: &str = "server restarting";
 
 /// Whether a server is listening on `pipe` (without starting one).
-fn server_running(pipe: &str) -> bool {
+pub fn server_running(pipe: &str) -> bool {
     match ClientOptions::new().open(pipe) {
         Ok(_) => true,
         Err(e) => e.raw_os_error() == Some(ERROR_PIPE_BUSY),

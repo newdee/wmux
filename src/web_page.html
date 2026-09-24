@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16161e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="referrer" content="no-referrer">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<title>wmux</title>
+<style>
+  :root {
+    --bg: #1a1b26; --bar: #16161e; --card: #24283b; --line: #3b4261;
+    --fg: #c0caf5; --muted: #565f89; --accent: #7aa2f7; --green: #9ece6a; --red: #f7768e;
+    --vh: 100dvh;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    height: var(--vh); display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; background: var(--bar);
+    padding: calc(env(safe-area-inset-top) + 8px) 12px 8px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .sub { color: var(--muted); font-weight: 400; }
+  button {
+    font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 12px; min-height: 36px; cursor: pointer;
+  }
+  button:active { background: var(--line); }
+  .icon { width: 36px; padding: 0; font-size: 20px; line-height: 1; }
+  main { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; }
+  .hidden { display: none !important; }
+
+  /* The list */
+  .session { margin: 12px 12px 4px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  .pane {
+    display: flex; align-items: center; gap: 10px; margin: 6px 12px; padding: 12px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; width: calc(100% - 24px); text-align: left;
+  }
+  .pane .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .pane.current .dot { background: var(--green); }
+  .pane.dead .dot { background: var(--red); }
+  .pane .what { flex: 1; min-width: 0; }
+  .pane .cmd { font-weight: 600; }
+  .pane .where { color: var(--muted); font-size: 13px; }
+  .empty, .error { margin: 24px 16px; color: var(--muted); }
+  .error { color: var(--red); }
+
+  /* One pane */
+  #screen {
+    margin: 0; padding: 8px; white-space: pre; font-family: "Maple Mono NF CN", "Maple Mono", ui-monospace, Menlo, Consolas, monospace;
+    line-height: 1.2; min-height: 100%;
+  }
+  footer { background: var(--bar); border-top: 1px solid var(--line); padding: 8px 8px calc(env(safe-area-inset-bottom) + 8px); }
+  .keys { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
+  .keys::-webkit-scrollbar { display: none; }
+  .keys button { flex: none; min-width: 44px; padding: 6px 10px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .typing { display: flex; gap: 6px; }
+  .typing textarea {
+    flex: 1; resize: none; font: 16px/1.3 ui-monospace, Menlo, Consolas, monospace; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; height: 40px; max-height: 120px;
+  }
+  .typing .send { background: var(--accent); color: var(--bar); border-color: var(--accent); font-weight: 600; }
+
+  /* The + menu */
+  #menu { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; }
+  #menu .sheet {
+    width: 100%; background: var(--bar); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+    padding: 8px 12px calc(env(safe-area-inset-bottom) + 12px);
+  }
+  #menu .sheet button { display: block; width: 100%; margin: 6px 0; padding: 12px; text-align: left; }
+  #menu .sheet .danger { color: var(--red); }
+  #toast {
+    position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <button id="back" class="icon hidden" aria-label="Back">&#8249;</button>
+  <h1 id="title">wmux</h1>
+  <button id="plus" class="icon hidden" aria-label="More">+</button>
+</header>
+<main id="main">
+  <div id="list"></div>
+  <pre id="screen" class="hidden"></pre>
+</main>
+<footer id="footer" class="hidden">
+  <div class="keys" id="keys"></div>
+  <div class="typing">
+    <textarea id="text" rows="1" placeholder="Type, then send" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <button class="send" id="send">Send</button>
+  </div>
+</footer>
+<div id="menu" class="hidden">
+  <div class="sheet">
+    <button data-do="split-h">Split left | right</button>
+    <button data-do="split-v">Split top / bottom</button>
+    <button data-do="new-window">New window</button>
+    <button data-do="kill-pane" class="danger">Close this pane</button>
+    <button data-do="">Cancel</button>
+  </div>
+</div>
+<div id="toast" class="hidden"></div>
+<script>
+"use strict";
+// The key: from the address the QR code gave (then taken out of it, so it
+// is not left in the address bar), or kept from last time on this phone.
+// `#...&p=N` (the pane's number, `%N` in wmux) opens that pane straight away.
+const startPane = ((m) => (m ? "%" + m[1] : null))(location.hash.match(/[#&]p=(?:%25|%)?(\d+)/));
+const key = (() => {
+  const m = location.hash.match(/k=([A-Za-z0-9_-]+)/);
+  try {
+    if (m) { localStorage.setItem("wmux-key", m[1]); history.replaceState(null, "", location.pathname); return m[1]; }
+    return localStorage.getItem("wmux-key") || "";
+  } catch (e) { return m ? m[1] : ""; }
+})();
+
+const $ = (id) => document.getElementById(id);
+const zh = /^zh/i.test(navigator.language);
+const t = (en, cn) => (zh ? cn : en);
+let readOnly = false, panes = [], current = null, lastText = "", timer = null;
+
+// Buttons: what they show, what they send (a named key, or text).
+const KEYS = [
+  ["Esc", "Escape"], ["Tab", "Tab"], ["⇧Tab", "BTab"], ["↑", "Up"], ["↓", "Down"], ["←", "Left"], ["→", "Right"],
+  ["^C", "C-c"], ["^D", "C-d"], ["⏎", "Enter"], ["y", "=y"], ["n", "=n"], ["1", "=1"], ["2", "=2"], ["3", "=3"],
+  ["⌫", "BSpace"], ["PgUp", "PPage"], ["PgDn", "NPage"],
+];
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, cache: "no-store", headers: { "X-Wmux-Key": key, ...(opts.headers || {}) } });
+  if (r.status === 401) throw new Error(t("This page needs the code again: run `wmux web` and scan it.", "需要重新扫码：在电脑上运行 `wmux web` 再扫一次。"));
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r;
+}
+
+function toast(msg) {
+  const el = $("toast"); el.textContent = msg; el.classList.remove("hidden");
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), 2200);
+}
+
+function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// ---- The list ----
+async function loadList() {
+  try {
+    panes = await (await api("/api/panes")).json();
+    renderList();
+  } catch (e) {
+    $("list").innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
+}
+
+function renderList() {
+  if (!panes.length) { $("list").innerHTML = `<p class="empty">${t("No panes.", "没有 pane。")}</p>`; return; }
+  let html = "", last = null;
+  for (const p of panes) {
+    if (p.session !== last) { html += `<div class="session">${esc(p.session)}</div>`; last = p.session; }
+    const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : ""].join(" ");
+    html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
+      `<div class="cmd">${esc(p.command || "?")}</div>` +
+      `<div class="where">${esc(p.windowName)} · ${p.window}.${p.pane} · ${p.cols}×${p.rows}</div></span></button>`;
+  }
+  $("list").innerHTML = html;
+}
+
+$("list").addEventListener("click", (e) => {
+  const b = e.target.closest("button.pane");
+  if (b) open(b.dataset.id, true);
+});
+
+// ---- One pane ----
+function paneInfo(id) { return panes.find((p) => p.id === id); }
+
+function open(id, push) {
+  current = id;
+  if (push) history.pushState({ pane: id }, "");
+  const p = paneInfo(id);
+  $("title").innerHTML = p ? `${esc(p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane}</span>` : esc(id);
+  $("list").classList.add("hidden"); $("screen").classList.remove("hidden");
+  $("back").classList.remove("hidden");
+  $("plus").classList.toggle("hidden", readOnly); $("footer").classList.toggle("hidden", readOnly);
+  lastText = ""; $("screen").innerHTML = ""; stick = true;
+  fitFont(); tick();
+}
+
+function showList(push) {
+  current = null;
+  if (push) history.pushState({}, "");
+  $("title").textContent = "wmux";
+  $("screen").classList.add("hidden"); $("list").classList.remove("hidden");
+  $("back").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
+  tick();
+}
+
+$("back").addEventListener("click", () => history.back());
+window.addEventListener("popstate", (e) => (e.state && e.state.pane ? open(e.state.pane, false) : showList(false)));
+
+// Fit the pane's width to the phone's (not below a readable size; past
+// that, it scrolls sideways).
+let charRatio = 0.6;
+(() => {
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font-size:100px;font-family:" + getComputedStyle($("screen")).fontFamily;
+  probe.textContent = "M".repeat(20); document.body.appendChild(probe);
+  charRatio = probe.getBoundingClientRect().width / 2000 || 0.6; probe.remove();
+})();
+function fitFont() {
+  const p = paneInfo(current); const cols = p ? p.cols : 80;
+  const width = $("main").clientWidth - 16;
+  $("screen").style.fontSize = Math.max(8, Math.min(15, width / (cols * charRatio))).toFixed(2) + "px";
+}
+window.addEventListener("resize", fitFont);
+
+// Follow the bottom unless the reader has scrolled up.
+let stick = true;
+$("main").addEventListener("scroll", () => {
+  const m = $("main"); stick = m.scrollHeight - m.scrollTop - m.clientHeight < 40;
+});
+
+async function loadScreen() {
+  try {
+    const { text } = await (await api(`/api/screen?pane=${encodeURIComponent(current)}&history=300`)).json();
+    if (text === lastText) return;
+    lastText = text;
+    // The rows under the last line with something on it are empty: without
+    // them, following the bottom shows the last output, not blank rows.
+    const lines = text.split("\n");
+    const blank = (l) => !l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim();
+    while (lines.length && blank(lines[lines.length - 1])) lines.pop();
+    $("screen").innerHTML = ansiToHtml(lines.join("\n"));
+    if (stick) $("main").scrollTop = $("main").scrollHeight;
+  } catch (e) {
+    $("screen").innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  }
+}
+
+// ---- Typing ----
+async function send(query, body) {
+  if (!current) return;
+  try {
+    await api(`/api/send?pane=${encodeURIComponent(current)}${query}`, { method: "POST", body: body || "" });
+    setTimeout(loadScreen, 120);
+  } catch (e) { toast(e.message); }
+}
+const sendKey = (k) => (k.startsWith("=") ? send("", k.slice(1)) : send(`&key=${encodeURIComponent(k)}`));
+
+$("keys").innerHTML = KEYS.map(([label, k]) => `<button data-k="${esc(k)}">${esc(label)}</button>`).join("");
+$("keys").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) sendKey(b.dataset.k); });
+
+async function sendText() {
+  const box = $("text"); const text = box.value;
+  if (text) await send("", text);
+  await send("&key=Enter");
+  box.value = ""; box.style.height = "";
+}
+$("send").addEventListener("click", sendText);
+$("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); } });
+$("text").addEventListener("input", (e) => { e.target.style.height = ""; e.target.style.height = Math.min(120, e.target.scrollHeight) + "px"; });
+
+// ---- The + menu ----
+$("plus").addEventListener("click", () => $("menu").classList.remove("hidden"));
+$("menu").addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b && e.target !== $("menu")) return;
+  $("menu").classList.add("hidden");
+  const what = b ? b.dataset.do : "";
+  if (!what || !current) return;
+  if (what === "kill-pane" && !confirm(t("Close this pane? What runs in it stops.", "关闭这个 pane？里面运行的程序会被结束。"))) return;
+  try {
+    const before = new Set(panes.map((p) => p.id));
+    await api(`/api/action?pane=${encodeURIComponent(current)}&do=${what}`, { method: "POST" });
+    panes = await (await api("/api/panes")).json();
+    if (what === "kill-pane") { history.back(); return; }
+    // Go to the pane the action made.
+    const made = panes.find((p) => !before.has(p.id));
+    if (made) open(made.id, true);
+  } catch (err) { toast(err.message); }
+});
+
+// ---- Colours: the SGR sequences capture-pane -e writes ----
+const PALETTE = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
+  "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"];
+function colour256(n) {
+  if (n < 16) return PALETTE[n];
+  if (n >= 232) { const v = 8 + 10 * (n - 232); return `rgb(${v},${v},${v})`; }
+  n -= 16; const s = [0, 95, 135, 175, 215, 255];
+  return `rgb(${s[Math.floor(n / 36)]},${s[Math.floor(n / 6) % 6]},${s[n % 6]})`;
+}
+function ansiToHtml(text) {
+  text = text.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;?]*[A-Za-ln-z]/g, "");
+  const st = { fg: null, bg: null, b: false, dim: false, i: false, u: false, inv: false };
+  let out = "", last = 0, m;
+  const span = (s) => {
+    if (!s) return;
+    let fg = st.fg, bg = st.bg;
+    if (st.inv) { [fg, bg] = [bg || "var(--bg)", fg || "var(--fg)"]; }
+    let css = "";
+    if (fg) css += `color:${fg};`;
+    if (bg) css += `background:${bg};`;
+    if (st.b) css += "font-weight:700;";
+    if (st.dim) css += "opacity:.65;";
+    if (st.i) css += "font-style:italic;";
+    if (st.u) css += "text-decoration:underline;";
+    out += css ? `<span style="${css}">${esc(s)}</span>` : esc(s);
+  };
+  const re = /\x1b\[([0-9;]*)m/g;
+  while ((m = re.exec(text))) {
+    span(text.slice(last, m.index)); last = re.lastIndex;
+    const c = m[1] === "" ? [0] : m[1].split(";").map(Number);
+    for (let i = 0; i < c.length; i++) {
+      const n = c[i];
+      if (n === 0) Object.assign(st, { fg: null, bg: null, b: false, dim: false, i: false, u: false, inv: false });
+      else if (n === 1) st.b = true; else if (n === 2) st.dim = true; else if (n === 3) st.i = true;
+      else if (n === 4) st.u = true; else if (n === 7) st.inv = true;
+      else if (n === 22) st.b = st.dim = false; else if (n === 23) st.i = false; else if (n === 24) st.u = false; else if (n === 27) st.inv = false;
+      else if (n >= 30 && n <= 37) st.fg = PALETTE[n - 30]; else if (n === 39) st.fg = null;
+      else if (n >= 40 && n <= 47) st.bg = PALETTE[n - 40]; else if (n === 49) st.bg = null;
+      else if (n >= 90 && n <= 97) st.fg = PALETTE[n - 82]; else if (n >= 100 && n <= 107) st.bg = PALETTE[n - 92];
+      else if (n === 38 || n === 48) {
+        let col = null;
+        if (c[i + 1] === 5) { col = colour256(c[i + 2] || 0); i += 2; }
+        else if (c[i + 1] === 2) { col = `rgb(${c[i + 2] || 0},${c[i + 3] || 0},${c[i + 4] || 0})`; i += 4; }
+        if (n === 38) st.fg = col; else st.bg = col;
+      }
+    }
+  }
+  span(text.slice(last));
+  return out;
+}
+
+// ---- Refresh: the pane often, the list now and then, nothing when hidden ----
+async function tick() {
+  clearTimeout(timer);
+  if (document.visibilityState === "visible") {
+    if (current) await loadScreen(); else await loadList();
+  }
+  timer = setTimeout(tick, current ? 500 : 2000);
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tick(); });
+
+// The keyboard takes part of the screen: keep the input above it.
+if (window.visualViewport) {
+  const vv = () => document.documentElement.style.setProperty("--vh", visualViewport.height + "px");
+  visualViewport.addEventListener("resize", vv); vv();
+}
+
+(async () => {
+  $("text").placeholder = t("Type, then send", "输入后发送");
+  $("send").textContent = t("Send", "发送");
+  const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
+    "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消") };
+  for (const b of document.querySelectorAll("#menu button")) b.textContent = labels[b.dataset.do];
+  try {
+    const info = await (await api("/api/info")).json();
+    readOnly = info.readOnly;
+    document.title = `wmux · ${info.host}`;
+  } catch (e) {
+    $("list").innerHTML = `<p class="error">${esc(e.message)}</p>`;
+    return;
+  }
+  history.replaceState({}, "");
+  if (startPane) {
+    try { panes = await (await api("/api/panes")).json(); } catch (e) {}
+    open(startPane, true);
+    return;
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

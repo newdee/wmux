@@ -9,11 +9,19 @@ pub struct Target {
     /// Window index or name.
     pub window: Option<String>,
     pub pane: Option<usize>,
+    /// `%N`: a pane by its id (as `list-panes` shows it), wherever it is.
+    /// It stays the same pane when others come and go, which an index does
+    /// not.
+    pub pane_id: Option<u32>,
 }
 
 impl Target {
-    /// Parse `session`, `session:window`, `:window`, `session:window.pane`.
+    /// Parse `session`, `session:window`, `:window`, `session:window.pane`,
+    /// or `%N` for a pane by its id.
     pub fn parse(s: &str) -> Target {
+        if let Some(id) = s.strip_prefix('%').and_then(|n| n.parse().ok()) {
+            return Target { pane_id: Some(id), ..Default::default() };
+        }
         let (sess, rest) = match s.split_once(':') {
             Some((a, b)) => (if a.is_empty() { None } else { Some(a.to_string()) }, Some(b)),
             None => (if s.is_empty() { None } else { Some(s.to_string()) }, None),
@@ -25,7 +33,7 @@ impl Target {
             },
             None => (None, None),
         };
-        Target { session: sess, window: win, pane }
+        Target { session: sess, window: win, pane, pane_id: None }
     }
 }
 
@@ -89,6 +97,8 @@ pub enum Cmd {
         /// `-a`: every pane on the server; `-s`: every pane in the session.
         all: bool,
         session: bool,
+        /// `-F`: each pane as this format instead of the usual line.
+        format: Option<String>,
     },
     KillSession {
         target: Option<Target>,
@@ -627,12 +637,15 @@ impl fmt::Display for Cmd {
                 f.write_str("list-windows")?;
                 fmt_target(f, target)
             }
-            Cmd::ListPanes { target, all, session } => {
+            Cmd::ListPanes { target, all, session, format } => {
                 f.write_str("list-panes")?;
                 if *all {
                     f.write_str(" -a")?;
                 } else if *session {
                     f.write_str(" -s")?;
+                }
+                if let Some(fmt) = format {
+                    write!(f, " -F {}", quote(fmt))?;
                 }
                 fmt_target(f, target)
             }
@@ -1236,6 +1249,9 @@ impl fmt::Display for Cmd {
 
 /// A target as `session:window.pane`, the way `-t` takes it back.
 fn target_string(t: &Target) -> String {
+    if let Some(id) = t.pane_id {
+        return format!("%{id}");
+    }
     let mut s = t.session.clone().unwrap_or_default();
     if let Some(w) = &t.window {
         s.push(':');
@@ -1576,7 +1592,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-clients", &[]),
     ("list-commands", &[]),
     ("list-keys", &[]),
-    ("list-panes", &["-a", "-s", "-t"]),
+    ("list-panes", &["-a", "-s", "-t", "-F"]),
     ("list-plugins", &[]),
     ("list-saved", &[]),
     ("list-sessions", &[]),
@@ -1932,20 +1948,21 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         }
         "list-windows" | "list-panes" | "kill-session" | "kill-window" | "kill-pane" => {
             let (mut target, mut all_but) = (None, false);
-            let (mut all, mut session) = (false, false);
+            let (mut all, mut session, mut format) = (false, false, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
                     "-a" if n.starts_with("kill-") => all_but = true,
                     "-a" => all = true,     // list-panes: every pane on the server
                     "-s" => session = true, // list-panes: every pane in the session
+                    "-F" if n == "list-panes" => format = Some(a.value("-F")?.to_string()),
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
             match n {
                 "list-windows" => Cmd::ListWindows { target },
-                "list-panes" => Cmd::ListPanes { target, all, session },
+                "list-panes" => Cmd::ListPanes { target, all, session, format },
                 "kill-session" => Cmd::KillSession { target, all_but },
                 "kill-window" => Cmd::KillWindow { target, all_but },
                 _ => Cmd::KillPane { target, all_but },
@@ -3116,16 +3133,21 @@ mod tests {
 
     #[test]
     fn targets() {
-        assert_eq!(Target::parse("main"), Target { session: Some("main".into()), window: None, pane: None });
-        assert_eq!(
-            Target::parse("main:2"),
-            Target { session: Some("main".into()), window: Some("2".into()), pane: None }
-        );
-        assert_eq!(Target::parse(":2"), Target { session: None, window: Some("2".into()), pane: None });
-        assert_eq!(
-            Target::parse("s:w.3"),
-            Target { session: Some("s".into()), window: Some("w".into()), pane: Some(3) }
-        );
+        let t = |session: Option<&str>, window: Option<&str>, pane: Option<usize>| Target {
+            session: session.map(String::from),
+            window: window.map(String::from),
+            pane,
+            pane_id: None,
+        };
+        assert_eq!(Target::parse("main"), t(Some("main"), None, None));
+        assert_eq!(Target::parse("main:2"), t(Some("main"), Some("2"), None));
+        assert_eq!(Target::parse(":2"), t(None, Some("2"), None));
+        assert_eq!(Target::parse("s:w.3"), t(Some("s"), Some("w"), Some(3)));
+        // A pane by its id, and it prints back the same way.
+        assert_eq!(Target::parse("%12"), Target { pane_id: Some(12), ..Default::default() });
+        assert_eq!(target_string(&Target::parse("%12")), "%12");
+        // Not a number after %: an ordinary (odd) session name.
+        assert_eq!(Target::parse("%x"), t(Some("%x"), None, None));
     }
 
     #[test]

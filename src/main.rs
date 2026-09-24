@@ -40,6 +40,7 @@ Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
   windows-terminal install|remove|status   (a wmux profile in the Windows Terminal dropdown)
 Upgrading:  version (this wmux and the server's)   update [--check]   restart-server (sessions move to this version)
+On a phone:  web [--port N] [--bind IP] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as wmux reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
@@ -163,6 +164,9 @@ fn main() {
         "version" => Some(rt.block_on(client::version(&socket))),
         "restart-server" => Some(rt.block_on(client::restart_server(&socket))),
         "update" => Some(rt.block_on(wmux::update::run(&socket, &args[1..]))),
+        // The panes on a phone: a client of the server that also answers
+        // HTTP on the local network, until Ctrl+C.
+        "web" => Some(rt.block_on(wmux::web::run(&socket, &args[1..]))),
         _ => None,
     };
     if let Some(result) = local {

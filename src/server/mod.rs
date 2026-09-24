@@ -1835,6 +1835,9 @@ impl Server {
     /// session, else the session of the pane the client runs in, else the
     /// most recently used.
     fn resolve_session(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<SessionId, String> {
+        if let Some(id) = target.and_then(|t| t.pane_id) {
+            return self.session_of_pane(id).ok_or_else(|| format!("can't find pane: %{id}"));
+        }
         if let Some(t) = target
             && let Some(name) = &t.session
         {
@@ -1865,6 +1868,13 @@ impl Server {
 
     fn resolve_window(&self, sid: SessionId, target: Option<&Target>) -> Result<usize, String> {
         let s = self.session(sid).ok_or("no such session")?;
+        if let Some(id) = target.and_then(|t| t.pane_id) {
+            return s
+                .windows
+                .iter()
+                .position(|w| w.pane(id).is_some())
+                .ok_or_else(|| format!("can't find pane: %{id}"));
+        }
         let Some(w) = target.and_then(|t| t.window.as_ref()) else { return Ok(s.cur) };
         if let Ok(n) = w.parse::<usize>() {
             let idx = n.wrapping_sub(self.opts.base_index);
@@ -1893,6 +1903,9 @@ impl Server {
     fn resolve_pane(&self, sid: SessionId, widx: usize, target: Option<&Target>) -> Result<PaneId, String> {
         let s = self.session(sid).ok_or("no such session")?;
         let w = s.windows.get(widx).ok_or("no such window")?;
+        if let Some(id) = target.and_then(|t| t.pane_id) {
+            return w.pane(id).map(|p| p.id).ok_or_else(|| format!("can't find pane: %{id}"));
+        }
         match target.and_then(|t| t.pane) {
             None => Ok(w.active),
             Some(i) => w
@@ -1906,6 +1919,13 @@ impl Server {
 
     /// (session id, window index, pane id) for a command context.
     fn resolve(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<(SessionId, usize, PaneId), String> {
+        if let Some(id) = target.and_then(|t| t.pane_id) {
+            return self
+                .sessions
+                .iter()
+                .find_map(|s| s.windows.iter().position(|w| w.pane(id).is_some()).map(|widx| (s.id, widx, id)))
+                .ok_or_else(|| format!("can't find pane: %{id}"));
+        }
         let sid = self.resolve_session(target, cid)?;
         let widx = self.resolve_window(sid, target)?;
         let pid = self.resolve_pane(sid, widx, target)?;
@@ -2541,7 +2561,7 @@ impl Server {
                     .collect();
                 Outcome::Text(lines.join("\n"))
             }
-            Cmd::ListPanes { target, all, session } => {
+            Cmd::ListPanes { target, all, session, format } => {
                 // One window, the session's windows (`-s`), or every window
                 // on the server (`-a`); beyond one window each line is
                 // prefixed with its window the way tmux does it.
@@ -2557,6 +2577,17 @@ impl Server {
                     vec![(sid, widx)]
                 };
                 let mut lines = Vec::new();
+                // -F: each pane as the format, answered for that pane.
+                if let Some(fmt) = format {
+                    for (sid, widx) in windows {
+                        let ids = self.session(sid).unwrap().windows[widx].layout.panes();
+                        for id in ids {
+                            let ctx = self.context(sid, widx, Some(id), cid);
+                            lines.push(self.expand_with_shells(&fmt, &ctx, id));
+                        }
+                    }
+                    return Outcome::Text(lines.join("\n"));
+                }
                 for (sid, widx) in windows {
                     let s = self.session(sid).unwrap();
                     let w = &s.windows[widx];
@@ -2579,7 +2610,9 @@ impl Server {
                             cols,
                             rows,
                             p.map(|p| p.display_title()).unwrap_or(""),
-                            p.and_then(|p| p.cwd.as_deref()).map(|d| format!(" [{d}]")).unwrap_or_default(),
+                            // Where it is now, as #{pane_current_path} says,
+                            // not only where it started.
+                            p.and_then(|p| p.current_path()).map(|d| format!(" [{d}]")).unwrap_or_default(),
                             if *id == w.active { " (active)" } else { "" }
                         ));
                     }
@@ -3067,7 +3100,10 @@ impl Server {
                 // `-t` names the session to move around in; the window part is
                 // ours ("the next one", "the last one").
                 let session = target.and_then(|t| t.session);
-                self.exec(Cmd::SelectWindow { target: Target { session, window: Some(w.into()), pane: None } }, cid)
+                self.exec(
+                    Cmd::SelectWindow { target: Target { session, window: Some(w.into()), ..Default::default() } },
+                    cid,
+                )
             }
             Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full, count } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
@@ -5497,6 +5533,7 @@ impl Server {
             session: Some(s.name.clone()),
             window: Some((widx + self.opts.base_index).to_string()),
             pane: Some(pidx + self.opts.pane_base_index),
+            pane_id: None,
         })
     }
 

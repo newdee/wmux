@@ -2849,6 +2849,74 @@ async fn resize_pane_reaches_the_size_from_any_position() {
     h.cli(&["kill-server"]).await;
 }
 
+/// One HTTP request, the way the phone's page makes it: (status, body).
+async fn http(addr: std::net::SocketAddr, method: &str, path: &str, key: &str, body: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: phone\r\nX-Wmux-Key: {key}\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let status = text.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
+}
+
+/// `wmux web` end to end over real HTTP: the key is asked for, the list
+/// names the panes, text typed on the phone runs in the pane (`-` first
+/// included), the screen comes back with it, and the + menu splits.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_page_lists_shows_types_and_splits() {
+    let h = Harness::start("web").await;
+    h.cli(&["new", "-d", "-s", "w"]).await;
+    h.wait_capture("w:0", "shell prompt", |t| t.contains("wmux>")).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = std::sync::Arc::new(wmux::web::State::new(&h.socket, "k3y-for-the-test", false, false));
+    tokio::spawn(wmux::web::serve(listener, state));
+    let key = "k3y-for-the-test";
+
+    assert_eq!(http(addr, "GET", "/api/panes", "wrong", "").await.0, 401);
+    let (code, page) = http(addr, "GET", "/", "", "").await;
+    assert_eq!(code, 200);
+    assert!(page.contains("<title>wmux</title>"));
+    let (code, list) = http(addr, "GET", "/api/panes", key, "").await;
+    assert_eq!(code, 200, "{list}");
+    assert!(list.contains("\"session\":\"w\""), "{list}");
+    let id = list.split("\"id\":\"%").nth(1).and_then(|s| s.split('"').next()).unwrap().to_string();
+    let pane = format!("%25{id}"); // %N, as a query writes it
+
+    // Typed on the phone, run here. A leading `-` is text, not a flag.
+    let (code, err) = http(addr, "POST", &format!("/api/send?pane={pane}"), key, "echo -from-the-phone-7").await;
+    assert_eq!(code, 200, "{err}");
+    assert_eq!(http(addr, "POST", &format!("/api/send?pane={pane}&key=Enter"), key, "").await.0, 200);
+    h.wait_capture("w:0", "the command's output", |t| t.lines().any(|l| l.trim() == "-from-the-phone-7")).await;
+    let (code, screen) = http(addr, "GET", &format!("/api/screen?pane={pane}&history=20"), key, "").await;
+    assert_eq!(code, 200);
+    assert!(screen.contains("-from-the-phone-7"), "{screen}");
+
+    // The + menu; the new pane starts in the directory of the pane it came
+    // from, not where the web client runs.
+    h.cli(&["send-keys", "-t", "w:0", "cd /d C:\\Windows", "Enter"]).await;
+    h.wait_capture("w:0", "the cd", |t| t.contains("C:\\Windows>") || t.lines().any(|l| l.trim() == "wmux>")).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.cli(&["list-panes", "-t", "w"]).await.1.to_ascii_lowercase().contains("[c:\\windows]") {
+        assert!(Instant::now() < deadline, "the pane never reported its new directory");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (code, err) = http(addr, "POST", &format!("/api/action?pane={pane}&do=split-h"), key, "").await;
+    assert_eq!(code, 200, "{err}");
+    let list = h.cli(&["list-panes", "-t", "w"]).await.1;
+    assert_eq!(list.lines().count(), 2, "{list}");
+    assert!(list.lines().nth(1).unwrap().to_ascii_lowercase().contains("[c:\\windows]"), "{list}");
+    assert_eq!(http(addr, "POST", &format!("/api/action?pane={pane}&do=kill-server"), key, "").await.0, 400);
+    assert_eq!(h.cli(&["ls"]).await.0, 0, "the server is still there");
+    h.cli(&["kill-server"]).await;
+}
+
 /// The prefix handed over as a bare byte (character 0x02, no Ctrl flag, no
 /// key code), as hosts that pass input on as bytes do: it is still C-b.
 #[tokio::test(flavor = "multi_thread")]

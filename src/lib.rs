@@ -18,5 +18,6 @@ pub mod shutdown;
 pub mod startup;
 pub mod sysinfo;
 pub mod update;
+pub mod web;
 pub mod winsec;
 pub mod wt;
