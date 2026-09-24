@@ -17,12 +17,17 @@ to the release and commits the output here, so this directory follows
 releases by itself. Running it by hand is for a release made some other
 way. Either way, then:
 
-**WinGet.** Copy `winget\manifests\n\newdee\wmux\X.Y.Z` into a fork of
-winget-pkgs at the same path and open a pull request titled
-`New package: newdee.wmux version X.Y.Z` (later versions: `New version:`).
-The bot validates and installs it in a VM; a maintainer merges it, and
-`winget install newdee.wmux` works a few hours later. Until then, the
-manifests install locally with
+**WinGet.** The first version went in by hand:
+[microsoft/winget-pkgs#440225](https://github.com/microsoft/winget-pkgs/pull/440225)
+(`New package: newdee.wmux version 0.10.0`, from the `newdee/winget-pkgs`
+fork). Its bot validates and installs it in a VM once the CLA is signed on
+the PR; a maintainer merges it, and `winget install newdee.wmux` works a
+few hours later. After that, every release can submit its own update:
+add a repository secret `WINGET_TOKEN` (a classic token with `public_repo`
+of the account owning the fork) and the release workflow runs
+`wingetcreate update newdee.wmux --submit` for each tag. Without the
+secret that step is skipped, and a failed submission never fails a release.
+Until the package is in, the manifests install locally with
 `winget install --manifest packaging\winget\manifests\n\newdee\wmux\X.Y.Z`
 (needs `winget settings` → `LocalManifestFiles` enabled, once).
 

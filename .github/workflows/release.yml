@@ -12,6 +12,10 @@ jobs:
   build:
     name: build and publish (windows x86_64)
     runs-on: windows-latest
+    # A secret cannot be tested in `if:`; its value in the job's env can
+    # (empty when the secret is not set).
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
       - uses: actions/checkout@v5
       - name: wait for CI on this commit
@@ -84,6 +88,19 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           gh release create $tag dist\*.zip dist\*.msi dist\*.sha256 --title "wmux $tag" --generate-notes
+      - name: submit the update to winget-pkgs
+        # Only with a WINGET_TOKEN secret (a classic token with public_repo,
+        # from the account that owns the winget-pkgs fork), and only once the
+        # package is in winget-pkgs: wingetcreate opens the pull request.
+        # Never fails the release; the manifests are attached to it anyway.
+        if: env.WINGET_TOKEN != ''
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/wmux-$version-windows-x86_64.msi"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update newdee.wmux --version $version --urls $url --submit --token $env:WINGET_TOKEN
       - name: commit the manifests to master
         shell: pwsh
         run: |

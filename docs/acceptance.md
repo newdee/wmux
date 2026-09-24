@@ -1962,3 +1962,17 @@ CI 上 `join_pane_marks_and_exact_sizes` 失败：`select-pane -T logs` 之后 p
 程序在 `-T` 之后设标题会覆盖它，这是正确的 tmux 行为。测试是竞态：改为先等程序自己的标题出现，再 `-T`。
 顺带保留一处小改：程序**重复发送相同标题**（每次提示符都设标题的 prompt 会这样）不再覆盖 `-T`，发送不同标题仍覆盖（tmux 语义）；单元测试覆盖。
 全量 208 项全过，e2e 连跑 3 次全过。
+
+# 第三十九次记录（2026-09-24）— 发布 0.10.0；提交 winget-pkgs
+
+- **0.10.0**：tag 推送后发布流水线先等同一提交的 CI（已绿）再出包；资产 MSI 4.86 MB、zip 1.34 MB、各自 sha256、清单 zip；
+  bot 提交回 master 的 winget 清单 `winget validate` 通过。
+- **`wmux update` 对真实发布的核对（只读，不安装）**：`update --check` → "wmux 0.10.0 is the latest"；按 `update` 的方式下载 MSI 与 `.sha256`，
+  `certutil` 算出的哈希与发布的逐字相同（ac45923d…c996fd）。
+- **清单 schema**：winget-pkgs 模板要求 1.12；生成器从 1.6.0 改为 1.12.0，按真实发布重生成 0.10.0，只有 6 行 schema 变化，本机 winget v1.29 验证通过。
+- **winget-pkgs PR**：https://github.com/microsoft/winget-pkgs/pull/440225（从 newdee/winget-pkgs 分支，用 GitHub API 上传三份清单，不克隆大仓库），
+  文件恰为 3 个，已打上 `New-Package`；**卡在 `Needs-CLA`：需要账号本人在 PR 下回复同意 CLA**（法律协议，不能代签）。
+  模板中"本机 `winget install --manifest` 测试"未勾选并如实注明（需要开管理员设置且会覆盖用户正在用的安装）。
+- **后续版本自动提交**：发布流水线新增一步，仓库有 `WINGET_TOKEN` secret 时跑 `wingetcreate update newdee.wmux --submit`，
+  没有则跳过、失败不影响发布。secret 放在 job 级 env（步骤自己的 env 在它的 `if:` 里不可见，第一版写错已改）。
+  **未验证**：要等首个 PR 合并、设置 secret、下一次发版才会真正执行。
