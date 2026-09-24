@@ -159,11 +159,31 @@ fn head_of(gitdir: &Path) -> String {
     }
 }
 
-/// `dir` with the home directory as `~`, the way prompts write it.
+/// The long form of a path that has 8.3 short names in it
+/// (`C:\Users\RUNNER~1` → `C:\Users\runneradmin`); the path as it was when
+/// it has none or cannot be resolved (gone, no access).
+fn long_path(p: &str) -> String {
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    if !p.contains('~') {
+        return p.to_string();
+    }
+    let wide: Vec<u16> = p.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    let n = unsafe { GetLongPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return p.to_string();
+    }
+    String::from_utf16_lossy(&buf[..n])
+}
+
+/// `dir` with the home directory as `~`, the way prompts write it. Either
+/// side may be written with 8.3 short names; both are compared long.
 pub fn short_path(dir: &str) -> String {
     let Some(home) = std::env::var_os("USERPROFILE") else { return dir.to_string() };
-    let home = home.to_string_lossy();
-    let rest = dir.strip_prefix(home.as_ref()).or_else(|| {
+    let home = long_path(&home.to_string_lossy());
+    let long = long_path(dir);
+    let dir = long.as_str();
+    let rest = dir.strip_prefix(home.as_str()).or_else(|| {
         // Case does not matter on Windows.
         (dir.len() >= home.len() && dir[..home.len()].eq_ignore_ascii_case(&home)).then(|| &dir[home.len()..])
     });
@@ -303,6 +323,21 @@ mod tests {
         assert_eq!(short_path(&format!("{}\\src", home.to_uppercase())), "~\\src", "case does not matter");
         assert_eq!(short_path(r"C:\Windows"), r"C:\Windows");
         assert_eq!(short_path(&format!("{home}2\\x")), format!("{home}2\\x"), "a sibling directory is not home");
+        // Home written with 8.3 short names (a CI runner's TEMP is
+        // C:\Users\RUNNER~1\...): still home. Only where the volume keeps
+        // short names; many do not, and then there is nothing to test.
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = home.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buf = vec![0u16; 1024];
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        let short = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+        if n > 0 && short.contains('~') {
+            assert_eq!(short_path(&short), "~", "{short}");
+            assert_eq!(short_path(&format!("{short}\\AppData")), "~\\AppData", "{short}");
+        } else {
+            eprintln!("no 8.3 name for {home}; skipped");
+        }
+        assert_eq!(long_path(r"Z:\NOSUCH~1\x"), r"Z:\NOSUCH~1\x", "unresolvable: as it was");
     }
 
     #[test]

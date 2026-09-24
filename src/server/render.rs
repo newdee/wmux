@@ -466,25 +466,28 @@ pub fn compose(f: &Frame) -> Composed {
             g.put_str(0, sy, m, mstyle, f.cols);
         } else {
             let mut x = g.put_segments(0, sy, &s.left, f.cols);
-            // The right side never squeezes out the window list: the current
-            // window keeps its place and the right side is clipped instead.
-            // (A long pane title on a narrow terminal used to hide it.)
-            // Reserving room is pointless when the label cannot fit anyway.
+            // The window list comes before the right side: the right side
+            // gets what the whole list leaves over, and is clipped to it.
+            // (A long pane title, or the default path and load, on a
+            // narrow terminal used to push windows off the line.)
             let sep_w = s.separator.width() as u16;
-            let need = s.windows.iter().find(|(_, cur)| *cur).map(|(l, _)| seg_width(l) + sep_w).unwrap_or(0);
-            let full = seg_width(&s.right);
-            let right_w = match f.cols.checked_sub(x.saturating_add(need).saturating_add(1)) {
-                Some(room) => full.min(room),
-                None => full,
-            };
-            let win_end = f.cols.saturating_sub(right_w + 1);
-            // status-justify moves the whole list when it fits; when it
-            // does not, it starts at the left as before so the first
-            // windows (the current one among them, by the reservation
-            // above) are the ones shown.
             let total: u16 = s.windows.iter().map(|(l, _)| seg_width(l)).sum::<u16>()
                 + sep_w * (s.windows.len().saturating_sub(1)) as u16;
+            let full = seg_width(&s.right);
+            // The whole list if it fits; else room for the current window
+            // (the ones before it are left out below); else nothing, since
+            // reserving room for a label that cannot fit anyway is pointless.
+            let cur_w = s.windows.iter().find(|(_, c)| *c).map(|(l, _)| seg_width(l)).unwrap_or(0);
+            let right_w = [total, cur_w]
+                .iter()
+                .find_map(|need| f.cols.checked_sub(x.saturating_add(*need).saturating_add(1)))
+                .map_or(full, |room| full.min(room));
+            let win_end = f.cols.saturating_sub(right_w + 1);
             let room = win_end.saturating_sub(x);
+            // status-justify moves the whole list when it fits. When it
+            // does not, windows are left out from the front until the
+            // current one fits, so the current window is always shown.
+            let mut first = 0;
             if total <= room {
                 x = match s.justify {
                     Justify::Left => x,
@@ -492,17 +495,28 @@ pub fn compose(f: &Frame) -> Composed {
                     Justify::Right => win_end - total,
                     Justify::AbsoluteCentre => (f.cols.saturating_sub(total) / 2).clamp(x, win_end - total),
                 };
+            } else if let Some(cur) = s.windows.iter().position(|(_, c)| *c) {
+                let upto = |from: usize| -> u16 {
+                    s.windows[from..=cur].iter().map(|(l, _)| seg_width(l)).sum::<u16>() + sep_w * (cur - from) as u16
+                };
+                while first < cur && upto(first) > room {
+                    first += 1;
+                }
             }
             let base = Style::colors(s.fg, s.bg);
             for (i, (label, current)) in s.windows.iter().enumerate() {
+                if i < first {
+                    window_hits.push((0, 0)); // left out: never hit
+                    continue;
+                }
                 // The separator and the label it leads to go together: a
                 // label that does not fit leaves no dangling separator.
-                let lead = if i > 0 { sep_w } else { 0 };
+                let lead = if i > first { sep_w } else { 0 };
                 let w = seg_width(label);
                 if x + lead + w > win_end {
                     break;
                 }
-                if i > 0 {
+                if i > first {
                     x += g.put_str(x, sy, &s.separator, base, win_end - x);
                 }
                 let start = x;
@@ -942,10 +956,15 @@ mod tests {
         let (row, hits) = frame(30, Justify::Right, "│");
         assert_eq!(row, "[s]                  0:a│1:b R");
         assert_eq!(hits, vec![(21, 24), (25, 28)]);
-        // No room to move the list: it starts at the left as before, and the
-        // window that does not fit is dropped rather than squeezed.
+        // Tight: the right side gives way to the whole list (4 + 7 + 1 of
+        // 12 leaves it nothing), and the list has no room to move.
         let (row, hits) = frame(12, Justify::Right, "|");
-        assert_eq!(row, "[s] 0:a    R");
+        assert_eq!(row, "[s] 0:a|1:b ");
+        assert_eq!(hits, vec![(4, 7), (8, 11)]);
+        // Tighter: a window that does not fit is dropped rather than
+        // squeezed, and the right side keeps what the current one leaves.
+        let (row, hits) = frame(10, Justify::Right, "|");
+        assert_eq!(row, "[s] 0:a  R");
         assert_eq!(hits, vec![(4, 7)]);
         assert_eq!(Justify::parse("center"), Justify::Centre);
         assert_eq!(Justify::parse("nonsense"), Justify::Left);
@@ -990,20 +1009,41 @@ mod tests {
         assert_eq!(g.get(2, 1).style.fg, Color::Idx(1));
         assert!(g.get(10, 1).style.bold);
         assert!(hits.is_empty());
-        // A label that fits is drawn inverse (current) and reported.
+        // The list comes before the right side: both labels fit when the
+        // right side gives way; the current one is drawn inverse.
         f.status.as_mut().unwrap().windows = vec![(seg("0:x", st), true), (seg("1:y", st), false)];
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
-        assert_eq!(row, "abcd0:x   RR");
+        assert_eq!(row, "abcd0:x 1:y ");
         assert!(g.get(4, 1).style.inverse);
-        assert_eq!(hits, vec![(4, 7)]);
-        // A long right side is clipped rather than hiding the current window
-        // (a pane title on a narrow terminal used to push the list off).
+        assert_eq!(hits, vec![(4, 7), (8, 11)]);
+        // A long right side is clipped the same way.
         f.status.as_mut().unwrap().right = seg("0123456789ab", Style { bold: true, ..st });
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
-        assert_eq!(row, "abcd0:x  012");
-        assert_eq!(hits, vec![(4, 7)]);
+        assert_eq!(row, "abcd0:x 1:y ");
+        assert_eq!(hits, vec![(4, 7), (8, 11)]);
+        // The list does not fit at all: windows before the current one are
+        // left out (and never hit), the current one is always shown, the
+        // right side gets what is left. (CI caught this: a long default
+        // right side and the current window last hid the current window.)
+        let status = f.status.as_mut().unwrap();
+        status.right = seg("RR", st);
+        status.windows = vec![(seg("0:aaa", st), false), (seg("1:bbb", st), false), (seg("2:ccc", st), true)];
+        let (g, _, hits) = compose(&f);
+        let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
+        assert_eq!(row, "abcd2:ccc RR");
+        assert!(g.get(4, 1).style.inverse);
+        assert_eq!(hits, vec![(0, 0), (0, 0), (4, 9)], "left-out windows keep their index, empty");
+        // The current window in the middle: those after it follow if room.
+        let status = f.status.as_mut().unwrap();
+        status.right = seg("", st);
+        status.windows = vec![(seg("0:a", st), false), (seg("1:bb", st), true), (seg("2:c", st), false)];
+        f.cols = 10;
+        let (g, _, hits) = compose(&f);
+        let row: String = (0..10).map(|x| g.get(x, 1).text()).collect();
+        assert_eq!(row, "abcd1:bb  ", "0:a left out so 1:bb fits; 2:c does not");
+        assert_eq!(hits, vec![(0, 0), (4, 8)]);
     }
 
     #[test]
