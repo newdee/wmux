@@ -216,7 +216,11 @@ times and flags (`session_activity` `session_last_attached` `window_activity` `w
 (`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity`
 `client_prefix`) and the server (`host` `host_short`
 `socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
-#H #F #D #h`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.
+#H #F #D #h`. wmux's own, read in-process rather than through `#()`:
+`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`
+`battery_charging` `uptime` `git_branch` `pane_current_path_short`
+`pane_pid_command` (tmux users get these from plugins such as tmux-cpu
+and tmux-battery). Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.
 Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`, `#{?name!=value,…}`.
 Not there: tmux's `#{||:…}` / `#{&&:…}`, `#{m:pattern,var}`, `#{e|…}`
 arithmetic, `#{l:…}` literals, `#{a:…}`, `#{C:…}` search, loops

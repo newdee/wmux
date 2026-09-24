@@ -2618,6 +2618,9 @@ async fn jobs_lists_every_pane_with_its_state() {
 #[tokio::test(flavor = "multi_thread")]
 async fn status_justify_and_separator_move_the_window_list() {
     let h = Harness::start("justify").await;
+    // A right side that starts with the quoted pane title, whatever the
+    // default is these days: the assertions below look for the quote.
+    h.cli(&["set", "-g", "status-right", "\"#T\" %H:%M"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "j", "-n", "aa"]).await;
     c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
@@ -2689,6 +2692,75 @@ async fn a_resumed_session_keeps_its_saved_size() {
     assert_eq!(code, 0, "{err}");
     let (_, out, _) = h.cli(&["display-message", "-p", "-t", "sz:0", "#{window_width}x#{window_height}"]).await;
     assert_eq!(out.trim(), "100x30");
+    h.cli(&["kill-server"]).await;
+}
+
+/// The status line's machine variables are read in-process: CPU, memory,
+/// uptime answer at once, the git branch follows the pane's directory, the
+/// path is shortened with `~`, and `pane_pid_command` names what the pane
+/// is running right now. The default status-right shows them.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_machine_variables_answer_without_a_command() {
+    let h = Harness::start("sysvars").await;
+    let repo = env!("CARGO_MANIFEST_DIR");
+    h.cli(&["new", "-d", "-s", "sv", "-c", repo]).await;
+    h.wait_capture("sv:0", "prompt", |t| t.contains("wmux>")).await;
+    let hr = &h;
+    let ask =
+        |f: &'static str| async move { hr.cli(&["display-message", "-p", "-t", "sv:0", f]).await.1.trim().to_string() };
+    // Two readings a second apart: the second has a CPU figure.
+    ask("#{cpu_percentage}").await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let cpu = ask("#{cpu_percentage}").await;
+    assert!(cpu.ends_with('%') && cpu.trim_end_matches('%').parse::<u32>().is_ok_and(|n| n <= 100), "{cpu}");
+    let ram = ask("#{ram_percentage}|#{ram_used}|#{uptime}").await;
+    let parts: Vec<&str> = ram.split('|').collect();
+    assert!(parts[0].ends_with('%') && (parts[1].ends_with('G') || parts[1].ends_with('M')), "{ram}");
+    assert!(!parts[2].is_empty() && parts[2] != "0s", "uptime: {ram}");
+    // The pane sits in this repository: a branch, and a path under ~ when
+    // the repository is (it is, on the developer's machine; elsewhere the
+    // full path).
+    let git = ask("#{git_branch}").await;
+    assert!(!git.is_empty(), "a branch or a commit: {git:?}");
+    let short = ask("#{pane_current_path_short}").await;
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    if repo.to_lowercase().starts_with(&home.to_lowercase()) {
+        assert!(short.starts_with("~\\"), "{short}");
+    } else {
+        assert_eq!(short, repo);
+    }
+    // Idle, the pane runs its shell; while ping runs, that is the program.
+    assert_eq!(ask("#{pane_pid_command}").await, "cmd");
+    h.cli(&["send-keys", "-t", "sv:0", "ping -n 4 127.0.0.1", "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let p = ask("#{pane_pid_command}").await;
+        if p.eq_ignore_ascii_case("ping") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "ping never showed as the program: {p:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Battery: a figure with a percent sign, or nothing on a desktop; the
+    // charging flag is 0 or 1 either way.
+    let bat = ask("[#{battery_percentage}] #{battery_charging}").await;
+    assert!(bat == "[] 0" || (bat.ends_with("% 0") || bat.ends_with("% 1")), "{bat}");
+    // The default status-right, drawn: CPU, MEM and the clock are there.
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "sv"]).await;
+    c.wait_for("status with the machine on it", |s| {
+        let row = s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default();
+        row.contains("CPU ") && row.contains("% MEM ") && row.contains(" | ")
+    })
+    .await;
+    // Turned off, the line is gone; a custom one shows what it is told.
+    h.cli(&["set", "-g", "status", "off"]).await;
+    c.wait_for("no status line", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default().contains("CPU "))
+        .await;
+    h.cli(&["set", "-g", "status", "on"]).await;
+    h.cli(&["set", "-g", "status-right", "up #{uptime} on #{host_short}"]).await;
+    c.wait_for("custom right side", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default().contains("up "))
+        .await;
     h.cli(&["kill-server"]).await;
 }
 

@@ -4386,9 +4386,17 @@ impl Server {
         pid: Option<PaneId>,
         cid: Option<ClientId>,
     ) -> crate::format::Context {
+        // The machine's readings come from a once-a-second cache.
+        let sys = crate::sysinfo::system();
         let mut ctx = crate::format::Context {
             host: std::env::var("COMPUTERNAME").unwrap_or_default(),
             socket: self.socket.clone(),
+            cpu_percentage: sys.cpu_percentage,
+            ram_percentage: sys.ram_percentage,
+            ram_used: sys.ram_used,
+            battery_percentage: sys.battery_percentage,
+            battery_charging: sys.battery_charging,
+            uptime: sys.uptime,
             ..Default::default()
         };
         let now = chrono::Local::now().timestamp();
@@ -4440,6 +4448,10 @@ impl Server {
             ctx.pane_command = p.command.clone();
             ctx.pane_start_command = p.argv.join(" ");
             ctx.pane_path = p.current_path().unwrap_or_default();
+            ctx.pane_path_short = crate::sysinfo::short_path(&ctx.pane_path);
+            ctx.git_branch =
+                if ctx.pane_path.is_empty() { String::new() } else { crate::sysinfo::git_branch(&ctx.pane_path) };
+            ctx.pane_pid_command = p.pid.map(crate::sysinfo::program_of).unwrap_or_default();
             ctx.pane_width = p.cols;
             ctx.pane_height = p.rows;
             ctx.pane_dead = p.exit_code.is_some();

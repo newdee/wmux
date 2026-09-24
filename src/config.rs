@@ -151,9 +151,12 @@ impl Default for Options {
             pane_border_active_fg: Color::Idx(2),
             pane_border_fg: Color::Idx(8),
             status_left: "[#S] ".into(),
-            status_right: "\"#T\" %H:%M %d-%b-%y".into(),
+            // What is useful at a glance and costs nothing to read: the
+            // branch when in a repository, where the pane is, the machine's
+            // load, the battery when there is one, the time.
+            status_right: "#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU #{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT #{battery_percentage},} | %H:%M".into(),
             status_left_length: 40,
-            status_right_length: 60,
+            status_right_length: 100, // the default right side is a long one; the window list still wins the room
             status_justify: "left".into(),
             window_status_separator: " ".into(),
             status_interval: 15,

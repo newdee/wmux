@@ -1730,3 +1730,44 @@ README 中英 copy mode 段补上翻页键与 `C-b C-b` 说明。
 ## 结论（第三十三次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 193 → 194。
+
+# 第三十四次验收（2026-09-24）— 状态栏原生变量与新默认 status-right
+
+## 做了什么
+
+`src/sysinfo.rs`：进程内直接读的变量，不再需要 `#(命令)`——`cpu_percentage`（GetSystemTimes 两次采样之差）、`ram_percentage` /
+`ram_used`（GlobalMemoryStatusEx）、`battery_percentage` / `battery_charging`（GetSystemPowerStatus，台式机为空）、`uptime`
+（GetTickCount64）、`git_branch`（向上找 `.git/HEAD`，含 worktree 的 `gitdir:` 文件，不起 git）、`pane_current_path_short`（家目录写成 `~`）、
+`pane_pid_command`（Toolhelp 快照里 pane 进程最新的后代，跳过 conhost）。系统读数与进程快照各缓存 1 秒。
+默认 `status-right` 改为 `#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU … MEM …#{?battery_percentage, | BAT …,} | %H:%M`，
+`status-right-length` 默认 60 → 100（窗口列表仍优先，右侧被裁）。`set -g status off` 整行关，`set -g status-right` 整条换——都是既有机制。
+
+## 修复过程中的发现（不计数）
+
+- console 测试与 status-justify e2e 断言了旧默认（右侧以引号包着的 pane 标题开头）：前者改为断言 CPU/MEM，后者显式 `set status-right`。
+- 一版把每个 pane 的进程快照各做一次；改为快照本身缓存 1 秒，30 个 pane 的 `jobs` 从每次多次快照变成一次。
+- 上一批留下的 debug `wmux.exe` 进程占着 `target\debug\wmux.exe` 让构建失败；按路径只杀 target 下的，用户装的 server 不碰。
+- clippy 5 条（checked_div、redundant guard、while let、rfind、复杂类型）逐条改掉。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（release 二进制）
+
+数据：仓库目录的 pane：`master | ~\Documents\dfine\wmux | CPU 4% MEM 22% | 10:40`（默认格式整条展开）；TEMP 目录分支为空、路径 `~\AppData\Local\Temp`；
+空闲 `pane_pid_command` = cmd，跑 `ping` 时 = PING；台式机电池 `[] 0`；50 次 `display-message` 809 ms（16 ms/次，客户端往返为主）。
+全量 199 项（lib 131 / console 4 / e2e 64）全过，clippy 无 warning，fmt 干净。
+e2e `the_machine_variables_answer_without_a_command`：两次采样后 CPU 有数、RAM/uptime 有值、仓库里有分支、`~\` 开头、ping 时程序名为 ping、
+电池字段形态合法、attach 后状态栏含 `CPU … % MEM …`、`status off` 后消失、自定义 `status-right` 生效。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：整套 e2e（64 条）连跑 3 次全过；4 条 sysinfo 单元测试（读数缓存 1 秒、分支/脱离 HEAD/worktree/无仓库、`~` 大小写与同名前缀目录、
+本进程程序名）随全量通过。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界
+
+数据：已退出的 pane 程序名为空、`pane_dead` 1；`C:\` 根目录短路径原样、分支为空；pane 目录被删后分支为空、短路径仍给（目录被 shell 占着删不掉是脚本的事）；
+带条件的自定义右侧在无电池无仓库时只剩 `up 28m`；空 `status-right` 展开为空；30 个 pane 的 `jobs`（每 pane 一个上下文）28 ms、一秒内再来 21 ms；server 全程存活。
+README（中英）变量表与默认格式说明、parity 变量段同步；站点计数 194 → 199。
+
+## 结论（第三十四次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 194 → 199（lib 131 / console 4 / e2e 64）。

@@ -330,7 +330,17 @@ Variables: `session_name` `session_id` `session_windows` `session_attached`
 `client_session` `client_created` `client_activity` `client_prefix`, `host`
 `host_short` `socket_path` `version` `pid`; also `session_activity`
 `session_last_attached` `window_activity` `window_start_flag`
-`window_end_flag` `window_layout`. Comparisons as in tmux: `#{==:a,b}`
+`window_end_flag` `window_layout`. The machine, read in-process (no
+`#(command)` needed): `cpu_percentage` `ram_percentage` `ram_used`
+`battery_percentage` (empty without a battery) `battery_charging` `uptime`,
+plus `git_branch` (the branch of the pane's directory, read from `.git`,
+empty outside a repository), `pane_current_path_short` (`~` for home) and
+`pane_pid_command` (the program the pane is running right now, `cargo`
+during a build). The default `status-right` uses them:
+`#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU
+#{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT
+#{battery_percentage},} | %H:%M`; `set -g status-right ...` replaces it,
+`set -g status off` hides the line. Comparisons as in tmux: `#{==:a,b}`
 `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}`
 `#{||:a,b}` and `#{m:pattern,text}` (a glob; `m/i:` ignores case) answer
 `1` or `0`, and can be the condition of `#{?…}` or of a `%if` in the config

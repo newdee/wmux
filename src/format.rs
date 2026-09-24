@@ -95,6 +95,23 @@ pub struct Context {
     pub client_prefix: bool,
     pub host: String,
     pub socket: String,
+    /// The machine, read in-process (no `#(command)` needed): CPU and RAM
+    /// in use as "37%", RAM in use as "6.2G", the battery as "84%" (empty
+    /// with no battery) and whether it is charging, the time since boot.
+    pub cpu_percentage: String,
+    pub ram_percentage: String,
+    pub ram_used: String,
+    pub battery_percentage: String,
+    pub battery_charging: bool,
+    pub uptime: i64,
+    /// The branch (or short commit) of the repository the pane's directory
+    /// is in, empty outside one.
+    pub git_branch: String,
+    /// The pane's directory with the home directory as `~`.
+    pub pane_path_short: String,
+    /// The program running in the pane right now (its newest descendant),
+    /// e.g. `cargo` during a build; the shell's own name when idle.
+    pub pane_pid_command: String,
 }
 
 /// A number of seconds as people say it: `42s`, `5m`, `2h13m`, `3d2h`.
@@ -234,6 +251,15 @@ impl Context {
             "host" | "H" => self.host.clone(),
             "host_short" | "h" => self.host.split('.').next().unwrap_or("").to_string(),
             "socket_path" => self.socket.clone(),
+            "cpu_percentage" => self.cpu_percentage.clone(),
+            "ram_percentage" => self.ram_percentage.clone(),
+            "ram_used" => self.ram_used.clone(),
+            "battery_percentage" => self.battery_percentage.clone(),
+            "battery_charging" => flag(self.battery_charging),
+            "uptime" => human_duration(self.uptime),
+            "git_branch" => self.git_branch.clone(),
+            "pane_current_path_short" => self.pane_path_short.clone(),
+            "pane_pid_command" => self.pane_pid_command.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),
             "pid" => std::process::id().to_string(),
             _ => return None,
