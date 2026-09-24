@@ -76,7 +76,7 @@ const ZH = {
   "c6.p2":
     "<b>两个终端，两种尺寸。</b> <code>window-size</code> 决定 session 听哪个终端的；小一点的终端看到的是窗口的一块视口，<kbd>Shift</kbd> + 方向键平移。",
   "c6.p3":
-    "<b>顺手的小事。</b> 右键粘贴，<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 补全命令、目标和选项名，<code>wmux completion powershell</code> 让 PowerShell 认识每条命令、每个 flag、每个选项和 session 名。",
+    "<b>顺手的小事。</b> 右键粘贴，<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 补全命令、flag、目标和选项名，<code>wmux completion powershell</code> 让 PowerShell 认识每条命令、每个 flag、每个选项和 session 名。",
   "c6.p4":
     "<b>升级不丢 session。</b> <code>wmux update</code> 装新版，<code>wmux restart-server</code> 把正在跑的 session 全部挪过去，历史和目录都在，接着的终端自己跟过去。",
 

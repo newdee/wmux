@@ -127,7 +127,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
 | `t` / `~` / `r` | clock / recent messages / redraw |
 | `]` | paste the clipboard |
-| `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command and a `-t` target) |
+| `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |
 | `?` | list key bindings |
 | `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `-`/`+` or Left/Right fold and unfold a session) |
@@ -230,8 +230,10 @@ starting with `-`, so flags complete in PowerShell 7 only.
 wmux completion powershell | Out-String | Invoke-Expression
 ```
 
-Inside wmux, Tab at the `:` prompt completes the command name, a target
-after `-t`, and after `set` / `show` the option's name (abbreviations too:
+Inside wmux, Tab at the `:` prompt completes the command name, its flags
+once a `-` is typed (an alias or a prefix counts as its command; a flag
+already given is not offered again), a target after `-t`, and after
+`set` / `show` the option's name (abbreviations too:
 `sync`, `mon-act`) and then its value when it is one of a few (`on`/`off`,
 `top`/`bottom`); several candidates are typed as far as they agree and
 listed in the prompt.

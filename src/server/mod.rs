@@ -4988,6 +4988,29 @@ impl Server {
                     .map(|v| v.to_string())
                     .collect()
             }
+            // A flag being typed: the command's flags (an alias or a prefix
+            // counts as the command it stands for), less those already given.
+            (Some(_), _) if word.starts_with('-') => {
+                let command = crate::command::canonical_name(earlier[0]).unwrap_or("");
+                // Flags given so far, a combined `-gq` counting as `-g -q`.
+                let given: Vec<String> = earlier[1..]
+                    .iter()
+                    .filter(|w| w.starts_with('-') && !w.starts_with("--"))
+                    .flat_map(|w| {
+                        let letters = &w[1..];
+                        if letters.len() > 1 && letters.chars().all(|c| c.is_ascii_alphabetic()) {
+                            letters.chars().map(|c| format!("-{c}")).collect::<Vec<_>>()
+                        } else {
+                            vec![w.to_string()]
+                        }
+                    })
+                    .collect();
+                crate::command::flags_of(command)
+                    .iter()
+                    .filter(|f| f.starts_with(word) && !given.iter().any(|g| g == *f))
+                    .map(|f| f.to_string())
+                    .collect()
+            }
             (Some(&"-t") | Some(&"-s"), _) => {
                 let mut names = Vec::new();
                 for s in &self.sessions {
@@ -5005,7 +5028,7 @@ impl Server {
         };
         // A single command or option name gets a space after it, ready for
         // what follows; a value is the last word, so it does not.
-        let ends_word = earlier.is_empty() || matches!(option_arg.as_deref(), Some([]));
+        let ends_word = earlier.is_empty() || matches!(option_arg.as_deref(), Some([])) || word.starts_with('-');
         // The prompt's row is the status line, so the candidates take the
         // label's place until the next key.
         let (replacement, hint) = match candidates.as_slice() {

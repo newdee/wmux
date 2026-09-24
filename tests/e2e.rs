@@ -1636,7 +1636,8 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     h.cli(&["new", "-d", "-s", "r"]).await;
     h.wait_capture("r:0", "shell prompt", |t| t.contains("wmux>")).await;
     h.cli(&["send-keys", "-t", "r:0", "echo keepme-42", "Enter"]).await;
-    h.wait_capture("r:0", "output", |t| t.contains("keepme-42")).await;
+    // The output line itself, not the typed command that also says it.
+    h.wait_capture("r:0", "output", |t| t.lines().any(|l| l.trim() == "keepme-42")).await;
 
     // save-history: the pane's text goes into the saved file...
     let (code, _, err) = h.cli(&["save-session", "-t", "r"]).await;
@@ -1654,7 +1655,11 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     let (code, _, err) = h.cli(&["resume", "r"]).await;
     assert_eq!(code, 0, "{err}");
     h.wait_capture("r:0", "the restored output", |t| t.contains("keepme-42")).await;
-    h.wait_capture("r:0", "the restored shell", |t| t.contains("wmux>")).await;
+    // The replayed history holds the prompts that were saved; the shell is
+    // up when one more appears. Typing before that can be lost while the
+    // shell starts.
+    let saved_prompts = file.matches("wmux>").count();
+    h.wait_capture("r:0", "the restored shell", |t| t.matches("wmux>").count() > saved_prompts).await;
 
     // The shell exits; with remain-on-exit the pane, the window and the
     // session all stay, and the pane says what happened.
@@ -1670,7 +1675,12 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     // respawn-pane starts the shell again in the same pane.
     let (code, _, err) = h.cli(&["respawn-pane", "-t", "r:0"]).await;
     assert_eq!(code, 0, "{err}");
-    h.wait_capture("r:0", "a fresh prompt", |t| t.contains("wmux>")).await;
+    // The old text (prompts included) may still be on the screen: the new
+    // shell is up when the last line is a prompt again, not the exit note.
+    h.wait_capture("r:0", "a fresh prompt", |t| {
+        t.lines().rev().find(|l| !l.trim().is_empty()).is_some_and(|l| l.trim() == "wmux>")
+    })
+    .await;
     // ...with the pane environment a new pane gets, so `wmux` inside it
     // still talks to this server (respawn used to pass set-environment only).
     h.cli(&["send-keys", "-t", "r:0", "echo WMUX=%WMUX% PANE=%WMUX_PANE%", "Enter"]).await;
@@ -3174,6 +3184,13 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
         ("set mo o", "(no completion) set mo o"),
         ("set @my", "(no completion) set @my"),
         ("set mouse on o", "(no completion) set mouse on o"),
+        // Flags: an alias reads as its command, a flag given is not offered
+        // again, one match is typed with a space, no flags says so.
+        ("splitw -", "(-h -v -b -d -f -c +2) splitw -"),
+        ("set -g -", "(-a -w -s -t) set -g -"),
+        ("set -ga -", "(-w -s -t) set -ga -"),
+        ("neww -n", ":neww -n "),
+        ("ls -", "(no completion) ls -"),
     ] {
         c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
         c.type_str(typed).await;

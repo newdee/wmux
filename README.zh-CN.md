@@ -98,7 +98,7 @@ wmux kill-server
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
 | `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
-| `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类；Tab 补命令名和 `-t` 后的目标） |
+| `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类；Tab 补命令名、flag、`-t` 后的目标和选项名） |
 | `C-s` / `C-r` | 手动保存当前 session / 恢复保存过的 session |
 | `d` | 脱离 |
 | `?` | 列出所有按键 |
@@ -153,7 +153,7 @@ PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从
 wmux completion powershell | Out-String | Invoke-Expression
 ```
 
-wmux 里面 `:` 命令行按 Tab 也能补：命令名、`-t` 后面的目标、`set` / `show` 后面的选项名（缩写也行：`sync`、`mon-act`），以及只有几个取值的选项的值（`on`/`off`、`top`/`bottom`）；多个候选时补到相同的部分为止，候选列在提示符里。
+wmux 里面 `:` 命令行按 Tab 也能补：命令名、输到 `-` 时这条命令的 flag（别名和前缀按它代表的命令算，已经写过的不再列）、`-t` 后面的目标、`set` / `show` 后面的选项名（缩写也行：`sync`、`mon-act`），以及只有几个取值的选项的值（`on`/`off`、`top`/`bottom`）；多个候选时补到相同的部分为止，候选列在提示符里。
 
 PowerShell 默认不给 Ctrl+D 绑任何功能（bash 里是退出），所以它也关不掉 pane。想让它在空行上退出，在 `$PROFILE` 里加一行：
 
