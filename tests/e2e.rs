@@ -31,8 +31,15 @@ impl Harness {
         unsafe { std::env::set_var("WMUX_EXE", env!("CARGO_BIN_EXE_wmux")) };
         let socket = format!("test-{name}-{}", std::process::id());
         let s = socket.clone();
+        // An empty config, not the machine's `~/.wmux.conf`: a theme there
+        // changes the status line these tests read.
+        let config = std::env::temp_dir().join(format!("wmux-test-empty-{}.conf", std::process::id()));
+        if !config.exists() {
+            std::fs::write(&config, "").unwrap();
+        }
+        let options = wmux::server::RunOptions { force_restore: false, config: Some(config) };
         let server = tokio::spawn(async move {
-            if let Err(e) = wmux::server::run(s).await {
+            if let Err(e) = wmux::server::run_with(s, options).await {
                 panic!("server: {e:#}");
             }
         });
@@ -3017,6 +3024,45 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     c.type_str(":b").await;
     c.key(0x09, '\t', 0).await;
     c.wait_for("beta:build", |s| status(s).starts_with(":select-window -t beta:build")).await;
+    // After `set`: the option's name, abbreviations included, past flags.
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+    c.type_str("set sync").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("sync completed", |s| status(s).starts_with(":set synchronize-panes ")).await;
+    // Then its value, when it is one of a few.
+    c.type_str("o").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("on/off offered", |s| status(s).starts_with("(off on) set synchronize-panes o")).await;
+    c.type_str("f").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("off typed", |s| status(s).starts_with(":set synchronize-panes off")).await;
+    // -g before the name, and a name spelled by its words.
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+    c.type_str("set -g mon-act").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("mon-act by words", |s| status(s).starts_with(":set -g monitor-activity ")).await;
+    // `show -s` is a flag, not a target: the word after it is a name.
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+    c.type_str("show -s status-l").await;
+    c.key(0x09, '\t', 0).await;
+    c.wait_for("status-left offered", |s| {
+        status(s).starts_with("(status-left status-left-length) show -s status-left")
+    })
+    .await;
+    // Edges: nothing typed yet lists the first options; an unknown or
+    // ambiguous name, a user @option, and a third word have nothing to offer.
+    for (typed, want) in [
+        ("set ", "(autosave base-index default-command default-shell display-time history-limit +"),
+        ("set zzz o", "(no completion) set zzz o"),
+        ("set mo o", "(no completion) set mo o"),
+        ("set @my", "(no completion) set @my"),
+        ("set mouse on o", "(no completion) set mouse on o"),
+    ] {
+        c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+        c.type_str(typed).await;
+        c.key(0x09, '\t', 0).await;
+        c.wait_for(typed, |s| status(s).starts_with(want)).await;
+    }
     c.key(VK_ESCAPE, '\x1b', 0).await;
     // The shell completer is a script listing every command and the flags.
     let out =

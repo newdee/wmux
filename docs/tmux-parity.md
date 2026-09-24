@@ -25,7 +25,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | clear-history | yes | |
 | clear-prompt-history | no | wmux keeps no prompt history |
 | clock-mode | yes | `prefix t`, any key leaves |
-| command-prompt | part | `-p`, `-I`, `%%` template, Tab completes the command name and a `-t`/`-s` target; no `-k`, no numbered `%1` |
+| command-prompt | part | `-p`, `-I`, `%%` template, Tab completes the command name, a `-t`/`-s` target, and after `set`/`show` the option name (abbreviations included) and a few-valued option's value; no `-k`, no numbered `%1` |
 | confirm-before | yes | `-p` |
 | copy-mode | yes | `-u`, `-t` |
 | customize-mode | no | a whole options UI; `show-options` covers the need |

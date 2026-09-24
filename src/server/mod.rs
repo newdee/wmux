@@ -4902,9 +4902,28 @@ impl Server {
         let start = head.rfind(' ').map(|i| i + 1).unwrap_or(0);
         let word = &head[start..];
         let earlier: Vec<&str> = head[..start].split_whitespace().collect();
-        let candidates: Vec<String> = match earlier.last() {
-            None => crate::command::complete_command(word).into_iter().map(str::to_string).collect(),
-            Some(&"-t") | Some(&"-s") => {
+        // After `set` / `show`: the option's name, then (for the options
+        // that take one of a few) its value. `-s` there is a flag, so the
+        // word after it is the name too; only `-t` takes a value.
+        let option_arg = earlier
+            .first()
+            .filter(|c| crate::command::takes_option_name(c))
+            .filter(|_| !word.starts_with('-') && earlier.last() != Some(&"-t"))
+            .map(|_| crate::command::positional_args(&earlier[1..]));
+        let candidates: Vec<String> = match (earlier.last(), option_arg.as_deref()) {
+            (None, _) => crate::command::complete_command(word).into_iter().map(str::to_string).collect(),
+            (_, Some([])) if !word.starts_with('@') => {
+                crate::config::option_candidates(word).into_iter().map(str::to_string).collect()
+            }
+            (_, Some([name])) => {
+                let name = crate::config::resolve_name(name).unwrap_or_default();
+                crate::config::option_values(&name)
+                    .iter()
+                    .filter(|v| v.starts_with(word))
+                    .map(|v| v.to_string())
+                    .collect()
+            }
+            (Some(&"-t") | Some(&"-s"), _) => {
                 let mut names = Vec::new();
                 for s in &self.sessions {
                     names.push(s.name.clone());
@@ -4919,11 +4938,14 @@ impl Server {
             }
             _ => Vec::new(),
         };
+        // A single command or option name gets a space after it, ready for
+        // what follows; a value is the last word, so it does not.
+        let ends_word = earlier.is_empty() || matches!(option_arg.as_deref(), Some([]));
         // The prompt's row is the status line, so the candidates take the
         // label's place until the next key.
         let (replacement, hint) = match candidates.as_slice() {
             [] => (String::new(), Some("(no completion) ".to_string())),
-            [one] => (format!("{one}{}", if earlier.is_empty() { " " } else { "" }), None),
+            [one] => (format!("{one}{}", if ends_word { " " } else { "" }), None),
             many => {
                 let shown: Vec<&str> = many.iter().take(6).map(String::as_str).collect();
                 let more = many.len().saturating_sub(shown.len());

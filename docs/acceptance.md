@@ -2023,3 +2023,39 @@ pane 里的 shell 按 key-down 处理输入，所以不影响输入内容，不�
 现在只有 0 和 0x8A150028 放行。把步骤原样加上 GitHub 的退出包装在本机跑：正常为 0，警告为 0，错误为 1。
 标签移到修正后的提交，再推一次，发布成功：MSI 4.88 MB，zip 1.35 MB，各带 sha256；bot 提交了 0.10.1 清单。
 `wmux update --check` 显示 "wmux 0.10.1 is the latest"。
+
+# 第四十一次记录（2026-09-24）— `:` 提示符和 PowerShell 补全选项名；测试不再读本机配置
+
+用户报告：`prefix :` 里输入 `set sync` 按 Tab 不补全。
+**原因**：提示符的 Tab 只补全命令名和 `-t`/`-s` 后面的目标，不补全选项名。回车能执行，是因为选项名本来就支持缩写。
+**修正**：`set` / `show`（包括别名和前缀）后面：
+- 第一个位置参数补全选项名。规则与 `resolve_name` 共用 `option_candidates`：先按整段前缀，再按每段前缀（`mon-act`）；先匹配有实际作用的选项，兼容用的名字排在后面。
+- 第二个位置参数补全固定取值（开关类 on/off，以及 status-position、pane-border-status、status-justify、window-size）。
+- `-s` 在这里是 flag，不是目标。
+- PowerShell 补全脚本从同一份表生成选项名和取值。
+- Ctrl+D 退不出 pane：查明是 PSReadLine 在 Windows 编辑模式下 Ctrl+D 没有绑定，与 wmux 无关。README 写明解决办法，用户的两个 PowerShell profile 都已加上 `DeleteCharOrExit`。
+
+**用 ConPTY 实测 Ctrl+D**（每个 pane 发一次 Ctrl+D）：
+
+| pane | 客户端是否退出 |
+|---|---|
+| pwsh，加载 profile | 是 |
+| Windows PowerShell 5.1，加载 profile | 是 |
+| pwsh -NoProfile | 否 |
+
+验收（每轮 review + 全量测试）：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 | 本机刚写了 `~/.wmux.conf`（Tokyo Night 主题），console 挂 2 个、e2e 挂 9 个：两套测试的 server 都读本机真实配置，主题改掉了测试要找的状态栏 | **有问题**。console 用空的 `WMUX_CONFIG` 文件，e2e 用 `RunOptions.config`（指向不存在的路径会落回 `~/.wmux.conf`，所以必须是真实存在的空文件）。修后 141/7/66 全过，不计数 |
+| 1' | 机制通路 | 关掉选项补全分支：e2e 卡在 "sync completed" 失败；打开：通过 | 生效 |
+| 2 | 资源与错误路径 | 失败的 console 测试留下 2 个 server，锁住 `target\debug\wmux.exe`，下一次编译报 "拒绝访问" | **有问题**。`Term` 记下 `-L` 的 socket，Drop 时 kill-server；故意 panic 的探针测试后遗留数为 0。不计数 |
+| 3 | 静态一致性 | 网站测试数 212，实际 214；parity 表 command-prompt 一行过时 | **有问题**，已改，不计数 |
+| 4 | 可复现性 | 全量连跑 3 次，每次 141/7/66，遗留进程 0；补全脚本两次生成逐字节相同（8874 字符） | 干净（1/3） |
+| 5 | 退化输入 | e2e 新增：`set `（列出前 6 个加 "+N"）、未知名、歧义名 `mo`、`@my`、第三个词，都符合预期；fmt、clippy 干净；全量 141/7/66 | 干净（2/3） |
+| 6 | 不变量 | 把 HEAD 的旧 `resolve_name` 原样放进临时测试，在 1347 个输入上对比（每个名字的全部前缀、每段取 1 到 3 字符的全部组合、边界串）：差异 0；全量 141/7/66 | 干净（3/3） |
+
+PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set sync`、`set synchronize-panes o`、`set -g mo`、`show -s status-l`、`setw -g -t work mou`、`set status-position ` 都得到预期候选。
+记下两个以前就有、这次没修的问题：
+- 5.1 对以 `-` 开头的词不调用原生补全器，所以 flag 在 5.1 里补不出来。
+- 脚本里 flag 表只按完整命令名查，`set` 这类别名没有 flag 补全。

@@ -331,40 +331,59 @@ pub fn resolve_name(name: &str) -> Result<String, String> {
     if name.is_empty() || name.starts_with('@') || KNOWN.contains(&name) || ACCEPTED.contains(&name) {
         return Ok(name.to_string());
     }
-    let pick = |hits: Vec<&&str>| -> Option<Result<String, String>> {
-        match hits.len() {
-            0 => None,
-            1 => Some(Ok(hits[0].to_string())),
-            _ => {
-                // Enough to see what went wrong, not a wall of text.
-                let names: Vec<&str> = hits.into_iter().copied().collect();
-                let shown = names.iter().take(4).copied().collect::<Vec<_>>().join(", ");
-                let rest = names.len().saturating_sub(4);
-                let tail = if rest > 0 { format!(" and {rest} more") } else { String::new() };
-                Some(Err(format!("ambiguous option: {name} (could be {shown}{tail})")))
-            }
+    match option_candidates(name).as_slice() {
+        [] => Ok(name.to_string()),
+        [one] => Ok(one.to_string()),
+        many => {
+            // Enough to see what went wrong, not a wall of text.
+            let shown = many.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+            let rest = many.len().saturating_sub(4);
+            let tail = if rest > 0 { format!(" and {rest} more") } else { String::new() };
+            Err(format!("ambiguous option: {name} (could be {shown}{tail})"))
         }
-    };
-    // A prefix of the whole name (`sync`, `rem`), then a prefix of each
-    // dash-separated word, which is how these names are read aloud
-    // (`mon-act`, `w-s-f`). Options that do something are matched first, so
-    // the compatibility names never shadow them.
-    let words = |o: &str| o.split('-').map(str::to_string).collect::<Vec<_>>();
-    let want = words(name);
-    let by_words = !want.iter().any(String::is_empty);
-    let by_word = |o: &&&str| {
-        let parts = words(o);
+    }
+}
+
+/// The option names `name` could stand for, in order: what `resolve_name`
+/// picks from and what a Tab offers. A prefix of the whole name (`sync`,
+/// `rem`) first, then a prefix of each dash-separated word, which is how
+/// these names are read aloud (`mon-act`, `w-s-f`). Options that do
+/// something are matched first, so the compatibility names never shadow
+/// them. An empty name is a prefix of every option that does something.
+pub fn option_candidates(name: &str) -> Vec<&'static str> {
+    let want: Vec<&str> = name.split('-').collect();
+    let by_words = !want.iter().any(|w| w.is_empty());
+    let by_word = |o: &&'static str| {
+        let parts: Vec<&str> = o.split('-').collect();
         parts.len() == want.len() && parts.iter().zip(&want).all(|(p, w)| p.starts_with(w))
     };
     for table in [KNOWN, ACCEPTED] {
-        if let Some(r) = pick(table.iter().filter(|o| o.starts_with(name)).collect()) {
-            return r;
+        let hits: Vec<&'static str> = table.iter().copied().filter(|o| o.starts_with(name)).collect();
+        if !hits.is_empty() {
+            return hits;
         }
-        if by_words && let Some(r) = pick(table.iter().filter(by_word).collect()) {
-            return r;
+        if by_words {
+            let hits: Vec<&'static str> = table.iter().copied().filter(by_word).collect();
+            if !hits.is_empty() {
+                return hits;
+            }
         }
     }
-    Ok(name.to_string())
+    Vec::new()
+}
+
+/// The values an option takes when they are a fixed few, for a Tab after
+/// the option's name; empty when the value is free (a number, a format).
+pub fn option_values(name: &str) -> &'static [&'static str] {
+    match name {
+        n if BOOLEAN.contains(&n) && n != "status" => &["off", "on"],
+        "status" => &["bottom", "off", "on", "top"],
+        "status-position" => &["bottom", "top"],
+        "pane-border-status" => &["bottom", "off", "top"],
+        "status-justify" => &["absolute-centre", "centre", "left", "right"],
+        "window-size" => &["largest", "latest", "manual", "smallest"],
+        _ => &[],
+    }
 }
 
 impl Options {
@@ -702,6 +721,34 @@ pub fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a Tab offers after `set`: the same names `resolve_name` picks
+    /// from, and for the few-valued options values the setter takes.
+    #[test]
+    fn option_candidates_and_values() {
+        assert_eq!(option_candidates("sync"), vec!["synchronize-panes"]);
+        assert_eq!(option_candidates("mo"), vec!["monitor-activity", "monitor-bell", "monitor-silence", "mouse"]);
+        assert_eq!(option_candidates("mon-act"), vec!["monitor-activity"]);
+        assert_eq!(option_candidates("w-s-f"), vec!["window-status-format"]);
+        // Compatibility names only when nothing that works matches.
+        assert_eq!(option_candidates("mode-k"), vec!["mode-keys"]);
+        assert!(!option_candidates("hist").contains(&"history-file"));
+        assert_eq!(option_candidates(""), KNOWN.to_vec());
+        assert!(option_candidates("zzz").is_empty());
+        // resolve_name still decides the same way.
+        assert_eq!(resolve_name("sync").unwrap(), "synchronize-panes");
+        assert!(resolve_name("mo").unwrap_err().contains("could be monitor-activity"));
+        // Every offered value is one the option takes (synchronize-panes is
+        // the server's own, not a stored option).
+        for name in KNOWN.iter().filter(|n| **n != "synchronize-panes") {
+            for v in option_values(name) {
+                let mut o = Options::default();
+                assert!(o.set(name, v).is_ok(), "set {name} {v}");
+            }
+        }
+        assert_eq!(option_values("mouse"), ["off", "on"]);
+        assert!(option_values("status-left").is_empty());
+    }
 
     /// The abbreviation table has to agree with what `set` actually accepts,
     /// or a short name would expand to something the setter then rejects.

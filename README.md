@@ -214,17 +214,28 @@ says so. `update` downloads the MSI, checks it against the SHA-256
 published beside it, and hands it to Windows Installer; nothing is ever
 checked or installed in the background.
 
-Tab completion in PowerShell (command names, each command's flags, and
-`-t` targets from the running server) comes from a completer the program
-prints; one line in `$PROFILE` loads it:
+Tab completion in PowerShell (command names, each command's flags, `-t`
+targets from the running server, and option names and values after `set`
+/ `show`) comes from a completer the program prints; one line in
+`$PROFILE` loads it:
 
 ```powershell
 wmux completion powershell | Out-String | Invoke-Expression
 ```
 
-Inside wmux, Tab at the `:` prompt completes the command name and a
-target after `-t`; several candidates are typed as far as they agree and
+Inside wmux, Tab at the `:` prompt completes the command name, a target
+after `-t`, and after `set` / `show` the option's name (abbreviations too:
+`sync`, `mon-act`) and then its value when it is one of a few (`on`/`off`,
+`top`/`bottom`); several candidates are typed as far as they agree and
 listed in the prompt.
+
+PowerShell's Ctrl+D does nothing by default (bash's exits), so it does
+not close a pane either. To have it exit on an empty line, add to
+`$PROFILE`:
+
+```powershell
+Set-PSReadLineKeyHandler -Chord Ctrl+d -Function DeleteCharOrExit
+```
 
 And to have wmux in the Windows Terminal dropdown:
 

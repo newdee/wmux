@@ -145,13 +145,19 @@ wmux restart-server   # 把正在跑的 session 全部挪到新版本的 server
 
 `restart-server` 会先存档正在跑的 session，停掉旧 server，起一个新版本的，再只恢复刚才在跑的那几个（布局、历史、目录都在）；接着的终端会自己重新接上（0.10 起；更老的 server 上的终端会被断开，`wmux attach` 接回去）。在 pane 里面运行时，它会跑到 pane 外面去完成，结果写进 `%LOCALAPPDATA%\wmux\restart.log`。选项和按键绑定会重新从配置文件读，和 `kill-server` 之后一样：之后用 `set` / `bind` 临时改的不会带过去（旧 server 分不清哪些是默认值、哪些是你改的，全搬过去会把旧版本的默认值钉在新版本上）。终端接着一个不同版本的 server 时，标题栏会提示。`update` 下载 MSI 后先核对旁边发布的 SHA-256 再交给 Windows Installer；任何检查和安装都不会在后台偷偷进行。
 
-PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名）由程序自己吐出一段补全脚本，`$PROFILE` 里加一行就有：
+PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名、`set` / `show` 后面的选项名和取值）由程序自己吐出一段补全脚本，`$PROFILE` 里加一行就有：
 
 ```powershell
 wmux completion powershell | Out-String | Invoke-Expression
 ```
 
-wmux 里面 `:` 命令行按 Tab 也能补：命令名、`-t` 后面的目标；多个候选时补到相同的部分为止，候选列在提示符里。
+wmux 里面 `:` 命令行按 Tab 也能补：命令名、`-t` 后面的目标、`set` / `show` 后面的选项名（缩写也行：`sync`、`mon-act`），以及只有几个取值的选项的值（`on`/`off`、`top`/`bottom`）；多个候选时补到相同的部分为止，候选列在提示符里。
+
+PowerShell 默认不给 Ctrl+D 绑任何功能（bash 里是退出），所以它也关不掉 pane。想让它在空行上退出，在 `$PROFILE` 里加一行：
+
+```powershell
+Set-PSReadLineKeyHandler -Chord Ctrl+d -Function DeleteCharOrExit
+```
 
 想让 wmux 出现在 Windows Terminal 的下拉菜单里：
 

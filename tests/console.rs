@@ -13,10 +13,23 @@ fn sessions_dir() -> String {
     std::env::temp_dir().join(format!("wmux-console-sessions-{}", std::process::id())).to_string_lossy().into_owned()
 }
 
+/// An empty config file for the servers these tests start, so what they
+/// check does not depend on the machine's own `~/.wmux.conf` (a theme there
+/// changes the status line they look for). The first config file that
+/// exists wins, so this has to be a file, not a path to nothing.
+fn empty_config() -> String {
+    let p = std::env::temp_dir().join(format!("wmux-console-empty-{}.conf", std::process::id()));
+    if !p.exists() {
+        std::fs::write(&p, "").unwrap();
+    }
+    p.to_string_lossy().into_owned()
+}
+
 /// The real client binary with the test environment.
 fn wmux() -> std::process::Command {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_wmux"));
     c.env("WMUX_SESSIONS_DIR", sessions_dir());
+    c.env("WMUX_CONFIG", empty_config());
     c
 }
 
@@ -26,6 +39,19 @@ struct Term {
     writer: Box<dyn Write + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     raw: Vec<u8>,
+    /// The `-L` socket the client was started with: its server is stopped
+    /// when the test ends, passing or not, so a failed test does not leave
+    /// a server holding target\debug\wmux.exe open (which fails the next
+    /// build).
+    socket: Option<String>,
+}
+
+impl Drop for Term {
+    fn drop(&mut self) {
+        if let Some(s) = &self.socket {
+            let _ = wmux().args(["-L", s, "kill-server"]).output();
+        }
+    }
 }
 
 impl Term {
@@ -41,6 +67,7 @@ impl Term {
         cmd.env_remove("WMUX_PANE"); // make sure we do not look nested
         cmd.env_remove("WMUX");
         cmd.env("WMUX_SESSIONS_DIR", sessions_dir()); // keep autosave out of the real directory
+        cmd.env("WMUX_CONFIG", empty_config()); // and the machine's config out of the test
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -59,7 +86,8 @@ impl Term {
         });
         // Keep the master alive for the life of the test.
         std::mem::forget(pair.master);
-        Term { parser: vt100::Parser::new(rows, cols, 200), rx, writer, child, raw: Vec::new() }
+        let socket = args.windows(2).find(|w| w[0] == "-L").map(|w| w[1].to_string());
+        Term { parser: vt100::Parser::new(rows, cols, 200), rx, writer, child, raw: Vec::new(), socket }
     }
 
     fn pump(&mut self, d: Duration) {
@@ -392,7 +420,7 @@ fn the_title_says_when_the_server_is_another_version() {
     let socket = format!("mismatch-{}", std::process::id());
     let old_wmux = || {
         let mut c = std::process::Command::new(&old);
-        c.env("WMUX_SESSIONS_DIR", &dir).args(["-L", &socket]);
+        c.env("WMUX_SESSIONS_DIR", &dir).env("WMUX_CONFIG", empty_config()).args(["-L", &socket]);
         c
     };
     let out = old_wmux().args(["new", "-d", "-s", "m"]).output().unwrap();

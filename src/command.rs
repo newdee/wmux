@@ -1642,6 +1642,36 @@ pub fn complete_command(prefix: &str) -> Vec<&'static str> {
     hits
 }
 
+/// Whether `name`, as typed (a full name, a short alias or a prefix), is a
+/// command whose first argument is an option name: `set-option`,
+/// `show-options` and their window-option spellings.
+pub fn takes_option_name(name: &str) -> bool {
+    const ALIASES: &[&str] = &["set", "setw", "show", "showw", "show-option", "show-window-option"];
+    ALIASES.contains(&name)
+        || matches!(
+            resolve_prefix(name),
+            Ok("set-option" | "set-window-option" | "show-options" | "show-window-options")
+        )
+}
+
+/// The positional arguments among `args` (the words after a command's
+/// name): flags are left out, and so is the word after `-t`, its value.
+pub fn positional_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "-t" => i += 2,
+            a if a.starts_with('-') => i += 1,
+            a => {
+                out.push(a);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// The longest prefix every candidate shares: what a Tab can type when
 /// there are several.
 pub fn common_prefix<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
@@ -3003,6 +3033,21 @@ pub fn parse_line(line: &str) -> Result<Option<Cmd>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which commands take an option name, and where it sits among flags.
+    #[test]
+    fn option_name_position() {
+        for c in ["set", "setw", "set-option", "set-o", "show", "showw", "show-options", "show-window-options"] {
+            assert!(takes_option_name(c), "{c}");
+        }
+        for c in ["set-hook", "set-buffer", "show-buffer", "split-window", "s"] {
+            assert!(!takes_option_name(c), "{c}");
+        }
+        assert!(positional_args(&[]).is_empty());
+        assert!(positional_args(&["-g", "-s"]).is_empty());
+        assert_eq!(positional_args(&["-g", "-t", "work", "mouse"]), vec!["mouse"]);
+        assert_eq!(positional_args(&["-gq", "status", "on"]), vec!["status", "on"]);
+    }
 
     fn p(s: &str) -> Cmd {
         parse_line(s).unwrap().unwrap()
