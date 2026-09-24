@@ -7,11 +7,12 @@
 //! turns the PNGs into the GIF used by the README and the site.
 //!
 //! It is a test so that it runs the same way the console tests do, and it is
-//! ignored by default because it is a recording, not an assertion:
+//! ignored by default because it is a recording, not an assertion. The whole
+//! job (both recordings, the frames, the GIF and MP4, and every still that
+//! `still()` marks, into docs/img) is one command:
 //!
 //! ```powershell
-//! $env:WMUX_DEMO_OUT = "target/demo-frames"
-//! cargo test --release --test demo_frames -- --ignored --nocapture
+//! pwsh -File tools/make-demos.ps1
 //! ```
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -37,7 +38,7 @@ fn record_demo() {
 
     // It starts as one command in an ordinary terminal.
     rec.type_line(&format!("wmux -L {socket} new -s dev"));
-    rec.wait_for("session", |s| s.contents().contains("[dev]"), 30);
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
     rec.hold(4);
 
     // Two shells side by side. Inside a pane, wmux commands need no -L.
@@ -51,6 +52,28 @@ fn record_demo() {
     rec.hold(3);
     rec.type_line("1..3 | ForEach-Object { \"build step $_ ok\" }");
     rec.hold(5);
+    rec.still("panes");
+
+    // One line typed into every pane at once: `set sync` at the command
+    // prompt, the option's name completed with Tab.
+    rec.key("\x02:");
+    rec.hold(2);
+    rec.type_text("set sync");
+    rec.hold(2);
+    rec.key("\t");
+    rec.wait_for("sync completed", |s| s.contents().contains("set synchronize-panes"), 10);
+    rec.hold(4);
+    rec.key("\r");
+    rec.hold(2);
+    rec.type_line("echo 'typed once, run in every pane'");
+    rec.wait_for("three echoes", |s| s.contents().matches("typed once, run in every pane").count() >= 6, 20);
+    rec.hold(6);
+    rec.still("sync");
+    // An on/off option given no value flips: sync is off again.
+    rec.key("\x02:");
+    rec.hold(1);
+    rec.type_line("set sync");
+    rec.hold(3);
 
     // vim keys move between them, and repeat without the prefix again:
     // left, back right, then down into the pane below.
@@ -65,12 +88,14 @@ fn record_demo() {
     // Zoom one pane full screen and come back.
     rec.key("\x02z");
     rec.hold(4);
+    rec.still("zoom");
     rec.key("\x02z");
     rec.hold(3);
 
     // The pane menu: every pane command behind one key, no cheat sheet.
     rec.key("\x02>");
     rec.hold(5);
+    rec.still("menu");
     rec.key("\x1b");
     rec.hold(2);
 
@@ -81,6 +106,7 @@ fn record_demo() {
     rec.hold(4);
     rec.key("\x02w");
     rec.hold(5);
+    rec.still("picker");
     rec.key("j");
     rec.hold(3);
     rec.key("\r");
@@ -89,12 +115,14 @@ fn record_demo() {
     // Detach: back to the plain shell, everything still running.
     rec.key("\x02d");
     rec.hold(5);
+    rec.still("detach");
 
     // Attach again, exactly where it was left.
     rec.type_line(&format!("wmux -L {socket} attach"));
     rec.hold(4);
     rec.key("\x020");
     rec.hold(8);
+    rec.still("attach");
 
     d.finish();
 }
@@ -113,7 +141,7 @@ fn record_alerts() {
     rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
     rec.hold(2);
     rec.type_line(&format!("wmux -L {socket} new -s ops"));
-    rec.wait_for("session", |s| s.contents().contains("[ops]"), 30);
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
     rec.hold(3);
 
     // A second window with a job in it that takes a while.
@@ -135,6 +163,7 @@ fn record_alerts() {
     rec.hold(4);
     rec.type_line("wmux list-windows");
     rec.hold(6);
+    rec.still("alert");
 
     // C-b M-n goes straight to the window that has something to say.
     rec.key("\x02\x1bn");
@@ -153,6 +182,7 @@ fn record_alerts() {
     rec.type_line("display-popup -w 60% -h 40% cmd.exe /c wmux list-windows");
     rec.wait_for("the popup", |s| s.contents().contains("press any key"), 20);
     rec.hold(7);
+    rec.still("popup");
     rec.key(" ");
     rec.hold(3);
 
@@ -196,11 +226,17 @@ impl Demo {
         .expect("prompt script");
         let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
         let conf = tmp.join("wmux.conf");
-        // A clock on the right instead of the pane title: the recording should
-        // show wmux, not this machine's paths.
+        // The recordings wear the Tokyo Night theme from themes/, with just
+        // a clock on the right: the recording should show wmux, not this
+        // machine's paths or load.
+        let theme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/tokyo-night.conf"))
+            .expect("themes/tokyo-night.conf");
         std::fs::write(
             &conf,
-            format!("set -g default-command \"{shell}\"\nset -g status-right \"%H:%M\"\n{extra_conf}"),
+            format!(
+                "set -g default-command \"{shell}\"\n{theme}\n\
+                 set -g status-right \"#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M \"\n{extra_conf}"
+            ),
         )
         .expect("config");
 
@@ -324,8 +360,8 @@ impl Recorder {
         self.pump(Duration::from_millis(120));
     }
 
-    /// Type a line the way a person does, then press Enter.
-    fn type_line(&mut self, text: &str) {
+    /// Type text the way a person does, without pressing Enter.
+    fn type_text(&mut self, text: &str) {
         for (i, ch) in text.chars().enumerate() {
             let mut buf = [0u8; 4];
             let _ = self.writer.write_all(ch.encode_utf8(&mut buf).as_bytes());
@@ -337,6 +373,11 @@ impl Recorder {
             }
         }
         self.snapshot();
+    }
+
+    /// Type a line the way a person does, then press Enter.
+    fn type_line(&mut self, text: &str) {
+        self.type_text(text);
         let _ = self.writer.write_all(b"\r");
         let _ = self.writer.flush();
         self.pump(Duration::from_millis(120));
@@ -345,6 +386,18 @@ impl Recorder {
     /// One frame: every row as runs of identically styled text.
     fn snapshot(&mut self) {
         self.frame += 1;
+        let path = format!("{}/f{:04}.json", self.out_dir, self.frame);
+        std::fs::write(path, self.frame_json()).expect("write frame");
+    }
+
+    /// The screen as it is now, kept as the still `name` (the site's and
+    /// the README's pictures are cut here, so a new take re-cuts them).
+    fn still(&mut self, name: &str) {
+        let path = format!("{}/still-{name}.json", self.out_dir);
+        std::fs::write(path, self.frame_json()).expect("write still");
+    }
+
+    fn frame_json(&self) -> String {
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
         let mut json = String::with_capacity(8192);
@@ -389,8 +442,7 @@ impl Recorder {
         }
         let (cy, cx) = screen.cursor_position();
         let _ = write!(json, "],\"cursor\":[{cx},{cy}],\"cursor_visible\":{}}}", !screen.hide_cursor());
-        let path = format!("{}/f{:04}.json", self.out_dir, self.frame);
-        std::fs::write(path, json).expect("write frame");
+        json
     }
 }
 

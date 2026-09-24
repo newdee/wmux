@@ -10,7 +10,7 @@ const ZH = {
   "hero.download": "下载 Windows 版",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe",
-  "hero.caption": "一段完整录制：分屏、移动、全屏、弹出 pane 菜单、切窗口、脱离，再接回来。",
+  "hero.caption": "一段完整录制：分屏、一次输入到所有 pane、移动、全屏、弹出 pane 菜单、切窗口、脱离，再接回来。",
   "stat.exe": "个文件就够",
   "stat.deps": "依赖 Cygwin / WSL",
   "stat.tests": "项自动化测试",
@@ -23,7 +23,7 @@ const ZH = {
     "<b>每块都是真终端。</b> 每个 pane 就是一个 ConPTY，所以 PSReadLine 的组合键、中文输入法、全屏程序，表现和不用 wmux 时一样。",
   "c1.p2":
     "<b>鼠标也管用。</b> 点一下选中 pane，拖边框调大小，拖选一段文字松手就进了 Windows 剪贴板。",
-  "c1.p3": "<b>一次敲进所有 pane。</b> <kbd>C-b S</kbd> 打开 synchronize-panes，这个窗口里的每块都收到同样的输入。",
+  "c1.p3": "<b>一次敲进所有 pane。</b> <kbd>C-b S</kbd> 或 <code>:set sync</code>（Tab 补全选项名）打开 synchronize-panes，这个窗口里的每块都收到同样的输入；<code>split-window -N 3</code> 一次再开三个 pane 并平铺。",
 
   "c2.title": "铺满屏幕、从列表里挑，或者弹个菜单",
   "c2.sub":
@@ -76,7 +76,7 @@ const ZH = {
   "c6.p2":
     "<b>两个终端，两种尺寸。</b> <code>window-size</code> 决定 session 听哪个终端的；小一点的终端看到的是窗口的一块视口，<kbd>Shift</kbd> + 方向键平移。",
   "c6.p3":
-    "<b>顺手的小事。</b> 右键粘贴，<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 补全，<code>wmux completion powershell</code> 让 PowerShell 认识每条命令、每个 flag 和 session 名。",
+    "<b>顺手的小事。</b> 右键粘贴，<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 补全命令、目标和选项名，<code>wmux completion powershell</code> 让 PowerShell 认识每条命令、每个 flag、每个选项和 session 名。",
   "c6.p4":
     "<b>升级不丢 session。</b> <code>wmux update</code> 装新版，<code>wmux restart-server</code> 把正在跑的 session 全部挪过去，历史和目录都在，接着的终端自己跟过去。",
 

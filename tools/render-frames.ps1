@@ -11,12 +11,14 @@
   $env:WMUX_DEMO_OUT = "target/demo-frames"
   cargo test --release --test demo_frames -- --ignored --nocapture
   pwsh -File tools/render-frames.ps1 -In target/demo-frames -Out target/demo-png
+  # f0001.png ... for the animation, still-<name>.png for the pictures.
 #>
 [CmdletBinding()]
 param(
     [string]$In = "target/demo-frames",
     [string]$Out = "target/demo-png",
-    [string]$FontName = "Cascadia Mono",
+    # Falls back to Cascadia Mono where Maple Mono is not installed.
+    [string]$FontName = "Maple Mono NF CN",
     [double]$FontSize = 15,
     # Only render these frame numbers (1-based). Empty means all of them.
     [int[]]$Only = @(),
@@ -26,14 +28,21 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
-# One Half Dark, the palette Windows Terminal ships with.
+$installed = (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name
+if ($installed -notcontains $FontName) {
+    Write-Warning "$FontName is not installed; using Cascadia Mono"
+    $FontName = "Cascadia Mono"
+}
+
+# Tokyo Night, the palette the recordings' wmux theme (themes/tokyo-night.conf)
+# is made for.
 $palette = @(
-    "#282c34", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#dcdfe4",
-    "#5a6374", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#dcdfe4"
+    "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
+    "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"
 )
-$defaultFg = "#dcdfe4"
-$defaultBg = "#282c34"
-$chromeBg = "#21252b"
+$defaultFg = "#c0caf5"
+$defaultBg = "#1a1b26"
+$chromeBg = "#16161e"
 
 function To-Color([string]$spec, [string]$fallback) {
     if (-not $spec -or $spec -eq "default") { $spec = $fallback }
@@ -52,7 +61,7 @@ function To-Color([string]$spec, [string]$fallback) {
 }
 
 $inDir = (Resolve-Path $In).Path
-$frames = Get-ChildItem $inDir -Filter "f*.json" | Sort-Object Name
+$frames = @(Get-ChildItem $inDir -Filter "*.json" | Where-Object { $_.Name -match '^(f\d+|still-.+)\.json$' } | Sort-Object Name)
 if ($frames.Count -eq 0) { throw "no frames in $inDir" }
 New-Item -ItemType Directory -Force $Out | Out-Null
 $outDir = (Resolve-Path $Out).Path
@@ -78,9 +87,8 @@ $gridH = [int]($cellH * $first.rows)
 $imgW = $gridW + 2 * $pad
 $imgH = $gridH + 2 * $pad + $barH
 
-$n = 0
 foreach ($file in $frames) {
-    $n++
+    $n = if ($file.BaseName -match '^f(\d+)$') { [int]$Matches[1] } else { 0 }
     if ($Only.Count -gt 0 -and $Only -notcontains $n) { continue }
     $frame = Get-Content $file.FullName -Raw | ConvertFrom-Json
     $bmp = New-Object System.Drawing.Bitmap $imgW, $imgH
@@ -97,7 +105,7 @@ foreach ($file in $frames) {
         $g.FillEllipse($b, $dot.x - 5, ($barH / 2) - 5, 10, 10)
         $b.Dispose()
     }
-    $titleBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#8a919e"))
+    $titleBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#565f89"))
     $titleFont = New-Object System.Drawing.Font "Segoe UI", 12, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
     $titleSize = $g.MeasureString($Title, $titleFont)
     $g.DrawString($Title, $titleFont, $titleBrush, ($imgW - $titleSize.Width) / 2, ($barH - $titleSize.Height) / 2)
@@ -129,13 +137,13 @@ foreach ($file in $frames) {
     # A block cursor, so the recording looks alive.
     if ($frame.cursor_visible) {
         $cx = $frame.cursor[0]; $cy = $frame.cursor[1]
-        $b = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#dcdfe4"))
+        $b = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($defaultFg))
         $g.FillRectangle($b, [float]($pad + $cellW * $cx), [float]($barH + $pad + $cy * $cellH), [float]$cellW, [float]$cellH)
         $b.Dispose()
     }
 
     $g.Dispose()
-    $bmp.Save((Join-Path $outDir ("f{0:d4}.png" -f $n)), [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Save((Join-Path $outDir ($file.BaseName + ".png")), [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()
 }
 
