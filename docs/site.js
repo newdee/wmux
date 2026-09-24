@@ -68,6 +68,18 @@ const ZH = {
   "c4.p2":
     "<b>插件。</b> 一个目录，放一个写着命令的 <code>&lt;名字&gt;.wmux</code>，再加任意语言的脚本，用 <code>set -g @plugin 名字</code> 加载。新窗口、分屏、pane 退出、客户端接入都有钩子。",
 
+  "c6.title": "看得见这台机器的状态栏",
+  "c6.sub":
+    "在哪个分支、pane 在哪个目录、机器有多忙、有电池时还剩多少电。wmux 自己每秒读一次，不起任何辅助进程；想换成自己的写法，或者整行关掉，都行。",
+  "c6.p1":
+    "<b>想怎么改都行。</b> <code>#{git_branch}</code>、<code>#{cpu_percentage}</code>、<code>#{ram_percentage}</code>、<code>#{battery_percentage}</code>、<code>#{pane_current_path_short}</code>、<code>#{pane_pid_command}</code>（pane 里此刻在跑的程序）放进 <code>status-right</code> 任意位置；<code>set -g status off</code> 整行关掉。",
+  "c6.p2":
+    "<b>两个终端，两种尺寸。</b> <code>window-size</code> 决定 session 听哪个终端的；小一点的终端看到的是窗口的一块视口，<kbd>Shift</kbd> + 方向键平移。",
+  "c6.p3":
+    "<b>顺手的小事。</b> 右键粘贴，<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 补全，<code>wmux completion powershell</code> 让 PowerShell 认识每条命令、每个 flag 和 session 名。",
+  "c6.p4":
+    "<b>升级不丢 session。</b> <code>wmux update</code> 装新版，<code>wmux restart-server</code> 把正在跑的 session 全部挪过去，历史和目录都在，接着的终端自己跟过去。",
+
   "c5.title": "安装",
   "c5.msi": "安装包",
   "c5.msi.sub": "下载 .msi 双击，装到 Program Files，自动进系统 PATH，卸载在“应用和功能”里。",

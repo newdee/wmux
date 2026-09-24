@@ -1875,3 +1875,35 @@ e2e `the_copy_mode_vi_table_binds_keys_in_copy_mode`：copy mode 外 `i` 进 she
 ## 结论（第三十六次验收）
 
 A、B、C 三轮连续零发现，验收通过。测试 205 → 207。
+
+# 第三十七次验收（2026-09-24）— 网站补上新功能；两处顺手修复
+
+## 做了什么
+
+1. 网站新增第 06 章"看得见这台机器的状态栏"（安装顺延为 07）：状态栏示例是 release 构建实际渲染出的一行
+   （`[work] 0:editor* 1:build 2:logs     master | ~\Documents\dfine\wmux | CPU 9% MEM 65% | 11:45`，非手写），
+   四个要点：状态栏变量与关闭、`window-size` 与每客户端视口、右键粘贴与 Tab 补全、`update` + `restart-server` 升级不丢 session。中英两套文案。
+2. **网站既有 bug**：安装卡片网格用 `1fr`（即 `minmax(auto, 1fr)`），scoop 卡片里那条长命令把列撑宽，整页出现横向滚动条——
+   线上 dfine.tech/wmux 现在就有（截图可见底部横向滚动条）。改 `minmax(0, 1fr)` + `.card{min-width:0}`，长命令在卡片内横向滚动。
+3. **CPU 首读为空**：新 server 第一次读 CPU 没有上一次采样，状态栏显示 `CPU ` 后面空着；改为首读用开机以来的累计值（平均占用）。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（真实浏览器 + release 二进制）
+
+数据：本地起静态服务、Chrome 打开：中文文案生效（"看得见这台机器的状态栏"）、绿色状态栏一行渲染；
+页面度量 `scrollWidth 1418 == clientWidth 1418`、`scrollX 0`（修复前 1548 > 1433，最宽元素 DIV.card）；
+状态栏块宽 960、内容在块内滚动。新 server 首次 `display-message -p "CPU #{cpu_percentage}"` → `CPU 5%`（修复前为空）。
+`node --check docs/site.js` 通过；section 开闭 10/10；章节号 01–07 连续。全量 207 项全过，clippy/fmt 干净。
+（浏览器滚到页面底部时截图会卡死，线上旧页面同样如此，是本机浏览器与大 GIF 的问题；底部以 DOM 度量代替截图。）
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：页面度量在两个新开标签页各测一次一致（1418/1418）；sysinfo 单元测试连跑一致；状态栏行两次采集格式一致（CPU 数值随负载变化，属正常）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：静态一致性
+
+数据：站点文案所述每项功能在 README 与代码中均存在（变量名逐个 grep 命中 format.rs；`window-size`、`refresh-client -L/-R`、`completion powershell`、
+`update`、`restart-server` 均为已实现命令）；手机宽度下 `.cards` 为 `minmax(0, 1fr)` 单列。
+
+## 结论（第三十七次验收）
+
+三轮零发现，验收通过。测试数不变（207）。

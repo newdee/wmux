@@ -21,7 +21,7 @@ use windows_sys::Win32::System::Threading::GetSystemTimes;
 /// (every window's status context asks, several times a render).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct System {
-    /// "37%", or empty before the first two CPU samples.
+    /// "37%": busy since the last reading (the first one: since boot).
     pub cpu_percentage: String,
     pub ram_percentage: String,
     /// "6.2G", "812M".
@@ -90,12 +90,15 @@ pub fn system() -> System {
     if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } != 0 {
         // Kernel time includes idle time.
         let sample = CpuSample { idle: filetime(&idle), total: filetime(&kernel) + filetime(&user) };
-        if let Some(prev) = &c.cpu {
-            let total = sample.total.saturating_sub(prev.total);
-            let idle = sample.idle.saturating_sub(prev.idle);
-            if let Some(busy) = (100 * total.saturating_sub(idle)).checked_div(total) {
-                c.system.cpu_percentage = format!("{busy}%");
-            }
+        // The share busy since the last sample; for the very first reading
+        // there is none, and the counters (which run from boot) give the
+        // average since boot instead of a blank.
+        let (total, idle) = match &c.cpu {
+            Some(prev) => (sample.total.saturating_sub(prev.total), sample.idle.saturating_sub(prev.idle)),
+            None => (sample.total, sample.idle),
+        };
+        if let Some(busy) = (100 * total.saturating_sub(idle)).checked_div(total) {
+            c.system.cpu_percentage = format!("{busy}%");
         }
         c.cpu = Some(sample);
     }
@@ -277,6 +280,8 @@ mod tests {
     #[test]
     fn readings_come_back_and_are_cached() {
         let a = system();
+        // The very first reading already has a CPU figure (since boot).
+        assert!(a.cpu_percentage.ends_with('%'), "first reading: {a:?}");
         assert!(a.ram_percentage.ends_with('%'), "{a:?}");
         assert!(a.ram_used.ends_with('G') || a.ram_used.ends_with('M'), "{a:?}");
         assert!(a.uptime > 0);
