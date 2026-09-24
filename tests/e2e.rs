@@ -1301,7 +1301,19 @@ async fn join_pane_marks_and_exact_sizes() {
     assert_eq!(code, 1);
     assert!(err.contains("bad size"), "{err}");
 
-    // A pane can be given a title, which the format strings pick up.
+    // A pane can be given a title, which the format strings pick up. The
+    // program's own title comes first: one that arrives after -T replaces
+    // it, as in tmux (on a slow CI runner cmd's startup title came late and
+    // did exactly that, so wait for it).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, out, _) = h.cli(&["list-panes", "-t", "j:0"]).await;
+        if out.lines().next().is_some_and(|l| l.to_lowercase().contains("cmd.exe")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "cmd never set its title: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     h.cli(&["select-pane", "-t", "j:0.0", "-T", "logs"]).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "j:0"]).await;
     assert!(out.lines().next().unwrap().contains("logs"), "{out}");

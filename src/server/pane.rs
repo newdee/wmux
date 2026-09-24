@@ -182,6 +182,10 @@ pub struct Pane {
     /// dead pane never leaves orphans (tmux's SIGHUP-the-process-group).
     job: Option<crate::winsec::KillOnCloseJob>,
     pub title: String,
+    /// The last title the program itself sent. Sending the same one again
+    /// (prompts that set the title on every prompt do) is not a new title
+    /// and does not undo a `select-pane -T`; a different one does, as in tmux.
+    program_title: Option<String>,
     pub command: String,
     /// The command line this pane was started with (for save/restore).
     pub argv: Vec<String>,
@@ -457,6 +461,7 @@ impl Pane {
             killer,
             job,
             title: String::new(),
+            program_title: None,
             command: std::path::Path::new(&argv[0])
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -686,8 +691,11 @@ impl Pane {
     pub fn process_output(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
         let cb = self.parser.callbacks_mut();
-        if let Some(t) = cb.title.take() {
-            self.title = t;
+        if let Some(t) = cb.title.take()
+            && self.program_title.as_deref() != Some(t.as_str())
+        {
+            self.title = t.clone();
+            self.program_title = Some(t);
         }
         if let Some(d) = cb.cwd.take() {
             self.cwd = Some(d);
@@ -1208,6 +1216,23 @@ mod tests {
         p.process_output(b"");
         assert_eq!(p.title, "My Title");
         assert!(p.bell);
+    }
+
+    /// A title given by hand (`select-pane -T`) stays when the program sends
+    /// the same title again (a prompt that sets it every time); a new title
+    /// from the program still wins, as in tmux.
+    #[test]
+    fn a_repeated_program_title_does_not_undo_a_title_given_by_hand() {
+        let (tx, _rx) = channel();
+        let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into()];
+        let mut p = Pane::spawn(13, &argv, None, 20, 5, 10, &[], tx).unwrap();
+        p.process_output(b"\x1b]0;program title\x07");
+        assert_eq!(p.title, "program title");
+        p.title = "logs".into(); // select-pane -T logs
+        p.process_output(b"\x1b]0;program title\x07"); // the next prompt's copy
+        assert_eq!(p.title, "logs", "the same title again is not a new one");
+        p.process_output(b"\x1b]0;something else\x07");
+        assert_eq!(p.title, "something else", "the program changing its title still wins");
     }
 
     #[test]
