@@ -164,9 +164,20 @@ impl Node {
                 let n = children.len() as u16;
                 let total = if *horizontal { rect.w } else { rect.h };
                 let avail = total.saturating_sub(n - 1);
-                fit_sizes(sizes, avail);
+                let mut fitted = sizes.clone();
+                fit_sizes(&mut fitted, avail);
+                // The fitted sizes become the stored ones (so resize-pane
+                // works in the cells on screen), except when the window is
+                // squeezed so far that a pane is pinned to one cell: then the
+                // proportions could not survive, so the stored sizes are kept
+                // and growing the window back brings the old layout back.
+                let shrinking = sizes.iter().map(|&s| s as u32).sum::<u32>() > avail as u32;
+                let pinned = fitted.iter().zip(sizes.iter()).any(|(f, s)| *f <= 1 && *s > 1);
+                if !(shrinking && pinned) {
+                    sizes.copy_from_slice(&fitted);
+                }
                 let (mut pos, end) = if *horizontal { (rect.x, rect.x + rect.w) } else { (rect.y, rect.y + rect.h) };
-                for (child, &sz) in children.iter_mut().zip(sizes.iter()) {
+                for (child, &sz) in children.iter_mut().zip(fitted.iter()) {
                     // In a degenerate area the border column may not exist;
                     // never place a child past the end of the rectangle.
                     let sz = sz.min(end.saturating_sub(pos));
@@ -326,16 +337,35 @@ impl Node {
                 if *horizontal != want_h || children.len() < 2 {
                     return false;
                 }
-                // Like tmux: resize the cell's trailing edge; for the last
-                // cell, apply the same change to the previous cell instead.
+                // Like tmux: move the cell's trailing edge; for the last cell,
+                // the edge before it. The edge pushes: moving it forward takes
+                // from the cells after it, the nearest first, and moving it
+                // back from the cells before it, so a pane can grow past a
+                // neighbour already at its smallest. A cell that grows and
+                // finds nothing left after it takes from the cells before it
+                // (tmux's "opposite" search), which is how a middle pane grows
+                // when everything below it is already as small as it goes.
                 let (a, b) = if idx + 1 < children.len() { (idx, idx + 1) } else { (idx - 1, idx) };
-                let (from, to) = if grow { (b, a) } else { (a, b) };
-                let delta = amount.min(sizes[from].saturating_sub(1));
-                if delta == 0 {
+                let (gains, losers): (usize, Vec<usize>) = if grow {
+                    (a, (b..children.len()).chain((0..a).rev()).collect())
+                } else {
+                    (b, (0..=a).rev().collect())
+                };
+                let mut left = amount;
+                let mut moved = 0;
+                for i in losers {
+                    let can = sizes[i].saturating_sub(1).min(left);
+                    sizes[i] -= can;
+                    left -= can;
+                    moved += can;
+                    if left == 0 {
+                        break;
+                    }
+                }
+                if moved == 0 {
                     return false;
                 }
-                sizes[from] -= delta;
-                sizes[to] += delta;
+                sizes[gains] += moved;
                 true
             }
         }
@@ -524,14 +554,26 @@ fn fit_sizes(sizes: &mut [u16], avail: u16) {
     }
     let sum = sum.max(1);
     let mut acc = 0u32;
-    for s in sizes.iter_mut() {
-        let v = ((*s as u32) * (avail as u32) / sum).max(1) as u16;
-        *s = v;
-        acc += v as u32;
+    // Each entry's share rounded down, and what the rounding dropped.
+    let mut dropped: Vec<(u32, usize)> = Vec::with_capacity(sizes.len());
+    for (i, s) in sizes.iter_mut().enumerate() {
+        let exact = (*s as u32) * (avail as u32);
+        let v = (exact / sum).max(1);
+        dropped.push((if exact / sum == 0 { 0 } else { exact % sum }, i));
+        *s = v as u16;
+        acc += v;
     }
-    // Fix rounding drift on the largest entry.
-    let biggest = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap();
-    if acc > avail as u32 {
+    if acc < avail as u32 {
+        // The cells rounding left over go one each to the entries that lost
+        // the most, the earlier first on a tie (as tmux spreads an even
+        // layout): 158 columns in three are 53/53/52, not 52/52/54. Fewer
+        // cells are left over than there are entries.
+        dropped.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let left = (avail as u32 - acc) as usize;
+        for &(_, i) in dropped.iter().take(left) {
+            sizes[i] += 1;
+        }
+    } else if acc > avail as u32 {
         let over = (acc - avail as u32) as u16;
         // Take from entries larger than 1, biggest first.
         let mut over = over;
@@ -545,8 +587,6 @@ fn fit_sizes(sizes: &mut [u16], avail: u16) {
                 break;
             }
         }
-    } else {
-        sizes[biggest] += (avail as u32 - acc) as u16;
     }
 }
 
@@ -645,6 +685,34 @@ mod tests {
         assert!(!nested.spread(99), "a pane that is not there");
     }
 
+    /// A window squeezed until a pane is down to one row, then grown back,
+    /// gets its old proportions back; a moderate squeeze keeps them to a
+    /// cell; resize-pane on a smaller window moves the edge by whole cells;
+    /// and rounding leftovers go to the first entries.
+    #[test]
+    fn proportions_survive_a_squeeze() {
+        let heights = |n: &mut Node, h: u16| -> Vec<u16> { rects(n, 80, h).iter().map(|(_, r)| r.h).collect() };
+        let mut n =
+            Node::Split { horizontal: false, children: vec![Node::Leaf(1), Node::Leaf(2)], sizes: vec![30, 10] };
+        assert_eq!(heights(&mut n, 41), [30, 10]);
+        let squeezed = heights(&mut n, 4);
+        assert_eq!(squeezed.iter().sum::<u16>(), 3, "{squeezed:?}");
+        assert_eq!(heights(&mut n, 41), [30, 10], "back to the old split");
+        // Halving and back: within a cell of where it was.
+        let half = heights(&mut n, 21);
+        assert_eq!(half, [15, 5]);
+        let back = heights(&mut n, 41);
+        assert!(back[0].abs_diff(30) <= 1 && back.iter().sum::<u16>() == 40, "{back:?}");
+        // On the smaller window, resize moves the edge by the cells asked.
+        heights(&mut n, 21);
+        assert!(n.resize(1, Dir::Down, 2));
+        assert_eq!(heights(&mut n, 21), [17, 3]);
+        // Three columns in 158 cells: the two cells of rounding go first.
+        let mut cols = Preset::EvenHorizontal.build(&[1, 2, 3]).unwrap();
+        let w: Vec<u16> = rects(&mut cols, 160, 24).iter().map(|(_, r)| r.w).collect();
+        assert_eq!(w, [53, 53, 52]);
+    }
+
     #[test]
     fn presets_arrange_every_pane() {
         let ids = [1, 2, 3, 4];
@@ -653,14 +721,14 @@ mod tests {
             assert_eq!(n.panes(), ids, "{}: keeps every pane, in order", p.name());
             rects(&mut n, 80, 24).iter().map(|(_, r)| (r.w, r.h)).collect()
         };
-        // Four rows and four columns, the leftover cell going to the last one
-        // (24 rows minus 3 separators splits 5/5/5/6).
-        assert_eq!(sizes(Preset::EvenVertical), [(80, 5), (80, 5), (80, 5), (80, 6)]);
-        assert_eq!(sizes(Preset::EvenHorizontal), [(19, 24), (19, 24), (19, 24), (20, 24)]);
+        // Four rows and four columns, the leftover cell going to the first
+        // one, as tmux spreads them (24 rows minus 3 separators is 6/5/5/5).
+        assert_eq!(sizes(Preset::EvenVertical), [(80, 6), (80, 5), (80, 5), (80, 5)]);
+        assert_eq!(sizes(Preset::EvenHorizontal), [(20, 24), (19, 24), (19, 24), (19, 24)]);
         // One big pane plus a stack of the rest.
         let main_v = sizes(Preset::MainVertical);
-        assert_eq!(main_v[0], (39, 24), "the main pane keeps half the width");
-        assert!(main_v[1..].iter().all(|(w, h)| *w == 40 && (7..=8).contains(h)), "{main_v:?}");
+        assert_eq!(main_v[0], (40, 24), "the main pane keeps half the width, and the odd cell");
+        assert!(main_v[1..].iter().all(|(w, h)| *w == 39 && (7..=8).contains(h)), "{main_v:?}");
         let main_h = sizes(Preset::MainHorizontal);
         assert_eq!(main_h[0].0, 80, "the main pane spans the width: {main_h:?}");
         assert!(main_h[1..].iter().all(|(w, _)| *w == 26), "{main_h:?}");

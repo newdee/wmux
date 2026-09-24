@@ -97,10 +97,13 @@ pub const SHOWABLE: &[&str] = &[
     "status-left-length",
     "status-right-length",
     "status-justify",
+    "status-style",
     "window-status-separator",
     "status-interval",
     "window-status-format",
     "window-status-current-format",
+    "pane-border-style",
+    "pane-active-border-style",
     "base-index",
     "remain-on-exit",
     "save-history",
@@ -181,30 +184,42 @@ fn parse_bool(v: &str) -> Result<bool, String> {
     }
 }
 
+/// The sixteen colours by name, in index order (tmux's names).
+const COLOR_NAMES: [&str; 16] = [
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "brightblack",
+    "brightred",
+    "brightgreen",
+    "brightyellow",
+    "brightblue",
+    "brightmagenta",
+    "brightcyan",
+    "brightwhite",
+];
+
+/// A colour as `show-options` prints it, in a form `parse_color` reads back.
+pub fn color_name(c: Color) -> String {
+    match c {
+        Color::Default => "default".into(),
+        Color::Idx(i) if (i as usize) < COLOR_NAMES.len() => COLOR_NAMES[i as usize].into(),
+        Color::Idx(i) => format!("colour{i}"),
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+    }
+}
+
 pub fn parse_color(v: &str) -> Result<Color, String> {
     let v = v.trim();
-    let names = [
-        "black",
-        "red",
-        "green",
-        "yellow",
-        "blue",
-        "magenta",
-        "cyan",
-        "white",
-        "brightblack",
-        "brightred",
-        "brightgreen",
-        "brightyellow",
-        "brightblue",
-        "brightmagenta",
-        "brightcyan",
-        "brightwhite",
-    ];
     if v.eq_ignore_ascii_case("default") {
         return Ok(Color::Default);
     }
-    if let Some(i) = names.iter().position(|n| n.eq_ignore_ascii_case(v)) {
+    if let Some(i) = COLOR_NAMES.iter().position(|n| n.eq_ignore_ascii_case(v)) {
         return Ok(Color::Idx(i as u8));
     }
     if let Some(n) = v.strip_prefix("colour").or_else(|| v.strip_prefix("color")) {
@@ -586,6 +601,11 @@ impl Options {
                 }
             }
             "window-size" => self.window_size.clone(),
+            "status-style" => format!("fg={},bg={}", color_name(self.status_fg), color_name(self.status_bg)),
+            "status-fg" => color_name(self.status_fg),
+            "status-bg" => color_name(self.status_bg),
+            "pane-border-style" => format!("fg={}", color_name(self.pane_border_fg)),
+            "pane-active-border-style" => format!("fg={}", color_name(self.pane_border_active_fg)),
             _ => return None,
         })
     }
@@ -721,6 +741,28 @@ pub fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Everything `show-options` lists has a value, and that value is
+    /// something `set` takes back unchanged: the output is a valid config.
+    #[test]
+    fn every_shown_option_reads_back() {
+        let mut o = Options::default();
+        o.set("status-style", "fg=#a9b1d6,bg=colour234").unwrap();
+        o.set("pane-active-border-style", "fg=brightblue").unwrap();
+        for name in SHOWABLE {
+            let v = o.get(name).unwrap_or_else(|| panic!("{name} has no value"));
+            let mut again = o.clone();
+            again.set(name, &v).unwrap_or_else(|e| panic!("set {name} {v:?}: {e}"));
+            assert_eq!(again.get(name).as_deref(), Some(v.as_str()), "{name}");
+        }
+        assert_eq!(o.get("status-style").unwrap(), "fg=#a9b1d6,bg=colour234");
+        assert_eq!(o.get("status-bg").unwrap(), "colour234");
+        assert_eq!(o.get("pane-active-border-style").unwrap(), "fg=brightblue");
+        assert_eq!(o.get("pane-border-style").unwrap(), "fg=brightblack");
+        for c in [Color::Default, Color::Idx(3), Color::Idx(15), Color::Idx(200), Color::Rgb(0, 0x1a, 0xff)] {
+            assert_eq!(parse_color(&color_name(c)).unwrap(), c, "{}", color_name(c));
+        }
+    }
 
     /// What a Tab offers after `set`: the same names `resolve_name` picks
     /// from, and for the few-valued options values the setter takes.

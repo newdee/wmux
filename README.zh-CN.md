@@ -7,7 +7,7 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 
 <p align="center">
   <img src="docs/img/wmux-demo.gif" width="880"
-       alt="把一个 shell 切成几块、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
+       alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
 </p>
 
 用过 tmux 的人换到 Windows，最想念的大概就是它：关掉终端窗口，里面跑的东西还在；一个窗口切成几块，各干各的；`prefix d` 走人，回来 `attach` 接着干。wmux 把这套搬到了 Windows 上，而且不是靠 Cygwin 或 MSYS 模拟出来的，是直接用 ConPTY 和 Win32 控制台 API 写的，PowerShell、WSL、cmd 都能在里面正常跑。
@@ -70,6 +70,8 @@ wmux kill-server
 ```
 
 命令名可以只写不产生歧义的前缀，和 tmux 一样：`wmux att`、`wmux lsp`、`wmux splitw -h`。`wmux kill` 会被拒绝，因为有四个命令以它开头。`wmux list-commands` 列出全部；和 tmux 的逐条对照在 [docs/tmux-parity.md](docs/tmux-parity.md)，命令和按键都有。
+
+一次开多个 pane：`wmux split-window -N 3` 会再开三个并把窗口平铺（加 `-d` 焦点留在原处）。窗口太小放不下时，放得下的那些会留着，并告诉你开了几个。
 
 进了 session 之后，先按前缀键 `Ctrl+b`，再按：
 
@@ -145,7 +147,7 @@ wmux restart-server   # 把正在跑的 session 全部挪到新版本的 server
 
 `restart-server` 会先存档正在跑的 session，停掉旧 server，起一个新版本的，再只恢复刚才在跑的那几个（布局、历史、目录都在）；接着的终端会自己重新接上（0.10 起；更老的 server 上的终端会被断开，`wmux attach` 接回去）。在 pane 里面运行时，它会跑到 pane 外面去完成，结果写进 `%LOCALAPPDATA%\wmux\restart.log`。选项和按键绑定会重新从配置文件读，和 `kill-server` 之后一样：之后用 `set` / `bind` 临时改的不会带过去（旧 server 分不清哪些是默认值、哪些是你改的，全搬过去会把旧版本的默认值钉在新版本上）。终端接着一个不同版本的 server 时，标题栏会提示。`update` 下载 MSI 后先核对旁边发布的 SHA-256 再交给 Windows Installer；任何检查和安装都不会在后台偷偷进行。
 
-PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名、`set` / `show` 后面的选项名和取值）由程序自己吐出一段补全脚本，`$PROFILE` 里加一行就有：
+PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名、`set` / `show` 后面的选项名和取值；`splitw` 这样的别名、`split-w` 这样的前缀都按它代表的命令补）由程序自己吐出一段补全脚本，对 `wmux` 和别名成 `tmux` 的都有效。Windows PowerShell 5.1 不会拿 `-` 开头的词来问程序的补全脚本，所以 flag 只在 PowerShell 7 里能补。`$PROFILE` 里加一行就有：
 
 ```powershell
 wmux completion powershell | Out-String | Invoke-Expression
@@ -226,7 +228,7 @@ set -ag status-right " | wmux"    # -a 是往原值后面追加，不是覆盖
 source-file ~/.wmux/themes/nord.conf
 ```
 
-仓库里的 `themes/` 放了几套现成配色（Nord、Gruvbox dark、Dracula、Catppuccin Mocha）。它们就是普通的 wmux 命令文件，`source-file` 一下就行，想改直接改。
+仓库里的 `themes/` 放了几套现成配色（Tokyo Night，也就是这里截图用的那套，还有 Nord、Gruvbox dark、Dracula、Catppuccin Mocha）。它们就是普通的 wmux 命令文件，`source-file` 一下就行，想改直接改。
 
 `.tmux.conf` 里常见但 wmux 用不上的选项（`escape-time`、`default-terminal` 这些）会被接受然后忽略，所以现成的 tmux 配置可以直接拿来改。
 

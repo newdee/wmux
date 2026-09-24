@@ -73,11 +73,11 @@ Status: **yes** = works, **part** = works with a documented limit,
 | set-buffer / show-buffer | yes | `-a`, `-b` |
 | set-environment / show-environment | yes | `-r` to remove |
 | set-hook / show-hooks | part | nine hooks |
-| set-option / show-options | part | the options wmux implements; unknown ones accepted and ignored |
+| set-option / show-options | part | the options wmux implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
 | set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |
 | show-messages | yes | `prefix ~`, the last 100 |
 | source-file | yes | |
-| split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t` |
+| split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t`; wmux's own `-N count` makes that many panes and tiles the window |
 | start-server | part | any client starts it |
 | suspend-client | no | no SIGTSTP on Windows |
 | swap-pane | yes | `-U` / `-D`, and the `-s src -t dst` pair (across windows and sessions too) |

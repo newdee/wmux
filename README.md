@@ -11,7 +11,7 @@ run inside panes with full key fidelity.
 
 <p align="center">
   <img src="docs/img/wmux-demo.gif" width="880"
-       alt="Splitting a shell into panes, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
+       alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
 </p>
 
 - **Native**: built on ConPTY and the Win32 console API. No Cygwin, no MSYS,
@@ -96,6 +96,10 @@ Any unambiguous prefix of a command name works, as in tmux: `wmux att`,
 start that way. `wmux list-commands` prints them all, and
 [docs/tmux-parity.md](docs/tmux-parity.md) tracks them against tmux's own
 list, command by command and key by key.
+
+Several panes at once: `wmux split-window -N 3` makes three more and tiles
+the window (`-d` keeps the focus where it is). A window too small for all of
+them keeps the ones that fit and says how many it made.
 
 Inside a session, press the prefix (`Ctrl+b`) and then:
 
@@ -216,8 +220,11 @@ checked or installed in the background.
 
 Tab completion in PowerShell (command names, each command's flags, `-t`
 targets from the running server, and option names and values after `set`
-/ `show`) comes from a completer the program prints; one line in
-`$PROFILE` loads it:
+/ `show`; aliases like `splitw` and prefixes like `split-w` count as the
+command they stand for) comes from a completer the program prints, for
+`wmux` and for a `tmux` alias of it; one line in `$PROFILE` loads it.
+Windows PowerShell 5.1 does not ask a program's completer about words
+starting with `-`, so flags complete in PowerShell 7 only.
 
 ```powershell
 wmux completion powershell | Out-String | Invoke-Expression
@@ -330,9 +337,10 @@ can be reused as a starting point.
 
 ### Themes
 
-`themes/` in this repository holds ready-made colour schemes (Nord, Gruvbox
-dark, Dracula, Catppuccin Mocha). They are ordinary wmux commands, so a theme
-is just a file to source and an easy thing to copy and edit:
+`themes/` in this repository holds ready-made colour schemes (Tokyo Night,
+which the pictures here wear, Nord, Gruvbox dark, Dracula, Catppuccin
+Mocha). They are ordinary wmux commands, so a theme is just a file to source
+and an easy thing to copy and edit:
 
 ```tmux
 source-file ~/.wmux/themes/dracula.conf

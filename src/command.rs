@@ -156,6 +156,9 @@ pub enum Cmd {
         before: bool,
         /// `-f`: span the full window width/height instead of the target pane.
         full: bool,
+        /// `-N count` (wmux's own): make that many new panes and tile the
+        /// window. 1 is an ordinary split.
+        count: u16,
     },
     KillPane {
         target: Option<Target>,
@@ -713,9 +716,12 @@ impl fmt::Display for Cmd {
                 f.write_str("last-window")?;
                 fmt_target(f, target)
             }
-            Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full } => {
+            Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full, count } => {
                 f.write_str("split-window")?;
                 f.write_str(if *horizontal { " -h" } else { " -v" })?;
+                if *count > 1 {
+                    write!(f, " -N {count}")?;
+                }
                 if *detached {
                     f.write_str(" -d")?;
                 }
@@ -1620,7 +1626,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("show-options", &["-g", "-v", "-q", "-w", "-s"]),
     ("show-window-options", &["-g", "-v"]),
     ("source-file", &["-q"]),
-    ("split-window", &["-h", "-v", "-b", "-d", "-f", "-c", "-t"]),
+    ("split-window", &["-h", "-v", "-b", "-d", "-f", "-c", "-t", "-N"]),
     ("start-server", &[]),
     ("swap-pane", &["-U", "-D", "-d", "-s", "-t"]),
     ("swap-window", &["-d", "-s", "-t"]),
@@ -1691,6 +1697,111 @@ pub fn common_prefix<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
     first[..end].to_string()
 }
 
+/// Short names and other spellings of commands, each with the command it
+/// stands for. Window- and pane-scoped option commands are the server's
+/// here, so tmux's window forms are the same command under another name.
+pub const ALIASES: &[(&str, &str)] = &[
+    ("new", "new-session"),
+    ("attach", "attach-session"),
+    ("a", "attach-session"),
+    ("at", "attach-session"),
+    ("detach", "detach-client"),
+    ("showmsgs", "show-messages"),
+    ("setenv", "set-environment"),
+    ("showenv", "show-environment"),
+    ("respawnp", "respawn-pane"),
+    ("respawnw", "respawn-window"),
+    ("ls", "list-sessions"),
+    ("lsw", "list-windows"),
+    ("lsp", "list-panes"),
+    ("has", "has-session"),
+    ("rename", "rename-session"),
+    ("neww", "new-window"),
+    ("killw", "kill-window"),
+    ("renamew", "rename-window"),
+    ("selectw", "select-window"),
+    ("swapw", "swap-window"),
+    ("movew", "move-window"),
+    ("next", "next-window"),
+    ("prev", "previous-window"),
+    ("last", "last-window"),
+    ("splitw", "split-window"),
+    ("killp", "kill-pane"),
+    ("selectp", "select-pane"),
+    ("resizep", "resize-pane"),
+    ("resizew", "resize-window"),
+    ("swapp", "swap-pane"),
+    ("breakp", "break-pane"),
+    ("joinp", "join-pane"),
+    ("move-pane", "join-pane"),
+    ("movep", "join-pane"),
+    ("findw", "find-window"),
+    ("findt", "find-text"),
+    ("selectl", "select-layout"),
+    ("nextl", "next-layout"),
+    ("prevl", "previous-layout"),
+    ("rotatew", "rotate-window"),
+    ("refresh", "refresh-client"),
+    ("lscm", "list-commands"),
+    ("lsc", "list-clients"),
+    ("lastp", "last-pane"),
+    ("send", "send-keys"),
+    ("pasteb", "paste-buffer"),
+    ("setb", "set-buffer"),
+    ("loadb", "load-buffer"),
+    ("saveb", "save-buffer"),
+    ("showb", "show-buffer"),
+    ("deleteb", "delete-buffer"),
+    ("lsb", "list-buffers"),
+    ("focusp", "focus-pane"),
+    ("pipep", "pipe-pane"),
+    ("wait", "wait-for"),
+    ("menu", "display-menu"),
+    ("popup", "display-popup"),
+    ("display", "display-message"),
+    ("displayp", "display-panes"),
+    ("if", "if-shell"),
+    ("confirm", "confirm-before"),
+    ("bind", "bind-key"),
+    ("unbind", "unbind-key"),
+    ("set", "set-option"),
+    ("set-window-option", "set-option"),
+    ("setw", "set-option"),
+    ("show-option", "show-options"),
+    ("show", "show-options"),
+    ("show-window-options", "show-options"),
+    ("show-window-option", "show-options"),
+    ("showw", "show-options"),
+    ("switchc", "switch-client"),
+    ("lsk", "list-keys"),
+    ("run", "run-shell"),
+    ("save", "save-session"),
+    ("restore", "restore-session"),
+    ("saved", "list-saved"),
+    ("forget", "delete-saved"),
+    ("clearhist", "clear-history"),
+    ("capturep", "capture-pane"),
+    ("cwd", "set-cwd"),
+    ("source", "source-file"),
+    ("-V", "version"),
+    ("--version", "version"),
+];
+
+/// The command a typed name stands for: an alias, a full name, or an
+/// unambiguous prefix of one (which may itself be an alias's spelling, as
+/// `set-w` is of `set-window-option`).
+pub fn canonical_name(name: &str) -> Result<&'static str, String> {
+    let alias = |n: &str| ALIASES.iter().find(|(a, _)| *a == n).map(|(_, c)| *c);
+    if let Some(c) = alias(name) {
+        return Ok(c);
+    }
+    if let Some(c) = COMMANDS.iter().find(|c| **c == name) {
+        return Ok(alias(c).unwrap_or(c));
+    }
+    let c = resolve_prefix(name)?;
+    Ok(alias(c).unwrap_or(c))
+}
+
 /// tmux lets any unambiguous prefix stand for a command name, so `att` is
 /// `attach-session` and `splitw` is `split-window`. Several matches is an
 /// error rather than a guess.
@@ -1711,108 +1822,7 @@ fn resolve_prefix(name: &str) -> Result<&'static str, String> {
 pub fn parse(words: &[String]) -> Result<Cmd, String> {
     let name = words.first().ok_or_else(|| "empty command".to_string())?.as_str();
     let mut a = Args { words, pos: 1 };
-    let canonical = match name {
-        "new-session" | "new" => "new-session",
-        "attach-session" | "attach" | "a" | "at" => "attach-session",
-        "detach-client" | "detach" => "detach-client",
-        "show-messages" | "showmsgs" => "show-messages",
-        "set-environment" | "setenv" => "set-environment",
-        "show-environment" | "showenv" => "show-environment",
-        "respawn-pane" | "respawnp" => "respawn-pane",
-        "respawn-window" | "respawnw" => "respawn-window",
-        "list-sessions" | "ls" => "list-sessions",
-        "list-windows" | "lsw" => "list-windows",
-        "list-panes" | "lsp" => "list-panes",
-        "kill-session" => "kill-session",
-        "kill-server" => "kill-server",
-        "has-session" | "has" => "has-session",
-        "rename-session" | "rename" => "rename-session",
-        "new-window" | "neww" => "new-window",
-        "kill-window" | "killw" => "kill-window",
-        "rename-window" | "renamew" => "rename-window",
-        "select-window" | "selectw" => "select-window",
-        "swap-window" | "swapw" => "swap-window",
-        "move-window" | "movew" => "move-window",
-        "next-window" | "next" => "next-window",
-        "previous-window" | "prev" => "previous-window",
-        "last-window" | "last" => "last-window",
-        "split-window" | "splitw" => "split-window",
-        "kill-pane" | "killp" => "kill-pane",
-        "select-pane" | "selectp" => "select-pane",
-        "resize-pane" | "resizep" => "resize-pane",
-        "resize-window" | "resizew" => "resize-window",
-        "swap-pane" | "swapp" => "swap-pane",
-        "break-pane" | "breakp" => "break-pane",
-        "join-pane" | "joinp" => "join-pane",
-        "move-pane" | "movep" => "join-pane",
-        "find-window" | "findw" => "find-window",
-        "find-text" | "findt" => "find-text",
-        "jobs" => "jobs",
-        "record" => "record",
-        "select-layout" | "selectl" => "select-layout",
-        "next-layout" | "nextl" => "next-layout",
-        "previous-layout" | "prevl" => "previous-layout",
-        "rotate-window" | "rotatew" => "rotate-window",
-        "refresh-client" | "refresh" => "refresh-client",
-        "send-prefix" => "send-prefix",
-        "list-commands" | "lscm" => "list-commands",
-        "list-clients" | "lsc" => "list-clients",
-        "last-pane" | "lastp" => "last-pane",
-        "send-keys" | "send" => "send-keys",
-        "copy-mode" => "copy-mode",
-        "paste-buffer" | "pasteb" => "paste-buffer",
-        "set-buffer" | "setb" => "set-buffer",
-        "load-buffer" | "loadb" => "load-buffer",
-        "save-buffer" | "saveb" => "save-buffer",
-        "show-buffer" | "showb" => "show-buffer",
-        "delete-buffer" | "deleteb" => "delete-buffer",
-        "list-buffers" | "lsb" => "list-buffers",
-        "choose-buffer" => "choose-buffer",
-        "choose-client" => "choose-client",
-        "choose-jobs" => "choose-jobs",
-        "focus-pane" | "focusp" => "focus-pane",
-        "command-prompt" => "command-prompt",
-        "pipe-pane" | "pipep" => "pipe-pane",
-        "wait-for" | "wait" => "wait-for",
-        "display-menu" | "menu" => "display-menu",
-        "display-popup" | "popup" => "display-popup",
-        "display-message" | "display" => "display-message",
-        "display-panes" | "displayp" => "display-panes",
-        "clock-mode" => "clock-mode",
-        "if-shell" | "if" => "if-shell",
-        "confirm-before" | "confirm" => "confirm-before",
-        "bind-key" | "bind" => "bind-key",
-        "unbind-key" | "unbind" => "unbind-key",
-        // Window and pane scopes are the server's here, so tmux's window
-        // forms are the same command under another name.
-        "set-option" | "set" | "set-window-option" | "setw" => "set-option",
-        "show-options" | "show-option" | "show" | "show-window-options" | "show-window-option" | "showw" => {
-            "show-options"
-        }
-        "start-server" => "start-server",
-        "switch-client" | "switchc" => "switch-client",
-        "list-keys" | "lsk" => "list-keys",
-        "notify" => "notify",
-        "choose-tree" => "choose-tree",
-        "choose-window" => "choose-window",
-        "choose-session" => "choose-session",
-        "run-shell" | "run" => "run-shell",
-        "set-hook" => "set-hook",
-        "show-hooks" => "show-hooks",
-        "load-plugin" => "load-plugin",
-        "list-plugins" => "list-plugins",
-        "save-session" | "save" => "save-session",
-        "restore-session" | "restore" => "restore-session",
-        "resume" => "resume",
-        "list-saved" | "saved" => "list-saved",
-        "delete-saved" | "forget" => "delete-saved",
-        "clear-history" | "clearhist" => "clear-history",
-        "capture-pane" | "capturep" => "capture-pane",
-        "set-cwd" | "cwd" => "set-cwd",
-        "source-file" | "source" => "source-file",
-        "version" | "-V" | "--version" => "version",
-        other => resolve_prefix(other)?,
-    };
+    let canonical = canonical_name(name)?;
     let n = canonical;
     let cmd = match n {
         "new-session" => {
@@ -2039,6 +2049,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "split-window" => {
             let (mut horizontal, mut cwd, mut target) = (false, None, None);
             let (mut detached, mut before, mut full) = (false, false, false);
+            let mut count: u16 = 1;
             while a.is_flag() {
                 let flag = a.next().unwrap();
                 // Allow tmux-style combined single-letter flags: -hd, -bf, ...
@@ -2062,10 +2073,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "-d" => detached = true,
                     "-b" => before = true,
                     "-f" => full = true,
+                    "-N" => {
+                        let v = a.value("-N")?;
+                        count =
+                            v.parse().ok().filter(|n| (1..=64).contains(n)).ok_or_else(|| {
+                                format!("split-window: -N takes a number of panes, 1 to 64 (not '{v}')")
+                            })?;
+                    }
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            Cmd::SplitWindow { horizontal, cwd, target, argv: a.rest(), detached, before, full }
+            Cmd::SplitWindow { horizontal, cwd, target, argv: a.rest(), detached, before, full, count }
         }
         "select-pane" => {
             let mut sel = None;
@@ -3034,6 +3052,29 @@ pub fn parse_line(line: &str) -> Result<Option<Cmd>, String> {
 mod tests {
     use super::*;
 
+    /// Every name a command can be typed as reaches a parser arm: a name
+    /// that resolves but has no arm used to panic the server (`set-w` was
+    /// `set-window-option`, which only the alias table knew). Missing
+    /// arguments are an error, never a panic.
+    #[test]
+    fn every_command_name_and_prefix_parses_without_panic() {
+        let mut names: Vec<String> = ALIASES.iter().map(|(a, _)| a.to_string()).collect();
+        for c in COMMANDS {
+            for i in 1..=c.len() {
+                names.push(c[..i].to_string());
+            }
+        }
+        for n in &names {
+            let words = vec![n.clone()];
+            let r = std::panic::catch_unwind(|| parse(&words));
+            assert!(r.is_ok(), "parse({n:?}) panicked");
+        }
+        assert_eq!(canonical_name("set-w").unwrap(), "set-option");
+        assert_eq!(canonical_name("show-w").unwrap(), "show-options");
+        assert_eq!(canonical_name("move-p").unwrap(), "join-pane");
+        assert!(matches!(p("set-w -g mouse on"), Cmd::SetOption { .. }));
+    }
+
     /// Which commands take an option name, and where it sits among flags.
     #[test]
     fn option_name_position() {
@@ -3227,7 +3268,7 @@ mod tests {
         assert_eq!(common_prefix(["abc"]), "abc");
         assert_eq!(common_prefix(["abc", "xyz"]), "");
         assert_eq!(common_prefix(std::iter::empty::<&str>()), "");
-        assert_eq!(flags_of("split-window").len(), 7);
+        assert_eq!(flags_of("split-window").len(), 8);
         assert!(flags_of("nope").is_empty());
     }
 
@@ -3284,9 +3325,15 @@ mod tests {
                 argv: vec![],
                 detached: false,
                 before: false,
-                full: false
+                full: false,
+                count: 1
             }
         );
+        assert!(matches!(p("splitw -N 3 -d"), Cmd::SplitWindow { count: 3, detached: true, .. }));
+        assert_eq!(p("splitw -N 3 -d").to_string(), "split-window -v -N 3 -d");
+        for bad in ["splitw -N 0", "splitw -N 65", "splitw -N x", "splitw -N"] {
+            assert!(parse_line(bad).is_err(), "{bad}");
+        }
         assert!(parse_line("resize-pane").is_err());
         assert!(parse_line("select-pane -X").is_err());
     }
@@ -3499,6 +3546,7 @@ mod tests {
                 detached: false,
                 before: false,
                 full: false,
+                count: 1,
             })
         );
         assert!(items[1].cmd.is_none() && items[1].name.is_empty(), "the separator: {:?}", items[1]);

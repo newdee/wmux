@@ -1587,14 +1587,19 @@ impl Server {
                     c.interactive = interactive;
                     c.pane_env = pane_env;
                 }
-                let cmd = match crate::command::parse(&argv) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        self.reply(cid, Outcome::Error(e));
-                        return;
-                    }
-                };
-                let out = self.exec(cmd, Some(cid));
+                // A bug in one command is caught here rather than only by the
+                // main loop, so the client that sent it gets an error and
+                // exits instead of waiting forever for a reply.
+                let run =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match crate::command::parse(&argv) {
+                        Ok(cmd) => self.exec(cmd, Some(cid)),
+                        Err(e) => Outcome::Error(e),
+                    }));
+                let out = run.unwrap_or_else(|_| {
+                    self.in_hook = false;
+                    let name = argv.first().map(String::as_str).unwrap_or("");
+                    Outcome::Error(format!("internal error running '{name}' (details in server.log)"))
+                });
                 self.reply(cid, out);
             }
             ClientMsg::Key(rec) => self.handle_key(cid, rec),
@@ -2063,6 +2068,49 @@ impl Server {
         // `set-environment` entries last, so they can override even PATH.
         env.extend(self.env.iter().cloned());
         env
+    }
+
+    /// Split pane `pid` of a window in two (or, with `full`, the whole
+    /// window) and start a program in the new half. Focus is the caller's.
+    #[allow(clippy::too_many_arguments)]
+    fn split_pane(
+        &mut self,
+        sid: SessionId,
+        widx: usize,
+        pid: PaneId,
+        horizontal: bool,
+        cwd: Option<&str>,
+        argv: &[String],
+        before: bool,
+        full: bool,
+    ) -> Result<PaneId, String> {
+        let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).ok_or("no such session")?;
+        let area = self.window_area(scols, srows);
+        let border = self.border_rows();
+        // Unzoom first so the layout rectangles are real.
+        let w = &mut self.session_mut(sid).unwrap().windows[widx];
+        if w.zoomed {
+            w.zoomed = false;
+            w.relayout(area, border);
+        }
+        let rect = if full { area } else { w.layout_rect(pid).ok_or("pane has no layout")? };
+        // Each half needs a row of content, plus its border-status row.
+        let min_rows = if border.is_some() { 5 } else { 3 };
+        if (horizontal && rect.w < 3) || (!horizontal && rect.h < min_rows) {
+            return Err("pane too small to split".into());
+        }
+        let (nw, nh) = if horizontal { ((rect.w - 1) / 2, rect.h) } else { (rect.w, (rect.h - 1) / 2) };
+        let pane = self.spawn_pane(argv, cwd, nw.max(1), nh.max(1))?;
+        let w = &mut self.session_mut(sid).unwrap().windows[widx];
+        let nid = pane.id;
+        if full {
+            w.layout.split_root(horizontal, nid, rect, before);
+        } else {
+            w.layout.split_at(pid, horizontal, nid, rect, before);
+        }
+        w.panes.push(pane);
+        self.relayout_session(sid);
+        Ok(nid)
     }
 
     fn spawn_pane(&mut self, argv: &[String], cwd: Option<&str>, cols: u16, rows: u16) -> Result<Pane, String> {
@@ -3021,54 +3069,55 @@ impl Server {
                 let session = target.and_then(|t| t.session);
                 self.exec(Cmd::SelectWindow { target: Target { session, window: Some(w.into()), pane: None } }, cid)
             }
-            Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full } => {
+            Cmd::SplitWindow { horizontal, cwd, target, argv, detached, before, full, count } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
                 let cwd = self.pane_cwd(cwd.as_deref(), sid, cid);
-                let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
-                let area = self.window_area(scols, srows);
-                let border = self.border_rows();
-                // Unzoom first so the layout rectangles are real.
-                let w = &mut self.session_mut(sid).unwrap().windows[widx];
-                if w.zoomed {
-                    w.zoomed = false;
-                    w.relayout(area, border);
-                }
-                let rect = if full {
-                    area
-                } else {
-                    match w.layout_rect(pid) {
-                        Some(r) => r,
-                        None => return Outcome::Error("pane has no layout".into()),
+                let count = count.max(1);
+                let was_active = self.session(sid).unwrap().windows[widx].active;
+                // `-N count` (wmux's own): that many panes at once. Each
+                // split takes the largest pane and the window is tiled after
+                // it, so the panes stay even and none gets too small to split.
+                let mut into = pid;
+                let mut newest = None;
+                let mut stopped = None;
+                for made in 0..count {
+                    match self.split_pane(sid, widx, into, horizontal, cwd.as_deref(), &argv, before, full) {
+                        Ok(nid) => newest = Some(nid),
+                        Err(e) if made == 0 => return Outcome::Error(e),
+                        Err(e) => {
+                            stopped = Some(format!("split-window: made {made} of {count} panes: {e}"));
+                            break;
+                        }
                     }
-                };
-                // Each half needs a row of content, plus its border-status row.
-                let min_rows = if border.is_some() { 5 } else { 3 };
-                if (horizontal && rect.w < 3) || (!horizontal && rect.h < min_rows) {
-                    return Outcome::Error("pane too small to split".into());
+                    if count > 1 {
+                        let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                        if let Some(tree) = layout::Preset::Tiled.build(&w.layout.panes()) {
+                            w.layout = tree;
+                            w.layout_preset = Some(layout::Preset::Tiled);
+                        }
+                        self.relayout_session(sid);
+                        let w = &self.session(sid).unwrap().windows[widx];
+                        into = w
+                            .layout
+                            .panes()
+                            .into_iter()
+                            .max_by_key(|id| w.layout_rect(*id).map_or(0, |r| r.w as u32 * r.h as u32))
+                            .unwrap_or(into);
+                    }
+                    self.fire_hook("after-split-window", cid);
                 }
-                let (nw, nh) = if horizontal { ((rect.w - 1) / 2, rect.h) } else { (rect.w, (rect.h - 1) / 2) };
-                let pane = match self.spawn_pane(&argv, cwd.as_deref(), nw.max(1), nh.max(1)) {
-                    Ok(p) => p,
-                    Err(e) => return Outcome::Error(e),
-                };
-                let w = &mut self.session_mut(sid).unwrap().windows[widx];
-                let nid = pane.id;
-                if full {
-                    w.layout.split_root(horizontal, nid, rect, before);
-                } else {
-                    w.layout.split_at(pid, horizontal, nid, rect, before);
-                }
-                w.panes.push(pane);
-                if !detached {
-                    w.last_pane = Some(w.active);
+                if !detached && let Some(nid) = newest {
+                    let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                    w.last_pane = Some(was_active);
                     w.active = nid;
                 }
-                self.relayout_session(sid);
-                self.fire_hook("after-split-window", cid);
-                Outcome::Ok
+                match stopped {
+                    Some(e) => Outcome::Error(e),
+                    None => Outcome::Ok,
+                }
             }
             Cmd::KillPane { target, all_but } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
@@ -3166,26 +3215,42 @@ impl Server {
                     };
                     let w = &mut self.session_mut(sid).unwrap().windows[widx];
                     w.zoomed = false;
+                    let size = |w: &Window| w.rect_of(pid).map(|r| if horizontal { r.w } else { r.h });
+                    let step = |grow: bool| match (horizontal, grow) {
+                        (true, true) => Dir::Right,
+                        (true, false) => Dir::Left,
+                        (false, true) => Dir::Down,
+                        (false, false) => Dir::Up,
+                    };
+                    // Moving a pane's edge right or down grows it, except for
+                    // the last pane of a split, whose edge is its leading
+                    // one: there the step goes the other way. A step that
+                    // moves away from the size wanted is taken back and the
+                    // rest are made the other way round.
+                    let mut flipped = false;
                     for _ in 0..full {
                         w.relayout(area, border);
-                        let Some(rect) = w.rect_of(pid) else { break };
-                        let now = if horizontal { rect.w } else { rect.h };
-                        if now == want {
+                        let Some(before) = size(w) else { break };
+                        if before == want {
                             break;
                         }
-                        let dir = match (horizontal, now < want) {
-                            (true, true) => Dir::Right,
-                            (true, false) => Dir::Left,
-                            (false, true) => Dir::Down,
-                            (false, false) => Dir::Up,
-                        };
-                        let before = now;
+                        let dir = step((before < want) != flipped);
                         w.layout.resize(pid, dir, 1);
                         w.relayout(area, border);
-                        // Wedged against a minimum: stop rather than spin.
-                        let after = w.rect_of(pid).map(|r| if horizontal { r.w } else { r.h }).unwrap_or(before);
+                        let after = size(w).unwrap_or(before);
+                        if !flipped && after.abs_diff(want) > before.abs_diff(want) {
+                            w.layout.resize(pid, step((before < want) == flipped), 1);
+                            flipped = true;
+                            continue;
+                        }
+                        // Nothing moved: this way is wedged against a minimum.
+                        // The other way may not be (the last pane's leading
+                        // edge); after that, stop rather than spin.
                         if after == before {
-                            break;
+                            if flipped {
+                                break;
+                            }
+                            flipped = true;
                         }
                     }
                 }

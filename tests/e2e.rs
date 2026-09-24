@@ -2722,6 +2722,123 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `split-window -N count` makes that many panes at once and tiles them;
+/// `-d` keeps the focus; a window too small for all of them says how many
+/// it made and keeps them.
+#[tokio::test(flavor = "multi_thread")]
+async fn split_window_makes_many_panes_at_once() {
+    let h = Harness::start("splitmany").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "g", "-x", "160", "-y", "48"]).await;
+    assert_eq!(code, 0, "{err}");
+    let panes = async || h.cli(&["list-panes", "-t", "g"]).await.1;
+    let (code, _, err) = h.cli(&["split-window", "-d", "-N", "5", "-t", "g"]).await;
+    assert_eq!(code, 0, "{err}");
+    let list = panes().await;
+    assert_eq!(list.lines().count(), 6, "{list}");
+    // Tiled: 3 columns of 2 rows, all within a cell of each other.
+    let sizes: Vec<(u16, u16)> = list
+        .lines()
+        .filter_map(|l| l.split_once('[')?.1.split_once(']')?.0.split_once('x'))
+        .map(|(w, h)| (w.parse().unwrap(), h.parse().unwrap()))
+        .collect();
+    let (wmin, wmax) = (sizes.iter().map(|s| s.0).min().unwrap(), sizes.iter().map(|s| s.0).max().unwrap());
+    let (hmin, hmax) = (sizes.iter().map(|s| s.1).min().unwrap(), sizes.iter().map(|s| s.1).max().unwrap());
+    assert!(wmax - wmin <= 1 && hmax - hmin <= 1, "even: {sizes:?}");
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "g", "#{window_layout}"]).await.0, 0);
+    // -d: the first pane is still the active one.
+    assert!(list.lines().next().unwrap().contains("(active)"), "{list}");
+    // Without -d the newest pane takes the focus.
+    let (code, _, err) = h.cli(&["split-window", "-N", "2", "-t", "g"]).await;
+    assert_eq!(code, 0, "{err}");
+    let list = panes().await;
+    assert_eq!(list.lines().count(), 8, "{list}");
+    assert!(!list.lines().next().unwrap().contains("(active)"), "focus moved: {list}");
+    // Too many for a small window: an error naming how many were made,
+    // which stay.
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "tiny", "-x", "40", "-y", "12"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["split-window", "-d", "-N", "64", "-t", "tiny"]).await;
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("of 64 panes"), "{err}");
+    let made: usize = err.split("made ").nth(1).and_then(|s| s.split(' ').next()).unwrap().parse().unwrap();
+    assert!(made > 0 && made < 64, "{err}");
+    assert_eq!(h.cli(&["list-panes", "-t", "tiny"]).await.1.lines().count(), 1 + made);
+    h.cli(&["kill-server"]).await;
+}
+
+/// A window squeezed to a few rows and grown back gets its pane split back,
+/// and `show-options` prints the styles a theme sets.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_squeezed_window_gets_its_split_back() {
+    let h = Harness::start("squeeze").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "q", "-x", "80", "-y", "41"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["split-window", "-v", "-t", "q"]).await;
+    // Top pane 30 rows, bottom 9 (40 rows of panes, one border).
+    let heights = async || -> Vec<u16> {
+        h.cli(&["list-panes", "-t", "q"])
+            .await
+            .1
+            .lines()
+            .filter_map(|l| l.split_once('x')?.1.split_once(']')?.0.parse().ok())
+            .collect()
+    };
+    let now = heights().await;
+    let (code, _, err) = h.cli(&["resize-pane", "-t", "q", "-y", "9"]).await;
+    assert_eq!(code, 0, "{err} from {now:?}");
+    assert_eq!(heights().await, [30, 9]);
+    for y in ["4", "41"] {
+        let (code, _, err) = h.cli(&["resize-window", "-t", "q", "-y", y]).await;
+        assert_eq!(code, 0, "{err}");
+    }
+    assert_eq!(heights().await, [30, 9], "the split survives the squeeze");
+    // Styles read back in the form `set` takes.
+    h.cli(&["set", "-g", "status-style", "fg=#c0caf5,bg=#16161e"]).await;
+    assert_eq!(h.cli(&["show-options", "-gv", "status-style"]).await.1.trim(), "fg=#c0caf5,bg=#16161e");
+    assert!(h.cli(&["show-options", "-g"]).await.1.contains("pane-active-border-style"));
+    h.cli(&["kill-server"]).await;
+}
+
+/// `resize-pane -x/-y` reaches the size asked for whichever pane of a split
+/// it is given: the first, a middle one, or the last (whose edge is its
+/// leading one, which once sent it the wrong way to the far end).
+#[tokio::test(flavor = "multi_thread")]
+async fn resize_pane_reaches_the_size_from_any_position() {
+    let h = Harness::start("resizeany").await;
+    for (session, split, flag, dim) in [("tall", "-v", "-y", 1usize), ("wide", "-h", "-x", 0usize)] {
+        let (code, _, err) = h.cli(&["new", "-d", "-s", session, "-x", "40", "-y", "41"]).await;
+        assert_eq!(code, 0, "{err}");
+        h.cli(&["split-window", split, "-t", session]).await;
+        h.cli(&["split-window", split, "-t", session]).await;
+        // 40 cells of panes along the split, two borders: 38 to share, and
+        // the other two keep at least one each.
+        let total = 38;
+        let sizes = async || -> Vec<u16> {
+            h.cli(&["list-panes", "-t", session])
+                .await
+                .1
+                .lines()
+                .filter_map(|l| {
+                    let wh = l.split_once('[')?.1.split_once(']')?.0;
+                    let (w, h) = wh.split_once('x')?;
+                    [w, h][dim].parse().ok()
+                })
+                .collect()
+        };
+        for pane in 0..3 {
+            for want in [1u16, 5, 12, 20, total - 2] {
+                let target = format!("{session}:0.{pane}");
+                let (code, _, err) = h.cli(&["resize-pane", "-t", &target, flag, &want.to_string()]).await;
+                assert_eq!(code, 0, "{err}");
+                let got = sizes().await;
+                assert_eq!(got[pane], want, "{session} pane {pane} {flag} {want}: {got:?}");
+                assert_eq!(got.iter().sum::<u16>(), total, "{got:?}");
+            }
+        }
+    }
+    h.cli(&["kill-server"]).await;
+}
+
 /// The prefix handed over as a bare byte (character 0x02, no Ctrl flag, no
 /// key code), as hosts that pass input on as bytes do: it is still C-b.
 #[tokio::test(flavor = "multi_thread")]
