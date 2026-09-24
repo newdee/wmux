@@ -256,6 +256,49 @@ impl Console {
     }
 }
 
+/// `wmux show-keys`: each key as the console hands it over (key code,
+/// character, modifier flags) and the key wmux makes of it, until `q`.
+/// When the prefix does nothing in some terminal, this shows whether it
+/// arrives at all, and in what form.
+pub fn show_keys() -> Result<i32> {
+    let mut c = Console::open()?;
+    c.enter_raw()?;
+    c.write_str("wmux show-keys: press keys (the prefix, for one); q quits.\r\n\r\n");
+    // Raw mode draws on the alternate screen, which goes away on quitting:
+    // the lines are printed again on the normal screen, to copy from.
+    let mut seen = Vec::new();
+    let result = (|| -> Result<()> {
+        loop {
+            for ev in c.read_events()? {
+                let InputEvent::Key(k) = ev else { continue };
+                if !k.down {
+                    continue;
+                }
+                let read =
+                    crate::keys::key_from_record(&k).map(|key| key.to_string()).unwrap_or_else(|| "(nothing)".into());
+                let ctrl = k.ctrl & (crate::keys::LEFT_CTRL_PRESSED | crate::keys::RIGHT_CTRL_PRESSED) != 0;
+                let line = format!(
+                    "vk=0x{:02X} char=0x{:04X} flags=0x{:04X}{}  ->  {read}",
+                    k.vk,
+                    k.ch,
+                    k.ctrl,
+                    if ctrl { " (Ctrl)" } else { "" },
+                );
+                c.write_str(&format!("{line}\r\n"));
+                seen.push(line);
+                if read == "q" {
+                    return Ok(());
+                }
+            }
+        }
+    })();
+    c.restore();
+    for line in &seen {
+        println!("{line}");
+    }
+    result.map(|()| 0)
+}
+
 impl Drop for Console {
     fn drop(&mut self) {
         self.restore();

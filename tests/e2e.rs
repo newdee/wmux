@@ -2715,6 +2715,23 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// The prefix handed over as a bare byte (character 0x02, no Ctrl flag, no
+/// key code), as hosts that pass input on as bytes do: it is still C-b.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prefix_as_a_bare_byte_still_works() {
+    let h = Harness::start("bareprefix").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "bp"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    let bare = |ch: u16| KeyRecord { down: true, repeat: 1, vk: 0, sc: 0, ch, ctrl: 0 };
+    c.send(ClientMsg::Key(bare(0x02))).await;
+    c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(0x02) })).await;
+    c.send(ClientMsg::Key(bare(b'c' as u16))).await;
+    c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(b'c' as u16) })).await;
+    c.wait_for("a second window", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// `bind -T copy-mode-vi`: a key bound there runs its command in copy mode
 /// (a `send -X` motion or any other command) and nowhere else; unbinding
 /// gives the key back to copy mode; tmux's mouse-key lines are taken.

@@ -440,3 +440,19 @@ fn restart_server_from_inside_a_pane_finishes_outside_it() {
     run(&["kill-server"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `wmux show-keys` through the real console path: the prefix shows as
+/// C-b with the record it came in, and q ends it.
+#[test]
+fn show_keys_reports_the_prefix_and_quits_on_q() {
+    let mut t = Term::spawn(&["show-keys"], 80, 24);
+    t.wait_for("banner", |s| s.contents().contains("q quits"));
+    t.send("\x02");
+    t.wait_for("the prefix", |s| s.contents().contains("->  C-b"));
+    t.send("q");
+    assert_eq!(t.wait_exit(), 0);
+    // The alternate screen is gone; what was pressed stays, to copy.
+    let s = t.parser.screen();
+    assert!(!s.alternate_screen(), "back on the main screen");
+    assert!(s.contents().contains("->  C-b") && s.contents().contains("->  q"), "{}", s.contents());
+}

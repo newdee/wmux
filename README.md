@@ -512,6 +512,14 @@ Server log: `%LOCALAPPDATA%\wmux\server.log` (`WMUX_LOG=debug` for more).
 Past 5 MB it becomes `server.log.1` and a new one starts, so a server that
 runs for months keeps at most about 10 MB of log.
 
+When a key does nothing (the prefix, say), run `wmux show-keys` in that same
+terminal and press it: each key prints what the console handed over and the
+key wmux reads it as, and `q` quits. Nothing printed means the program
+hosting the terminal kept the key for itself (VS Code, for one, binds
+`Ctrl+B`). Hosts that pass input on as bytes rather than key events (SSH,
+some remote tools) send `Ctrl+B` as the character 0x02 with no Ctrl flag;
+wmux reads control characters the way tmux does, so that is still `C-b`.
+
 The pipe carries a DACL that admits only the creating user (and SYSTEM), the
 Windows equivalent of tmux's mode-0700 socket directory. Every pane runs in a
 kill-on-close job object, so `kill-pane`, `kill-session` and a server exit

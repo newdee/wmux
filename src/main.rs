@@ -40,6 +40,7 @@ Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
   windows-terminal install|remove|status   (a wmux profile in the Windows Terminal dropdown)
 Upgrading:  version (this wmux and the server's)   update [--check]   restart-server (sessions move to this version)
+Keys not arriving?  show-keys   (prints each key as the console hands it over and as wmux reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
@@ -152,12 +153,13 @@ fn main() {
         "startup" => Some(wmux::startup::run(&socket, &args[1..])),
         "windows-terminal" | "wt" => Some(wmux::wt::run(&socket, &args[1..])),
         "completion" => Some(wmux::completion::run(&args[1..])),
+        "version" | "restart-server" | "show-keys" if args.len() > 1 => {
+            Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
+        }
+        "show-keys" => Some(wmux::console::show_keys()),
         // These talk to the server, but as a client of their own: the
         // version of this program next to the server's, and moving the
         // sessions to a server of this version.
-        "version" | "restart-server" | "update" if args.len() > 1 && args[0] != "update" => {
-            Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
-        }
         "version" => Some(rt.block_on(client::version(&socket))),
         "restart-server" => Some(rt.block_on(client::restart_server(&socket))),
         "update" => Some(rt.block_on(wmux::update::run(&socket, &args[1..]))),

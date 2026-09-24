@@ -366,11 +366,37 @@ pub fn key_from_record(r: &KeyRecord) -> Option<Key> {
         }
         let c = char::from_u32(r.ch as u32)?;
         if c.is_control() {
-            return None;
+            // A control character with no Ctrl flag and no key code: a host
+            // that hands input over as bytes (SSH, VS Code's terminal, a
+            // console fed by a program) rather than as key records. Read it
+            // the way a terminal does, byte 0x02 being C-b.
+            return control_char_key(c, alt);
         }
         c
     };
     Some(Key { code: KeyCode::Char(c), ctrl, alt, shift: false })
+}
+
+/// The key a control character stands for, read as tmux reads it: Tab for
+/// 0x09, Enter for 0x0d, Escape for 0x1b, BSpace for 0x7f, C-a..C-z for the
+/// rest of 0x01..0x1a (0x08 stays C-h and 0x0a C-j, so `bind -n C-h` and
+/// `bind -n C-j` hold), and C-\ C-] C-^ C-_ for the others. (NUL cannot
+/// get here: a record with character 0 carries no character at all.)
+fn control_char_key(c: char, alt: bool) -> Option<Key> {
+    let code = c as u32;
+    let key = |code: KeyCode, ctrl: bool| Some(Key { code, ctrl, alt, shift: false });
+    match code {
+        0x7f => key(KeyCode::BSpace, false),
+        0x09 => key(KeyCode::Tab, false),
+        0x0d => key(KeyCode::Enter, false),
+        0x1b => key(KeyCode::Escape, false),
+        0x01..=0x1a => key(KeyCode::Char((b'a' + (code as u8 - 1)) as char), true),
+        0x1c => key(KeyCode::Char('\\'), true),
+        0x1d => key(KeyCode::Char(']'), true),
+        0x1e => key(KeyCode::Char('^'), true),
+        0x1f => key(KeyCode::Char('_'), true),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +405,33 @@ mod tests {
 
     fn rec(vk: u16, ch: u16, ctrl: u32) -> KeyRecord {
         KeyRecord { down: true, repeat: 1, vk, sc: 0, ch, ctrl }
+    }
+
+    /// Input handed over as bytes (no Ctrl flag, no key code) still reads
+    /// as the keys a terminal would make of it; with a key code and the
+    /// Ctrl flag (Windows Terminal, a real console) nothing changes.
+    #[test]
+    fn control_bytes_without_a_key_code_are_ctrl_keys() {
+        assert_eq!(key_from_record(&rec(0, 0x02, 0)), Some(Key::ctrl('b')), "the prefix as a byte");
+        assert_eq!(key_from_record(&rec(0, 0x01, 0)), Some(Key::ctrl('a')));
+        assert_eq!(key_from_record(&rec(0, 0x1a, 0)), Some(Key::ctrl('z')));
+        assert_eq!(key_from_record(&rec(0, 0x0d, 0)), Some(Key::plain(KeyCode::Enter)));
+        assert_eq!(key_from_record(&rec(0, 0x09, 0)), Some(Key::plain(KeyCode::Tab)));
+        // As tmux reads them: 0x08 and 0x0a are C-h and C-j, so the
+        // pane-movement bindings people make with them still fire.
+        assert_eq!(key_from_record(&rec(0, 0x08, 0)), Some(Key::ctrl('h')));
+        assert_eq!(key_from_record(&rec(0, 0x0a, 0)), Some(Key::ctrl('j')));
+        assert_eq!(key_from_record(&rec(0, 0x1f, 0)), Some(Key::ctrl('_')));
+        assert_eq!(key_from_record(&rec(0, 0x7f, 0)), Some(Key::plain(KeyCode::BSpace)));
+        assert_eq!(key_from_record(&rec(0, 0x1b, 0)), Some(Key::plain(KeyCode::Escape)));
+        assert_eq!(key_from_record(&rec(0, 0x1d, 0)), Some(Key::ctrl(']')));
+        // The full record, as Windows Terminal and conhost send it: unchanged.
+        assert_eq!(key_from_record(&rec(b'B' as u16, 0x02, LEFT_CTRL_PRESSED)), Some(Key::ctrl('b')));
+        // Alt with a control byte: M-C-b.
+        assert_eq!(
+            key_from_record(&rec(0, 0x02, LEFT_ALT_PRESSED)),
+            Some(Key { code: KeyCode::Char('b'), ctrl: true, alt: true, shift: false })
+        );
     }
 
     #[test]
@@ -405,6 +458,32 @@ mod tests {
             assert_eq!(k.to_string(), name);
             assert_eq!(Key::parse(&k.to_string()), Some(k));
         }
+    }
+
+    /// Every byte as a bare record: each C0 byte and DEL is some key, each
+    /// printable one is itself, and the C1 range is nothing.
+    #[test]
+    fn every_bare_byte() {
+        let (mut c0, mut printable, mut none) = (0, 0, 0);
+        for b in 0x01u16..=0xff {
+            let got = key_from_record(&rec(0, b, 0));
+            match b {
+                0x01..=0x1f | 0x7f => {
+                    let k = got.unwrap_or_else(|| panic!("{b:#x}"));
+                    assert!(!k.alt && !k.shift, "{b:#x}: {k}");
+                    c0 += 1;
+                }
+                0x80..=0x9f => {
+                    assert_eq!(got, None, "{b:#x}");
+                    none += 1;
+                }
+                _ => {
+                    assert_eq!(got, Some(Key::ch(char::from_u32(b as u32).unwrap())), "{b:#x}");
+                    printable += 1;
+                }
+            }
+        }
+        assert_eq!((c0, printable, none), (32, 191, 32));
     }
 
     #[test]

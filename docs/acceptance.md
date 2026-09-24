@@ -1976,3 +1976,32 @@ CI 上 `join_pane_marks_and_exact_sizes` 失败：`select-pane -T logs` 之后 p
 - **后续版本自动提交**：发布流水线新增一步，仓库有 `WINGET_TOKEN` secret 时跑 `wingetcreate update newdee.wmux --submit`，
   没有则跳过、失败不影响发布。secret 放在 job 级 env（步骤自己的 env 在它的 `if:` 里不可见，第一版写错已改）。
   **未验证**：要等首个 PR 合并、设置 secret、下一次发版才会真正执行。
+
+# 第四十次记录（2026-09-24）— 以字节转交输入的宿主里前缀键失灵；`wmux show-keys`
+
+用户报告：在某个 PowerShell 里 `Ctrl+B` 之类没反应。
+**已确认的事实**：Windows Terminal 与 conhost 送完整键盘记录（vk 'B' + LEFT_CTRL，字符 0x02），这条路一直正常（ConPTY 测试里发 `\x02` 一直能分屏）。
+`key_from_record` 在"无 Ctrl 标志"分支里对控制字符直接返回 None。所以一旦宿主只交字节（vk=0、字符 0x02、无 Ctrl 标志，常见于 SSH、部分远程工具、程序喂入的控制台），前缀就被丢掉。
+同一原因下，这类宿主里提示符的 Enter（0x0d）也会被丢。
+**尚未确认**：用户的宿主是哪一种，也可能是宿主自己吃掉了 `Ctrl+B`（VS Code 绑定了侧栏开关）。为此加了 `show-keys` 诊断。
+
+- **修正**：裸控制字符按 tmux 的读法解读。0x0d Enter，0x09 Tab，0x1b Escape，0x7f BSpace，0x01..0x1a 是 C-a..C-z，0x1c..0x1f 是 C-\ C-] C-^ C-_。完整记录的路径不变。
+- **`wmux show-keys`**：打印控制台交来的 vk、字符、标志，以及 wmux 认成的键，按 `q` 退出。退出后在主屏幕重印，便于复制。多余参数报错。补全、usage、两份 README、parity 均已写入。
+
+验收（每轮 review + 全量测试）：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路 | 探针关掉修正：新 e2e（裸 0x02 后接 `c` 开新窗口）超时失败；打开：0.16 s 通过 | 机制真实生效，干净 |
+| 2 | 边界与 tmux 对齐 | 初版把 0x08、0x0a 读成 Backspace、Enter；tmux 读作 C-h、C-j，`bind -n C-h/C-j`（vim-tmux-navigator）会在这类宿主里失效 | **有问题**，已改，不计数 |
+| 2' | 同上复跑 | 断言 0x00 为 C-Space 失败：字符 0 的记录在前面就当"无字符"返回，该分支是死代码 | **有问题**，删分支与断言，不计数 |
+| 3 | 静态一致性 | `show-keys` 进了补全却不在 usage、README 中，且不拒绝多余参数 | **有问题**，已补，不计数 |
+| 4 | 代码正确性 | raw 模式在备用屏幕上画，按 `q` 后输出消失，用户无法复制结果 | **有问题**，改为退出后在主屏幕重印，console 测试断言主屏幕上有 `->  C-b` 与 `->  q`，不计数 |
+| 5 | 静态一致性 | 网站测试数仍写 208，实际 211 | **有问题**，已改，不计数 |
+| 6 | 可复现性 | 全量连跑 3 次：每次 138/7/66 通过，0 失败 | 干净（1/3） |
+| 7 | 不变量（所有入口） | 键记录转键只有 `key_from_record` 一处；客户端原样转发（client.rs 唯一的 `InputEvent::Key` 分支）；服务端在提示符、copy mode、popup 分流之前转换；另一个调用者是 `show-keys`；全量 138/7/66 | 干净（2/3） |
+| 8 | 退化输入 | 新增全字节扫描：0x01..0xFF 裸记录中 32 个 C0/DEL 各得一个键，191 个可打印字符得到自身，32 个 C1 得到无，无 panic；`fmt --check` 为 0，clippy 无警告，全量 139/7/66 | 干净（3/3） |
+
+记下未改的一项：前缀路径会把 vk 0 放进"吞掉下一个 key-up"的集合。宿主不发 key-up 时，下一个 vk 0 的 key-up 会被吞。
+pane 里的 shell 按 key-down 处理输入，所以不影响输入内容，不改。
+网站测试数改为 212。
