@@ -9,7 +9,7 @@
 use anyhow::{Result, bail};
 
 /// Commands the client handles itself, which `list-commands` does not show.
-const LOCAL: &[&str] = &["completion", "startup", "windows-terminal"];
+const LOCAL: &[&str] = &["completion", "restart-server", "startup", "update", "windows-terminal"];
 
 /// Values `completion` takes: the shells there is a script for.
 const SHELLS: &[&str] = &["powershell"];

@@ -1785,3 +1785,54 @@ A、B、C 三轮连续零发现，验收通过。测试 194 → 199（lib 131 / 
 证据：把本机 TEMP 指向 scratchpad 下的长目录复现 CI 条件，`git stash` 掉修复时 `choose_tree_picker` 报 `timeout waiting for window 1`
 （与 CI 同一条），恢复修复后通过。同一长 TEMP 下 `attach_type_split_detach` 另有一处失败是复现环境造成的（配置报错浮层打印的
 配置文件路径在长 TEMP 下被 80 列截掉），CI 的 TEMP 不长，不适用。全量 199 项全过，e2e 连跑 3 次全过，clippy/fmt 干净。
+
+# 第三十五次验收（2026-09-24）— 更新链路：版本不一致提示、restart-server、wmux update
+
+## 做了什么
+
+1. **版本不一致提示**：交互式 attach 前，客户端另开连接问 server 的 `version`；不同则 attach 期间终端标题写
+   `wmux: <session> [server X: run wmux restart-server]`，detach 时打印一行说明。不改协议，所以对**旧** server 同样生效
+   （旧 server 无法主动往客户端推消息，只能由新客户端自己说）。`wmux version` 同时给出本程序与 server 的版本。
+2. **`wmux restart-server`**：记下正在跑的 session → `save-session -a` → `kill-server -r`（新 server 让已接的终端等待并重新 attach；
+   旧 server 拒绝 `-r` 时退回普通 `kill-server`，终端被断开并提示 `wmux attach`）→ 等旧 pipe 消失 → 起本版本 server →
+   只对刚才在跑的 session 逐个 `restore-session`（存过档但已关掉的 session 不会复活——`kill-session` 不删存档，用 `--restore` 会全复活）。
+   在 pane 里运行时：pane 的 job 新增 `JOB_OBJECT_LIMIT_BREAKAWAY_OK`（只有显式要求的进程能脱离，其它子进程仍随 pane 结束），
+   restart 以 `CREATE_BREAKAWAY_FROM_JOB` 在 pane 外重跑自己，结果写 `restart.log`；旧 server 的 job 不允许脱离时明确报错请在 wmux 外运行。
+   客户端的控制台输入线程改为整个进程一个（重新 attach 复用，不会有第二个读者抢键）。
+3. **`wmux update [--check]`**：用系统自带 `curl.exe` 问 GitHub 最新 release；按安装方式处理——Program Files 下（MSI）下载 MSI 与
+   `.sha256`，`certutil` 核对后交给 `msiexec /passive`（0/3010 成功，1602 取消）；scoop 安装走 `scoop update wmux`；其它方式给出下载页。
+   装完提示 `restart-server`。无后台行为。
+
+## 修复过程中的发现（不计数）
+
+- **读代码抓到的真 bug**：旧 server 对 `kill-server -r` 回的是 `unexpected argument '-r'`，第一版回退只认 `unknown flag`，
+  会让 restart 对**所有 0.9 server**失败（正是用户的情形）。改为 `-r` 任何拒绝都回退（此时已存档，安全）。
+- **读代码抓到的真 bug**：scoop 装的是 `scoop.cmd/.ps1` shim，`Command::new("scoop")` 只找 `scoop.exe`，scoop 路径必失败；改走 `cmd /c`。
+- 重启后运行时 `set`/`bind` 的设置丢失：旧 server 分不清默认值与用户设置，全搬会把旧版默认值（如 0.9 的 status-right）钉到新版上；
+  与 tmux `kill-server` 一致，从配置文件重读。restart 输出与 README（中英）写明。
+- 测试：重连断言第一版可被重启前的画面满足，改为先确认客户端打印了"restarting, attaching again"且其后有重绘；
+  一次断言失败留下了真实 server 进程占着 `target\debug\wmux.exe`，给 restart 测试加 `StopServer` 守卫（Drop 时 kill-server）。
+
+## 第 A 轮（计数 1/3，无发现）— 视角：机制通路（**真实 0.9.0 server**，一次性 socket，不碰用户的 default）
+
+数据：装机的 `C:\Program Files\wmux\wmux.exe`（0.9.0）起 server、两个 session、一条回显；新构建（0.10.0）`version` 输出
+`server: wmux 0.9.0` 与说明；`restart-server` → `server wmux 0.9.0 -> wmux 0.10.0; 2 of 2 session(s) restored: one, two`，
+server 进程路径从 Program Files 变为 target\release，回显历史在；用户自己的 default server 只被读（显示 0.9.0 与说明），未被触碰。
+`update --check`：GitHub 最新为 0.9.0，本构建 0.10.0 → "is the latest"。
+console 测试（真实进程 + ConPTY）：attach 中的客户端收到重启通知、其后重绘、进程未退出、敲字到达新 server；普通 `kill-server` 则客户端退出；
+在 pane 里跑 restart 后 `restart.log` 写明恢复、server pid 改变；`--ignored` 测试以 0.9.0 为 server 验证标题提示与 detach 说明。
+全量 205 项（lib 135 / console 6 + 1 需旧版本的忽略项 / e2e 64）全过，clippy 无 warning，fmt 干净。
+
+## 第 B 轮（计数 2/3，无发现）— 视角：可复现性
+
+数据：console 连跑 5 次、e2e 连跑 3 次全过；每次跑完无残留 target 下的 wmux 进程（计数 0）。
+
+## 第 C 轮（计数 3/3，无发现）— 视角：边界
+
+数据：`restart-server now` / `version x` / `update --force` 各退出码 1 并说明；无 server 时"nothing to restart"退出码 0；
+名字带空格的 session 恢复；存过档后关掉的 session 不复活（存档文件仍在、未用）；连续两次 restart 都 1/1；
+`kill-server` 后 server 339 ms 内退出、无残留；运行时选项不保留（有意，已写明）。
+
+## 结论（第三十五次验收）
+
+A、B、C 三轮连续零发现，验收通过。测试 199 → 205。版本号升到 0.10.0（发布在后面各项做完后）。

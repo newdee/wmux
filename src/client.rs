@@ -47,11 +47,18 @@ async fn connect(pipe: &str, autostart: bool, socket: &str) -> Result<NamedPipeC
 /// its whole life and the caller would never see EOF. Call CreateProcessW
 /// directly instead.
 fn start_server(socket: &str) -> Result<()> {
+    spawn_self(&["-L", socket, "__server"], false)
+}
+
+/// Run this program again, detached from the console and inheriting no
+/// handles. `breakaway` also takes it out of the job the caller is in (a
+/// pane's kill-on-close job), which only a job allowing it permits.
+fn spawn_self(args: &[&str], breakaway: bool) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS, PROCESS_INFORMATION,
-        STARTUPINFOW,
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+        DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
     };
     let exe = std::env::current_exe().context("current_exe")?;
     let quote = |s: &str| -> String {
@@ -61,7 +68,15 @@ fn start_server(socket: &str) -> Result<()> {
             s.to_string()
         }
     };
-    let cmdline = format!("{} -L {} __server", quote(&exe.to_string_lossy()), quote(socket));
+    let mut cmdline = quote(&exe.to_string_lossy());
+    for a in args {
+        cmdline.push(' ');
+        cmdline.push_str(&quote(a));
+    }
+    let flags = DETACHED_PROCESS
+        | CREATE_NEW_PROCESS_GROUP
+        | CREATE_UNICODE_ENVIRONMENT
+        | if breakaway { CREATE_BREAKAWAY_FROM_JOB } else { 0 };
     let mut exe_w: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let mut cmd_w: Vec<u16> = std::ffi::OsStr::new(&cmdline).encode_wide().chain(std::iter::once(0)).collect();
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
@@ -74,7 +89,7 @@ fn start_server(socket: &str) -> Result<()> {
             std::ptr::null(),
             std::ptr::null(),
             0, // bInheritHandles = FALSE
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+            flags,
             std::ptr::null(), // inherit our environment block
             std::ptr::null(),
             &si,
@@ -82,7 +97,7 @@ fn start_server(socket: &str) -> Result<()> {
         )
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error()).context("spawn server");
+        return Err(std::io::Error::last_os_error()).with_context(|| format!("spawn {}", args.join(" ")));
     }
     unsafe {
         CloseHandle(pi.hThread);
@@ -119,12 +134,222 @@ fn needs_server(argv: &[String]) -> bool {
     )
 }
 
+/// What a server says when it goes away to come back (`kill-server -r`,
+/// sent by `restart-server`): an attached client waits and attaches again.
+pub const RESTARTING: &str = "server restarting";
+
+/// Whether a server is listening on `pipe` (without starting one).
+fn server_running(pipe: &str) -> bool {
+    match ClientOptions::new().open(pipe) {
+        Ok(_) => true,
+        Err(e) => e.raw_os_error() == Some(ERROR_PIPE_BUSY),
+    }
+}
+
+/// Run one command against the running server, the way a script would:
+/// its exit code, what it printed, what it complained about. Never starts
+/// a server.
+pub async fn query(socket: &str, argv: &[&str]) -> Result<(i32, String, String)> {
+    let conn = connect(&pipe_name(socket), false, socket).await?;
+    let (mut rd, mut wr) = tokio::io::split(conn);
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    write_frame(
+        &mut wr,
+        &ClientMsg::Command {
+            version: PROTOCOL_VERSION,
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            cwd,
+            cols: 80,
+            rows: 24,
+            interactive: false,
+            pane_env: None,
+        },
+    )
+    .await?;
+    let (mut out, mut err) = (String::new(), String::new());
+    loop {
+        match read_frame::<_, ServerMsg>(&mut rd).await? {
+            None => bail!("server closed the connection"),
+            Some(ServerMsg::Text(t)) => {
+                out.push_str(&t);
+                out.push('\n');
+            }
+            Some(ServerMsg::Error(e)) => {
+                err.push_str(&e);
+                err.push('\n');
+            }
+            Some(ServerMsg::Done { code }) => return Ok((code, out, err)),
+            Some(_) => {}
+        }
+    }
+}
+
+/// The version of the server on `socket` ("0.9.0"), None when none runs.
+pub async fn server_version(socket: &str) -> Option<String> {
+    if !server_running(&pipe_name(socket)) {
+        return None;
+    }
+    let (code, out, _) = query(socket, &["version"]).await.ok()?;
+    (code == 0).then(|| out.trim().trim_start_matches("wmux").trim().to_string())
+}
+
+/// The line that says the server is a different wmux from this one.
+fn mismatch_note(server: &str) -> String {
+    format!(
+        "the running server is wmux {server}, this is wmux {}: `wmux restart-server` moves your sessions to it",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// `wmux version`: this program's version, and the server's when one runs
+/// and it differs.
+pub async fn version(socket: &str) -> Result<i32> {
+    println!("wmux {}", env!("CARGO_PKG_VERSION"));
+    if let Some(v) = server_version(socket).await {
+        if v == env!("CARGO_PKG_VERSION") {
+            println!("server: the same");
+        } else {
+            println!("server: wmux {v}");
+            eprintln!("note: {}", mismatch_note(&v));
+        }
+    }
+    Ok(0)
+}
+
+/// `wmux restart-server`: move every running session to a new server of
+/// this version. The sessions are saved, the old server is told to go
+/// (clients of 0.10 and later attach again by themselves), a new one is
+/// started, and exactly the sessions that were running are restored in it
+/// with their layout, history and directories.
+pub async fn restart_server(socket: &str) -> Result<i32> {
+    let pipe = pipe_name(socket);
+    let Some(old) = server_version(socket).await else {
+        println!("no server running on socket {socket}: nothing to restart");
+        return Ok(0);
+    };
+    // Inside one of this server's panes, stopping the server stops us
+    // too, halfway. Go on as a copy of ourselves outside the pane's job;
+    // it writes what it did to restart.log, and this terminal attaches to
+    // the new server like every other.
+    let detached = std::env::var_os("WMUX_RESTART_DETACHED").is_some();
+    let in_pane = std::env::var_os("WMUX_PANE").is_some()
+        && std::env::var("WMUX").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into()) == socket;
+    if in_pane && !detached {
+        unsafe { std::env::set_var("WMUX_RESTART_DETACHED", "1") };
+        return match spawn_self(&["-L", socket, "restart-server"], true) {
+            Ok(()) => {
+                println!(
+                    "restarting from outside this pane (it goes with the old server); \
+                     the result is in {}",
+                    restart_log().display()
+                );
+                Ok(0)
+            }
+            Err(e) => bail!(
+                "this pane cannot outlive its server (wmux {old} does not let it): \
+                 run `wmux restart-server` from a terminal outside wmux ({e:#})"
+            ),
+        };
+    }
+    let (code, summary) = restart_server_here(socket, &pipe, &old).await?;
+    if detached {
+        let _ = std::fs::write(restart_log(), format!("{}\n{summary}\n", chrono::Local::now().to_rfc3339()));
+    }
+    println!("{summary}");
+    Ok(code)
+}
+
+/// Where a restart run outside a pane leaves its result.
+/// (Beside the sessions when `WMUX_SESSIONS_DIR` moves them: tests do.)
+fn restart_log() -> std::path::PathBuf {
+    if let Some(d) = std::env::var_os("WMUX_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+        return std::path::PathBuf::from(d).join("restart.log");
+    }
+    let base = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    base.join("wmux").join("restart.log")
+}
+
+async fn restart_server_here(socket: &str, pipe: &str, old: &str) -> Result<(i32, String)> {
+    let (_, list, _) = query(socket, &["list-sessions"]).await?;
+    let sessions: Vec<String> =
+        list.lines().filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string())).filter(|n| !n.is_empty()).collect();
+    let (code, _, err) = query(socket, &["save-session", "-a"]).await?;
+    if code != 0 && !sessions.is_empty() {
+        bail!("saving the sessions failed, the server is left running: {}", err.trim());
+    }
+    // `-r` tells attached clients to wait and attach again; a server older
+    // than that flag only knows plain kill-server, and its clients detach.
+    // Any refusal of -r means an older server (0.9 says "unexpected
+    // argument"); the sessions are saved, so a plain kill-server is safe.
+    let (code, _, _) = query(socket, &["kill-server", "-r"]).await?;
+    let told_clients = code == 0;
+    if !told_clients {
+        let (code, _, err) = query(socket, &["kill-server"]).await?;
+        if code != 0 {
+            bail!("the server would not stop: {}", err.trim());
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while server_running(pipe) {
+        if Instant::now() > deadline {
+            bail!("the old server did not exit");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    start_server(socket)?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !server_running(pipe) {
+        if Instant::now() > deadline {
+            bail!("the new server did not start (see %LOCALAPPDATA%\\wmux\\server.log)");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut restored = Vec::new();
+    let mut lines = Vec::new();
+    for s in &sessions {
+        let (code, _, err) = query(socket, &["restore-session", s]).await?;
+        if code == 0 {
+            restored.push(s.clone());
+        } else {
+            lines.push(format!("{s}: not restored: {}", err.trim()));
+        }
+    }
+    lines.insert(
+        0,
+        format!(
+            "server wmux {old} -> wmux {}; {} of {} session(s) restored{}",
+            env!("CARGO_PKG_VERSION"),
+            restored.len(),
+            sessions.len(),
+            if restored.is_empty() { String::new() } else { format!(": {}", restored.join(", ")) }
+        ),
+    );
+    if !told_clients && !sessions.is_empty() {
+        lines.push("terminals that were attached were detached: `wmux attach` to go back".into());
+    }
+    // The old server cannot tell its defaults from what was set, so its
+    // options are not copied (that would pin the old defaults on the new
+    // version): the new server reads the config file, as after kill-server.
+    lines.push(
+        "options and key bindings come from your config file; any set with `set`/`bind` since are not carried over"
+            .into(),
+    );
+    Ok((if restored.len() == sessions.len() { 0 } else { 1 }, lines.join("\n")))
+}
+
 pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
     let pipe = pipe_name(&socket);
     let mut console = Console::open().ok();
     let (cols, rows) = console.as_ref().map(|c| c.size()).unwrap_or((80, 24));
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let pane_env = std::env::var("WMUX_PANE").ok().and_then(|p| p.parse().ok());
+    // A terminal about to attach to a server of another version is told
+    // so (in its title while attached, and when it detaches): the usual
+    // cause is an upgrade with the old server still running.
+    let mut mismatch = match &console {
+        Some(_) => server_version(&socket).await.filter(|v| v != env!("CARGO_PKG_VERSION")),
+        None => None,
+    };
 
     let conn = connect(&pipe, needs_server(&argv), &socket).await?;
     let (mut rd, mut wr) = tokio::io::split(conn);
@@ -154,13 +379,36 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
             ServerMsg::Attached { session } => {
                 let Some(mut c) = console.take() else { bail!("attached without a console") };
                 c.enter_raw()?;
-                c.set_title(&format!("wmux: {session}"));
                 let c = Arc::new(c);
+                // One reader of the console for the life of the process: an
+                // attach after a server restart takes it over.
+                let mut input = spawn_input(Arc::clone(&c))?;
+                let (mut rd, mut wr, mut session) = (rd, wr, session);
                 // `rd` moves into the reader task and never comes back: this
                 // arm always returns.
-                let reason = attached(Arc::clone(&c), &session, rd, &mut wr).await;
+                let reason = loop {
+                    let title = match &mismatch {
+                        Some(v) => format!("wmux: {session} [server {v}: run wmux restart-server]"),
+                        None => format!("wmux: {session}"),
+                    };
+                    c.set_title(&title);
+                    match attached(Arc::clone(&c), &session, rd, &mut wr, &mut input).await {
+                        Ok(Detach::Restarting) => match reattach(&socket, &session, &c).await {
+                            Ok((r, w, s)) => {
+                                (rd, wr, session) = (r, w, s);
+                                mismatch = server_version(&socket).await.filter(|v| v != env!("CARGO_PKG_VERSION"));
+                            }
+                            Err(e) => break Err(e),
+                        },
+                        Ok(Detach::Reason(r)) => break Ok(r),
+                        Err(e) => break Err(e),
+                    }
+                };
                 // The input thread still holds a reference; restore explicitly.
                 c.restore();
+                if let Some(v) = &mismatch {
+                    eprintln!("note: {}", mismatch_note(v));
+                }
                 match reason {
                     Ok(r) => {
                         println!("[{r}]");
@@ -204,49 +452,107 @@ where
     rx
 }
 
-async fn attached<R, W>(console: Arc<Console>, session: &str, rd: R, wr: &mut W) -> Result<String>
+/// How an attach ended.
+enum Detach {
+    /// Detached, the server gone, the session killed: the reason, shown.
+    Reason(String),
+    /// The server is restarting (`restart-server`): attach again to the new one.
+    Restarting,
+}
+
+/// Read the console on a thread of its own for the rest of the process.
+/// A re-attach after a server restart reuses the receiver: a second reader
+/// would take keys meant for the first.
+fn spawn_input(console: Arc<Console>) -> Result<mpsc::UnboundedReceiver<ClientMsg>> {
+    let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+    std::thread::Builder::new()
+        .name("console-input".into())
+        .spawn(move || {
+            let mut size = console.size();
+            loop {
+                let events = match console.read_events() {
+                    Ok(e) => e,
+                    Err(_) => break,
+                };
+                for ev in events {
+                    let m = match ev {
+                        InputEvent::Key(k) => ClientMsg::Key(k),
+                        InputEvent::Mouse(m) => ClientMsg::Mouse(m),
+                        InputEvent::Resize => {
+                            let s = console.size();
+                            if s == size {
+                                continue;
+                            }
+                            size = s;
+                            ClientMsg::Resize { cols: s.0, rows: s.1 }
+                        }
+                    };
+                    if tx.send(m).is_err() {
+                        return;
+                    }
+                }
+            }
+        })
+        .context("spawn input thread")?;
+    Ok(rx)
+}
+
+type Halves = (tokio::io::ReadHalf<NamedPipeClient>, tokio::io::WriteHalf<NamedPipeClient>, String);
+
+/// The server went away to come back: wait for the new one (up to half a
+/// minute) and attach to the same session again.
+async fn reattach(socket: &str, session: &str, console: &Console) -> Result<Halves> {
+    console.write_bytes(format!("\x1b[H\x1b[2J[{RESTARTING}: attaching to {session} again...]").as_bytes());
+    let pipe = pipe_name(socket);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if Instant::now() > deadline {
+            bail!("{RESTARTING}, and no new server came up");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let Ok(conn) = connect(&pipe, false, socket).await else { continue };
+        let (mut rd, mut wr) = tokio::io::split(conn);
+        let (cols, rows) = console.size();
+        let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        write_frame(
+            &mut wr,
+            &ClientMsg::Command {
+                version: PROTOCOL_VERSION,
+                argv: vec!["attach-session".into(), "-t".into(), session.to_string()],
+                cwd,
+                cols,
+                rows,
+                interactive: true,
+                pane_env: None,
+            },
+        )
+        .await?;
+        loop {
+            match read_frame::<_, ServerMsg>(&mut rd).await? {
+                Some(ServerMsg::Attached { session }) => return Ok((rd, wr, session)),
+                // Up, but the session is not back yet: ask again shortly.
+                Some(ServerMsg::Error(_)) | Some(ServerMsg::Done { .. }) | None => break,
+                Some(_) => {}
+            }
+        }
+    }
+}
+
+async fn attached<R, W>(
+    console: Arc<Console>,
+    session: &str,
+    rd: R,
+    wr: &mut W,
+    rx: &mut mpsc::UnboundedReceiver<ClientMsg>,
+) -> Result<Detach>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
-    {
-        let console = Arc::clone(&console);
-        let tx = tx.clone();
-        std::thread::Builder::new()
-            .name("console-input".into())
-            .spawn(move || {
-                let mut size = console.size();
-                loop {
-                    let events = match console.read_events() {
-                        Ok(e) => e,
-                        Err(_) => break,
-                    };
-                    for ev in events {
-                        let m = match ev {
-                            InputEvent::Key(k) => ClientMsg::Key(k),
-                            InputEvent::Mouse(m) => ClientMsg::Mouse(m),
-                            InputEvent::Resize => {
-                                let s = console.size();
-                                if s == size {
-                                    continue;
-                                }
-                                size = s;
-                                ClientMsg::Resize { cols: s.0, rows: s.1 }
-                            }
-                        };
-                        if tx.send(m).is_err() {
-                            return;
-                        }
-                    }
-                }
-            })
-            .context("spawn input thread")?;
-    }
     // The server sized the session from our Command; re-check in case the
     // window changed while connecting.
     let s = console.size();
-    let _ = tx.send(ClientMsg::Resize { cols: s.0, rows: s.1 });
+    write_frame(wr, &ClientMsg::Resize { cols: s.0, rows: s.1 }).await?;
 
     let reason: Option<String>;
     // Poll the window size too: not every host reports WINDOW_BUFFER_SIZE_EVENT.
@@ -260,7 +566,13 @@ where
                     None | Some(Ok(None)) => { reason = Some("server exited".into()); break; }
                     Some(Err(e)) => return Err(e),
                     Some(Ok(Some(ServerMsg::Output(b)))) => console.write_bytes(&b),
-                    Some(Ok(Some(ServerMsg::Detached { reason: r }))) => { reason = Some(format!("{r} (from session {session})")); break; }
+                    Some(Ok(Some(ServerMsg::Detached { reason: r }))) => {
+                        if r == RESTARTING {
+                            return Ok(Detach::Restarting);
+                        }
+                        reason = Some(format!("{r} (from session {session})"));
+                        break;
+                    }
                     Some(Ok(Some(ServerMsg::Error(e)))) => { reason = Some(format!("error: {e}")); break; }
                     Some(Ok(Some(ServerMsg::SetMouse(on)))) => console.set_mouse(on),
                     Some(Ok(Some(ServerMsg::Raise))) => { crate::notify::raise_console_window(); }
@@ -280,7 +592,7 @@ where
         }
     }
     // The input thread is blocked in ReadConsoleInput; it dies with the process.
-    Ok(reason.unwrap_or_else(|| "detached".into()))
+    Ok(Detach::Reason(reason.unwrap_or_else(|| "detached".into())))
 }
 
 #[cfg(test)]

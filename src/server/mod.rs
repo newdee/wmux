@@ -2518,12 +2518,15 @@ impl Server {
                 }
                 Err(e) => Outcome::Error(e),
             },
-            Cmd::KillServer => {
+            Cmd::KillServer { restarting } => {
                 // Last chance to save before the tree is gone.
                 self.autosave_changed();
+                // Restarting: clients are told so, and attach to the new
+                // server by themselves (the reason is the client's cue).
+                let reason = if restarting { crate::client::RESTARTING } else { "server exited" };
                 let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
                 for sid in ids {
-                    self.kill_session(sid, "server exited");
+                    self.kill_session(sid, reason);
                 }
                 self.quit = true;
                 Outcome::Ok

@@ -134,6 +134,17 @@ wmux startup off         # 取消
 
 它只在当前用户的 `Run` 注册表键下写一个值——不需要管理员，不碰任务计划——通过 `conhost --headless` 启动 server，登录时不会闪出控制台窗口。重启之后 `wmux attach` 进去，东西都在。
 
+升级：装了新版 wmux，已经在跑的 server 不会被换掉——它还是旧程序，你的 session 都在它里面。
+
+```powershell
+wmux version          # 这个 wmux 的版本；server 版本不同时一并显示
+wmux update --check   # 有没有新版
+wmux update           # 按当初的安装方式（MSI 或 scoop）装新版
+wmux restart-server   # 把正在跑的 session 全部挪到新版本的 server
+```
+
+`restart-server` 会先存档正在跑的 session，停掉旧 server，起一个新版本的，再只恢复刚才在跑的那几个（布局、历史、目录都在）；接着的终端会自己重新接上（0.10 起；更老的 server 上的终端会被断开，`wmux attach` 接回去）。在 pane 里面运行时，它会跑到 pane 外面去完成，结果写进 `%LOCALAPPDATA%\wmux\restart.log`。选项和按键绑定会重新从配置文件读，和 `kill-server` 之后一样：之后用 `set` / `bind` 临时改的不会带过去（旧 server 分不清哪些是默认值、哪些是你改的，全搬过去会把旧版本的默认值钉在新版本上）。终端接着一个不同版本的 server 时，标题栏会提示。`update` 下载 MSI 后先核对旁边发布的 SHA-256 再交给 Windows Installer；任何检查和安装都不会在后台偷偷进行。
+
 PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名）由程序自己吐出一段补全脚本，`$PROFILE` 里加一行就有：
 
 ```powershell

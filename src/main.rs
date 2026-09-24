@@ -39,6 +39,7 @@ Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
   startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
   windows-terminal install|remove|status   (a wmux profile in the Windows Terminal dropdown)
+Upgrading:  version (this wmux and the server's)   update [--check]   restart-server (sessions move to this version)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
@@ -78,7 +79,8 @@ fn main() {
                 println!("{USAGE}");
                 return;
             }
-            Some("-V" | "--version" | "version") => {
+            // tmux's -V: this program's version and nothing else.
+            Some("-V" | "--version") => {
                 if args.len() > 1 {
                     eprintln!("{}: takes no arguments", args[0]);
                     std::process::exit(1);
@@ -150,6 +152,15 @@ fn main() {
         "startup" => Some(wmux::startup::run(&socket, &args[1..])),
         "windows-terminal" | "wt" => Some(wmux::wt::run(&socket, &args[1..])),
         "completion" => Some(wmux::completion::run(&args[1..])),
+        // These talk to the server, but as a client of their own: the
+        // version of this program next to the server's, and moving the
+        // sessions to a server of this version.
+        "version" | "restart-server" | "update" if args.len() > 1 && args[0] != "update" => {
+            Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
+        }
+        "version" => Some(rt.block_on(client::version(&socket))),
+        "restart-server" => Some(rt.block_on(client::restart_server(&socket))),
+        "update" => Some(rt.block_on(wmux::update::run(&socket, &args[1..]))),
         _ => None,
     };
     if let Some(result) = local {

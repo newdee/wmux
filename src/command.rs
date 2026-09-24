@@ -95,7 +95,9 @@ pub enum Cmd {
         /// `-a`: kill every session except the target.
         all_but: bool,
     },
-    KillServer,
+    KillServer {
+        restarting: bool,
+    },
     HasSession {
         target: Target,
     },
@@ -638,7 +640,7 @@ impl fmt::Display for Cmd {
                 }
                 fmt_target(f, target)
             }
-            Cmd::KillServer => f.write_str("kill-server"),
+            Cmd::KillServer { restarting } => f.write_str(if *restarting { "kill-server -r" } else { "kill-server" }),
             Cmd::HasSession { target } => {
                 f.write_str("has-session")?;
                 fmt_target(f, &Some(target.clone()))
@@ -1542,7 +1544,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("jobs", &["-t", "-F"]),
     ("join-pane", &["-h", "-v", "-b", "-d", "-s", "-t"]),
     ("kill-pane", &["-a", "-t"]),
-    ("kill-server", &[]),
+    ("kill-server", &["-r"]),
     ("kill-session", &["-a", "-t"]),
     ("kill-window", &["-a", "-t"]),
     ("last-pane", &["-t"]),
@@ -1893,8 +1895,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
         }
         "kill-server" => {
+            // `-r` (wmux's own, used by `restart-server`): attached clients
+            // are told the server is coming back, and attach again.
+            let mut restarting = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-r" => restarting = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
             a.none_left(n)?;
-            Cmd::KillServer
+            Cmd::KillServer { restarting }
         }
         "has-session" => {
             let mut target = None;

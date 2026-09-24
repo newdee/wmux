@@ -281,3 +281,162 @@ fn nested_new_is_refused_and_detached_flag_allowed() {
     let _ = wmux().args(["-L", &socket, "kill-server"]).output();
     let _ = std::fs::remove_dir_all(sessions_dir());
 }
+
+/// A sessions directory of its own: another test removes the shared one
+/// when it ends, and these save and restore across a server restart.
+fn own_dir(tag: &str) -> String {
+    std::env::temp_dir().join(format!("wmux-console-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
+}
+
+/// Stops a test's server when the test ends, failed assertions included:
+/// a real server process outlives a panicking test otherwise, and holds
+/// target\debug\wmux.exe so the next build cannot replace it.
+struct StopServer(String, String);
+
+impl Drop for StopServer {
+    fn drop(&mut self) {
+        let _ = run_in(&self.0, &self.1, &["kill-server"]);
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn run_in(dir: &str, socket: &str, args: &[&str]) -> (i32, String, String) {
+    let out = wmux().env("WMUX_SESSIONS_DIR", dir).args(["-L", socket]).args(args).output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !f() {
+        assert!(Instant::now() < deadline, "timeout waiting for {what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `restart-server` with real processes: the sessions that were running
+/// come back in a new server (a new process) with their history, a session
+/// that was saved and then killed does not, and a client attached in a
+/// terminal is attached again by itself, without exiting.
+#[test]
+fn restart_server_moves_the_sessions_and_the_attached_client_follows() {
+    let dir = own_dir("restart");
+    let socket = format!("restart-{}", std::process::id());
+    let _stop = StopServer(dir.clone(), socket.clone());
+    let run = |args: &[&str]| run_in(&dir, &socket, args);
+    run(&["new", "-d", "-s", "keep", "cmd.exe", "/q", "/k", "prompt keep$g"]);
+    run(&["new", "-d", "-s", "gone"]);
+    run(&["save-session", "-a"]);
+    run(&["kill-session", "-t", "gone"]); // saved, but not running: must stay gone
+    run(&["send-keys", "-t", "keep:0", "echo before-restart", "Enter"]);
+    wait_until("the echo", || run(&["capture-pane", "-p", "-t", "keep:0"]).1.matches("before-restart").count() >= 2);
+    let pid_before = run(&["display-message", "-p", "-t", "keep", "#{pid}"]).1.trim().to_string();
+
+    let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "keep"], 80, 24, &[("WMUX_SESSIONS_DIR", &dir)]);
+    t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[keep]"));
+
+    let (code, out, err) = run(&["restart-server"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("1 of 1 session(s) restored: keep"), "{out}");
+    let pid_after = run(&["display-message", "-p", "-t", "keep", "#{pid}"]).1.trim().to_string();
+    assert!(!pid_after.is_empty() && pid_after != pid_before, "a new server: {pid_before} -> {pid_after}");
+    let (_, ls, _) = run(&["ls"]);
+    assert!(ls.contains("keep:") && !ls.contains("gone:"), "{ls}");
+    assert!(run(&["capture-pane", "-p", "-t", "keep:0"]).1.contains("before-restart"), "history came back");
+
+    // The attached client never exited: it said the server was restarting
+    // (so the screen below is a new attach, not the old one still up) and
+    // it is on the new server now.
+    let notice = b"server restarting: attaching to keep again";
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !t.raw.windows(notice.len()).any(|w| w == notice) {
+        assert!(Instant::now() < deadline, "no restart notice:\n{}", t.parser.screen().contents());
+        t.pump(Duration::from_millis(100));
+    }
+    t.wait_for("attached again", |s| {
+        s.rows(0, 80).nth(23).unwrap().starts_with("[keep]") && s.contents().contains("before-restart")
+    });
+    // The pane's text was drawn again after the notice cleared the screen.
+    let at = t.raw.windows(notice.len()).rposition(|w| w == notice).unwrap();
+    let after = &t.raw[at + notice.len()..];
+    let redrawn = b"before-restart";
+    assert!(after.windows(redrawn.len()).any(|w| w == redrawn), "no redraw after the notice");
+    assert!(t.child.try_wait().unwrap().is_none(), "the client is still running");
+    t.send("echo after-restart\r");
+    wait_until("typing reaches the new server", || {
+        run(&["capture-pane", "-p", "-t", "keep:0"]).1.matches("after-restart").count() >= 2
+    });
+    // A plain kill-server is not a restart: the client leaves, as before.
+    run(&["kill-server"]);
+    t.wait_exit();
+    assert!(t.parser.screen().contents().contains("[server exited"), "{}", t.parser.screen().contents());
+    // Nothing to restart: says so.
+    let (code, out, _) = run(&["restart-server"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("nothing to restart"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Attached to a server of another version, the terminal's title says so,
+/// and so does the client when it detaches. Needs an older wmux.exe to be
+/// the server: set WMUX_OLD_EXE to one (the installed release, say) and run
+/// with --ignored.
+#[test]
+#[ignore]
+fn the_title_says_when_the_server_is_another_version() {
+    let Some(old) = std::env::var_os("WMUX_OLD_EXE") else { return };
+    let dir = own_dir("mismatch");
+    let socket = format!("mismatch-{}", std::process::id());
+    let old_wmux = || {
+        let mut c = std::process::Command::new(&old);
+        c.env("WMUX_SESSIONS_DIR", &dir).args(["-L", &socket]);
+        c
+    };
+    let out = old_wmux().args(["new", "-d", "-s", "m"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v = String::from_utf8_lossy(&std::process::Command::new(&old).arg("-V").output().unwrap().stdout)
+        .trim()
+        .trim_start_matches("wmux ")
+        .to_string();
+    assert_ne!(v, env!("CARGO_PKG_VERSION"), "WMUX_OLD_EXE must be another version");
+    let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "m"], 80, 24, &[("WMUX_SESSIONS_DIR", &dir)]);
+    t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[m]"));
+    let want = format!("wmux: m [server {v}: run wmux restart-server]");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !String::from_utf8_lossy(&t.raw).contains(&want) {
+        assert!(Instant::now() < deadline, "no title {want:?} in {:?}", String::from_utf8_lossy(&t.raw));
+        t.pump(Duration::from_millis(100));
+    }
+    let _ = old_wmux().arg("kill-server").output();
+    t.wait_exit();
+    let text = String::from_utf8_lossy(&t.raw);
+    assert!(text.contains("restart-server` moves your sessions"), "{}", t.parser.screen().contents());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Run from inside a pane of the server it restarts, `restart-server`
+/// would die with that pane halfway; it goes on outside the pane instead
+/// and leaves its result in restart.log.
+#[test]
+fn restart_server_from_inside_a_pane_finishes_outside_it() {
+    let dir = own_dir("restart-in-pane");
+    let socket = format!("restartin-{}", std::process::id());
+    let _stop = StopServer(dir.clone(), socket.clone());
+    let run = |args: &[&str]| run_in(&dir, &socket, args);
+    run(&["new", "-d", "-s", "inner", "cmd.exe", "/q", "/k", "prompt in$g"]);
+    wait_until("prompt", || run(&["capture-pane", "-p", "-t", "inner:0"]).1.contains("in>"));
+    let pid_before = run(&["display-message", "-p", "-t", "inner", "#{pid}"]).1.trim().to_string();
+    // The pane's PATH starts with this wmux.exe's directory.
+    run(&["send-keys", "-t", "inner:0", "wmux restart-server", "Enter"]);
+    let log = std::path::Path::new(&dir).join("restart.log");
+    wait_until("restart.log", || std::fs::read_to_string(&log).is_ok_and(|t| t.contains("restored")));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("1 of 1 session(s) restored: inner"), "{text}");
+    let pid_after = run(&["display-message", "-p", "-t", "inner", "#{pid}"]).1.trim().to_string();
+    assert!(pid_after != pid_before, "a new server: {pid_before} -> {pid_after}");
+    run(&["kill-server"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

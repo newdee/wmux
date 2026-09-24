@@ -17,5 +17,6 @@ pub mod server;
 pub mod shutdown;
 pub mod startup;
 pub mod sysinfo;
+pub mod update;
 pub mod winsec;
 pub mod wt;

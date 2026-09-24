@@ -189,6 +189,31 @@ administrator rights, nothing in Task Scheduler), running the server
 through `conhost --headless` so no console window appears at logon. After a
 reboot, `wmux attach` finds everything as it was.
 
+Upgrading: installing a new wmux does not replace the server that is
+already running, which keeps your sessions and is still the old program.
+
+```powershell
+wmux version          # this wmux, and the server's version when it differs
+wmux update --check   # is there a newer release?
+wmux update           # install it the way this one was installed (MSI or scoop)
+wmux restart-server   # move every running session to a server of this version
+```
+
+`restart-server` saves the running sessions, stops the old server, starts
+one of this version and restores exactly those sessions, layout, history
+and directories included; terminals attached to it attach again by
+themselves (from 0.10 on; an older server's terminals are detached, and
+`wmux attach` takes them back). Run from inside a pane it finishes outside
+the pane and writes what it did to `%LOCALAPPDATA%\wmux\restart.log`.
+Options and key bindings come from the config file again, as after
+`kill-server`: ones typed with `set`/`bind` since are not carried over
+(the old server cannot tell them from its defaults, and copying all of
+them would pin the old version's defaults on the new one).
+While a terminal is attached to a server of another version, its title
+says so. `update` downloads the MSI, checks it against the SHA-256
+published beside it, and hands it to Windows Installer; nothing is ever
+checked or installed in the background.
+
 Tab completion in PowerShell (command names, each command's flags, and
 `-t` targets from the running server) comes from a completer the program
 prints; one line in `$PROFILE` loads it:
