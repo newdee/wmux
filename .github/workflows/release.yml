@@ -78,7 +78,13 @@ jobs:
             -MsiPath "dist\wmux-$version-windows-x86_64.msi" `
             -ZipPath "dist\wmux-$tag-windows-x86_64.zip"
           if (Get-Command winget -ErrorAction SilentlyContinue) {
+            # The runner's winget can be older than the manifest schema and
+            # then warns about the schema header while the manifests are
+            # fine. Warnings end in 0x8A150028, errors in 0x8A150029: only
+            # errors (or anything else unexpected) fail the release.
             winget validate --manifest "packaging\winget\manifests\n\newdee\wmux\$version"
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335192) { throw "winget validate: exit $LASTEXITCODE" }
+            $global:LASTEXITCODE = 0
           } else { "winget is not on this runner; the manifests were validated locally before the tag" }
           Compress-Archive -Path packaging\winget, packaging\scoop -DestinationPath "dist\wmux-$version-manifests.zip"
       - name: release
