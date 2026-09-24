@@ -696,19 +696,38 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     // while events keep arriving, and autosave / idle-exit hang off the tick.
     let mut tick = tokio::time::interval(Duration::from_millis(1000));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_render = Instant::now() - FRAME;
+    let mut render_due = false;
     loop {
+        // A frame due later (see below) is a wake-up of its own.
+        let wait = if render_due { FRAME.saturating_sub(last_render.elapsed()) } else { Duration::from_secs(3600) };
         let ev = tokio::select! {
-            ev = rx.recv() => match ev { Some(ev) => ev, None => break },
-            _ = tick.tick() => Event::Tick,
+            ev = rx.recv() => match ev { Some(ev) => Some(ev), None => break },
+            _ = tick.tick() => Some(Event::Tick),
+            _ = tokio::time::sleep(wait), if render_due => None,
         };
         // A bug in one command must not take every session down with it:
         // log the panic and keep serving (the panic hook writes the details).
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            srv.handle(ev);
-            while let Ok(ev) = rx.try_recv() {
+            if let Some(ev) = ev {
                 srv.handle(ev);
+                while let Ok(ev) = rx.try_recv() {
+                    srv.handle(ev);
+                }
             }
-            srv.render_all();
+            // At most one frame per FRAME: panes printing flat out would
+            // otherwise be redrawn for every read (measured: half a core
+            // for one attached client). Anything that arrives sooner is
+            // drawn by the frame due at the end of the interval, so the
+            // screen is never left behind; a key after a pause is drawn
+            // at once.
+            if last_render.elapsed() >= FRAME {
+                srv.render_all();
+                last_render = Instant::now();
+                render_due = false;
+            } else {
+                render_due = true;
+            }
         }));
         if r.is_err() {
             log::error!("recovered from a panic; state may be inconsistent");
@@ -729,6 +748,10 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     log::info!("server exiting");
     Ok(())
 }
+
+/// The shortest time between two frames sent to the clients: 60 a second,
+/// what a terminal shows anyway.
+const FRAME: Duration = Duration::from_millis(16);
 
 /// Keys that keep working without the prefix for `repeat-time`: moving
 /// between panes, resizing them and walking the window list, the things one
