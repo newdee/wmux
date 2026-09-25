@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+PackageIdentifier: newdee.wmux
+PackageVersion: 0.12.2
+InstallerType: wix
+Scope: machine
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+Commands:
+- wmux
+ReleaseDate: 2026-09-25
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/newdee/wmux/releases/download/v0.12.2/wmux-0.12.2-windows-x86_64.msi
+  InstallerSha256: B9EEFA4CA46AC43C836C7831CB52EC20C8B1400E03BE7DBF3EEADB88F10F03E7
+  ProductCode: '{9D943462-637D-4AF1-A43A-8EFD90EA9341}'
+ManifestType: installer
+ManifestVersion: 1.12.0
