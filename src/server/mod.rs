@@ -3518,14 +3518,14 @@ impl Server {
                 let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(scols, srows);
                 let pane_base = self.opts.pane_base_index;
+                let keep_zoom = self.opts.keep_zoom;
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 let order = w.layout.panes();
                 let cur = order.iter().position(|p| *p == w.active).unwrap_or(0);
                 let next = match sel {
                     PaneSel::Dir(d) => {
                         // Zoomed, the only rectangle is the zoomed pane itself,
-                        // so directions are answered from the real layout (and
-                        // moving unzooms, as it does for any other selection).
+                        // so directions are answered from the real layout.
                         if w.zoomed {
                             let mut rects = Vec::new();
                             w.layout.layout(area, &mut rects);
@@ -3544,8 +3544,10 @@ impl Server {
                     Some(id) if id != w.active => {
                         w.last_pane = Some(w.active);
                         w.active = id;
+                        // Zoomed, the zoom moves to the pane selected (`keep-zoom`,
+                        // the default) or goes (tmux).
                         if w.zoomed {
-                            w.zoomed = false;
+                            w.zoomed = keep_zoom;
                             self.relayout_session(sid);
                         }
                         self.fire_hook("after-select-pane", cid);
@@ -5995,6 +5997,7 @@ impl Server {
             return;
         }
         self.chooser_go(cid, sid, Some(wid));
+        let keep_zoom = self.opts.keep_zoom;
         if let Some(s) = self.session_mut(sid)
             && let Some(w) = s.windows.iter_mut().find(|w| w.id == wid)
             && w.active != pid
@@ -6002,6 +6005,13 @@ impl Server {
         {
             w.last_pane = Some(w.active);
             w.active = pid;
+            // As select-pane: a zoomed window zooms the pane gone to (or,
+            // with keep-zoom off, unzooms). Either way the rectangles
+            // change: the old ones would show the pane left.
+            if w.zoomed {
+                w.zoomed = keep_zoom;
+                self.relayout_session(sid);
+            }
             self.fire_hook("after-select-pane", Some(cid));
         }
     }
@@ -6694,7 +6704,14 @@ impl Server {
         if self.clients.get(&cid).is_some_and(|c| c.panes_until.is_some_and(|t| Instant::now() < t)) {
             let w = &self.sessions[spos].windows[self.sessions[spos].cur];
             let order = w.layout.panes();
-            for (id, rect) in &w.rects {
+            // Zoomed, only one pane is on screen, but every pane can be
+            // picked (the zoom goes with it): each number where its pane
+            // would be, over the zoomed one.
+            let mut real = Vec::new();
+            if w.zoomed {
+                w.layout.clone().layout(self.window_area(sess_size.0, sess_size.1), &mut real);
+            }
+            for (id, rect) in if w.zoomed { &real } else { &w.rects } {
                 let n = order.iter().position(|p| p == id).unwrap_or(0) + pane_base_index;
                 render::draw_pane_number(&mut grid, *rect, n, *id == w.active);
             }

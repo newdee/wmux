@@ -95,6 +95,10 @@ pub struct Options {
     /// Seconds a pane or window killed by a command is kept, running, for
     /// `undo-kill`; 0 ends it at once.
     pub undo_kill_time: u64,
+    /// A zoomed window stays zoomed when another of its panes is selected
+    /// (the zoom moves to it); only `resize-pane -Z` (prefix z) undoes it.
+    /// Off: selecting unzooms, as tmux does.
+    pub keep_zoom: bool,
 }
 
 /// Options `show-options` can print, in display order.
@@ -142,6 +146,7 @@ pub const SHOWABLE: &[&str] = &[
     "log-history-days",
     "log-history-dir",
     "undo-kill-time",
+    "keep-zoom",
 ];
 
 impl Default for Options {
@@ -196,6 +201,7 @@ impl Default for Options {
             log_history_days: 30,
             log_history_dir: String::new(),
             undo_kill_time: 10,
+            keep_zoom: true,
         }
     }
 }
@@ -286,6 +292,7 @@ pub const KNOWN: &[&str] = &[
     "default-shell",
     "display-time",
     "history-limit",
+    "keep-zoom",
     "log-history",
     "log-history-days",
     "log-history-dir",
@@ -353,6 +360,7 @@ pub const ACCEPTED: &[&str] = &[
 /// Options that are on or off, so `set -g mouse` with no value flips them.
 const BOOLEAN: &[&str] = &[
     "autosave",
+    "keep-zoom",
     "log-history",
     "notify",
     "monitor-activity",
@@ -542,6 +550,7 @@ impl Options {
             "sessions-dir" => self.sessions_dir = value.to_string(),
             "pane-timestamps" => self.pane_timestamps = parse_bool(value)?,
             "log-history" => self.log_history = parse_bool(value)?,
+            "keep-zoom" => self.keep_zoom = parse_bool(value)?,
             "log-history-days" => self.log_history_days = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "log-history-dir" => self.log_history_dir = value.to_string(),
             "undo-kill-time" => self.undo_kill_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -639,6 +648,7 @@ impl Options {
             "window-size" => self.window_size.clone(),
             "pane-timestamps" => onoff(self.pane_timestamps),
             "log-history" => onoff(self.log_history),
+            "keep-zoom" => onoff(self.keep_zoom),
             "log-history-days" => self.log_history_days.to_string(),
             "undo-kill-time" => self.undo_kill_time.to_string(),
             "log-history-dir" => {

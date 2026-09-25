@@ -1548,24 +1548,59 @@ async fn zoomed_pane_still_navigates_by_direction() {
     let hidden = h.wait_capture("z:0.0", "the hidden pane's echo", |t| t.contains("hidden-alive")).await;
     assert!(hidden.contains("hidden-alive"), "{hidden}");
 
-    // The whole point: h moves left out of the zoom instead of "no such pane".
+    // The whole point: h moves to the left pane instead of "no such pane",
+    // and the zoom goes with it (`keep-zoom`, the default): the left pane
+    // now fills the window.
+    let status = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
     c.prefix('h').await;
-    c.wait_for("unzoomed", |s| {
-        let row = s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
-        row.contains("0:cmd*") && !row.contains("*Z")
+    c.wait_for("the left pane, zoomed", |s| status(s).contains("0:cmd*Z") && s.contents().contains("hidden-alive"))
+        .await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
+    let first = out.lines().next().unwrap();
+    assert!(first.contains("(active)") && first.contains("[80x23]"), "left pane active, filling the window: {out}");
+    assert!(!c.text().contains("no such pane"), "{}", c.text());
+
+    // display-panes and a number: the same, the zoom follows.
+    // Zoomed, every pane still shows its number, where it would be.
+    c.prefix('q').await;
+    let blocks = |s: &vt100::Screen, from: u16, to: u16| {
+        (0..ROWS - 1)
+            .flat_map(|y| (from..to).map(move |x| (y, x)))
+            .filter(|&(y, x)| s.cell(y, x).is_some_and(|c| c.contents() == "█"))
+            .count()
+    };
+    c.wait_for("both numbers", |s| blocks(s, 0, 40) > 0 && blocks(s, 41, 80) > 0).await;
+    c.key(b'1' as u16, '1', 0).await;
+    c.wait_for("the right pane, zoomed", |s| status(s).contains("0:cmd*Z") && !s.contents().contains("hidden-alive"))
+        .await;
+    let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
+    assert!(out.lines().nth(1).unwrap().contains("(active)"), "right pane is active: {out}");
+    // Going to a pane from outside (a notification's button, the task
+    // board's Enter) does the same, and shows the pane gone to, not the
+    // one left.
+    let (_, ids, _) = h.cli(&["list-panes", "-t", "z", "-F", "#{pane_id}"]).await;
+    let left = ids.lines().next().unwrap().trim_start_matches('%').to_string();
+    assert_eq!(h.cli(&["focus-pane", &format!("%{left}")]).await.0, 0);
+    c.wait_for("the left pane, zoomed, on screen", |s| {
+        status(s).contains("0:cmd*Z") && s.contents().contains("hidden-alive")
     })
     .await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
-    assert!(out.lines().next().unwrap().contains("(active)"), "left pane is active: {out}");
-    assert!(!c.text().contains("no such pane"), "{}", c.text());
-
-    // And back: zoom the left pane, l returns to the right one.
-    c.prefix('z').await;
-    c.wait_for("Z flag again", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*Z")).await;
+    assert!(out.lines().next().unwrap().contains("[80x23]"), "{out}");
     c.prefix('l').await;
-    c.wait_for("unzoomed again", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("*Z")).await;
+    c.wait_for("back right", |s| status(s).contains("0:cmd*Z") && !s.contents().contains("hidden-alive")).await;
+    // Only z itself undoes the zoom.
+    c.prefix('z').await;
+    c.wait_for("unzoomed", |s| status(s).contains("0:cmd*") && !status(s).contains("*Z")).await;
+
+    // keep-zoom off: selecting unzooms, as tmux does.
+    h.cli(&["set", "-g", "keep-zoom", "off"]).await;
+    c.prefix('z').await;
+    c.wait_for("Z flag again", |s| status(s).contains("0:cmd*Z")).await;
+    c.prefix('h').await;
+    c.wait_for("unzoomed by moving", |s| status(s).contains("0:cmd*") && !status(s).contains("*Z")).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
-    assert!(out.lines().nth(1).unwrap().contains("(active)"), "right pane is active: {out}");
+    assert!(out.lines().next().unwrap().contains("(active)"), "left pane is active: {out}");
     h.cli(&["kill-server"]).await;
 }
 

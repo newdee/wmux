@@ -109,7 +109,7 @@ wmux kill-server
 | `H` `J` `K` `L`、`Alt`+方向键 / `Ctrl`+方向键 | 调整当前 pane 大小，每次 5 格 / 1 格 |
 | `Shift`+方向键 | 窗口比这个终端大时（`window-size` 听了别的客户端），平移自己的视口，每次 5 行 / 10 列；敲键时视口自动跟着光标 |
 | 移动、改大小、`n` / `p`、`{` / `}` 都能连按 | 按一次前缀之后半秒内（`repeat-time`）接着按同一个键就行，不用再按前缀 |
-| `z` | 当前 pane 放大到整个窗口，再按一次还原 |
+| `z` | 当前 pane 放大到整个窗口，再按一次还原；放大时切到同窗口的别的 pane（`h` `j` `k` `l`、`q` 加数字、`;`），放大会跟过去，直到再按 `z`（`set -g keep-zoom off` 则切换即还原，和 tmux 一样） |
 | `x` | 关掉当前 pane |
 | `u` | 把 10 秒内关掉的 pane 或窗口放回原处（`undo-kill`） |
 | `C-t` | 在每条命令那一行的末尾显示开始时间、耗时和成败（`pane-timestamps`） |
@@ -272,6 +272,7 @@ set -g pane-timestamps on         # 每条命令的时间显示在行尾（prefi
 set -g log-history on             # 输出存盘，每个 pane 每天一个文件（prefix / 翻看）
 set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir 改存放位置）
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
+set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
 
 bind | split-window -h
 bind - split-window -v

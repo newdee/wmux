@@ -162,7 +162,7 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | (moving, resizing, `n` / `p` and `{` / `}` repeat: after the prefix, keep pressing the key for half a second, `repeat-time`) | |
 | `S` | toggle `synchronize-panes` (type into every pane of the window; `S` flag on the status line) |
 | `C-s` / `C-r` | save the session / restore saved sessions (see Resume) |
-| `z` | zoom (toggle) the current pane |
+| `z` | zoom (toggle) the current pane; moving to another pane of the window (`h` `j` `k` `l`, `q` and a number, `;`) keeps the zoom and takes it there, until `z` again (`set -g keep-zoom off` unzooms instead, as tmux does) |
 | `x` | kill the current pane |
 | `u` | bring back the pane or window killed in the last 10 seconds (`undo-kill`) |
 | `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
@@ -426,6 +426,7 @@ set -g pane-timestamps on         # each command's time at the end of its line (
 set -g log-history on             # keep what panes print, a file per pane per day (prefix / to read)
 set -g log-history-days 30        # for how long; 0 keeps everything (log-history-dir moves the files)
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
+set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D
