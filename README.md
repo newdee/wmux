@@ -14,26 +14,24 @@ run inside panes with full key fidelity.
        alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
 </p>
 
-- **Native**: built on ConPTY and the Win32 console API. No Cygwin, no MSYS,
-  no WSL requirement. Works in Windows Terminal, the classic console host,
+- It is built on ConPTY and the Win32 console API, with no Cygwin, MSYS or
+  WSL underneath. It runs in Windows Terminal, the classic console host,
   VS Code's terminal, and anything else that hosts a Windows console.
-- **PowerShell and WSL first-class**: keystrokes are forwarded to panes as raw
-  Windows key events (the same win32-input-mode protocol Windows Terminal
-  uses), so PSReadLine chords, `Ctrl+Space`, `Shift+Enter`, arrows with
-  modifiers, IME input and WSL/Linux TUIs behave exactly as they do outside
-  wmux.
-- **tmux muscle memory**: `C-b` prefix, `%` / `"` to split, `c` for a new
-  window, `d` to detach, `[` for copy mode, `:` for a command prompt, the same
-  command names on the CLI (`new-session`, `attach`, `ls`, `send-keys`, ...),
-  and a `.tmux.conf`-style config file.
-- **Background jobs that report back**: a window you are not looking at is
-  marked when it prints, rings or goes quiet (`monitor-activity`,
-  `C-b M-n` jumps to it), a pane whose program dies can keep its output and
-  exit code (`remain-on-exit`), and a resumed session comes back with what
-  each pane had on screen (`save-history`).
-- **Your panes on your phone**: `wmux web` prints a QR code; scan it on the
-  same Wi-Fi and the phone's browser lists every pane, shows any of them as
-  it is on the screen, and types into it. No app to install.
+- Keystrokes reach panes as raw Windows key events (the win32-input-mode
+  protocol Windows Terminal uses), so PSReadLine chords, `Ctrl+Space`,
+  `Shift+Enter`, arrows with modifiers, IME input and WSL/Linux TUIs behave
+  as they do outside wmux.
+- The keys and commands are tmux's: `C-b` prefix, `%` / `"` to split, `c`
+  for a new window, `d` to detach, `[` for copy mode, `:` for a command
+  prompt, the same command names on the CLI (`new-session`, `attach`, `ls`,
+  `send-keys`, ...), and a `.tmux.conf`-style config file.
+- A window you are not looking at is marked when it prints, rings or goes
+  quiet (`monitor-activity`; `C-b M-n` jumps to it). A pane whose program
+  dies can keep its output and exit code (`remain-on-exit`), and a resumed
+  session comes back with what each pane had on screen (`save-history`).
+- `wmux web` prints a QR code. Scan it on the same Wi-Fi and the phone's
+  browser lists every pane, shows any of them as it appears on screen, and
+  lets you type into it, with nothing to install on the phone.
 
 <p align="center">
   <img src="docs/img/wmux-alerts.gif" width="880"
@@ -441,7 +439,7 @@ Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
 (substitution); they nest (`#{=8:b:pane_current_path}`).
 
 `set -g pane-border-status top` (or `bottom`) puts a line of
-`pane-border-format` on every pane's border — by default the pane's number
+`pane-border-format` on every pane's border: by default the pane's number
 and title, the active pane's in bold.
 
 ```tmux
@@ -508,26 +506,24 @@ Commands a script or a binding reaches for, beyond the obvious ones
   `-x`/`-y` take a column or row, a percentage, `C` for centred or `R`/`B`
   for the right or bottom edge, and the box is centred without them).
 - `choose-client` lists the attached clients and detaches the one picked.
-- `send-keys -X <copy-command>` drives copy mode (`search-backward`,
-  `begin-selection`, `copy-selection`, ... — the tmux names).
+- `send-keys -X <copy-command>` drives copy mode, with tmux's command names
+  (`search-backward`, `begin-selection`, `copy-selection`, ...).
 - `capture-pane -p [-e] [-J] [-S -N]` prints a pane, with the colours if
   asked (`-e`), wrapped lines joined back into one (`-J`), N lines of
   scrollback above it (`-S -N`, `-S -` for all of it).
-- `find-text pattern` looks through what **every pane has printed**, not
-  just the window names, and says where each hit is and how far back:
-  `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C` matches case, `-t` narrows to a
-  session or window, `-n` caps the hits per pane. Neither tmux nor
-  `find-window` can do this: `find-window` searches names and titles.
+- `find-text pattern` searches what every pane has printed and says where
+  each hit is and how far back: `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C`
+  matches case, `-t` narrows to a session or window, `-n` caps the hits per
+  pane. wmux's `find-window` searches only window names and titles.
 - `record [-t target] out.cast` writes everything a pane prints from now
   on as an [asciinema](https://asciinema.org) v2 file (resizes included);
-  `record -t target` with no path stops. Play it with `asciinema play`, or
-  upload it, or embed it in a page: a terminal session someone else can
-  watch, not a screenshot.
+  `record -t target` with no path stops. Play it back with `asciinema play`,
+  upload it, or embed it in a page.
 - `notify [-T title] message` raises a desktop notification (a Windows
   toast, in the Action Center under wmux's own name), and `set -g notify on`
   sends one for every alert, so a job that ends while the terminal is
-  behind other windows still reaches you. An alert's toast has a **Go to
-  pane** button: it opens a `wmux://` link that runs `focus-pane`, which
+  behind other windows still reaches you. An alert's toast has a "Go to
+  pane" button: it opens a `wmux://` link that runs `focus-pane`, which
   switches every attached client to that pane and brings its window
   forward (best effort: Windows Terminal does not always let a window be
   raised from outside). The first toast registers two entries under

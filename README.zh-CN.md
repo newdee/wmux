@@ -12,14 +12,12 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 
 用过 tmux 的人换到 Windows，最想念的大概就是它：关掉终端窗口，里面跑的东西还在；一个窗口切成几块，各干各的；`prefix d` 走人，回来 `attach` 接着干。wmux 把这套搬到了 Windows 上，而且不是靠 Cygwin 或 MSYS 模拟出来的，是直接用 ConPTY 和 Win32 控制台 API 写的，PowerShell、WSL、cmd 都能在里面正常跑。
 
-几个要点：
-
-- **按键原样送达。** wmux 把键盘事件按 Windows 原生的格式（Windows Terminal 用的那套 win32-input-mode）转给每个 pane，所以 PSReadLine 的组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法、WSL 里的 vim 和 htop，表现和不用 wmux 时一模一样。
-- **tmux 的肌肉记忆直接用。** `Ctrl+b` 前缀，`%` 和 `"` 分屏，`c` 开窗口，`d` 脱离，`[` 进 copy mode，`:` 敲命令。命令行也是那些名字：`new-session`、`attach`、`ls`、`send-keys`……配置文件是 `.tmux.conf` 的语法。
-- **重启电脑也不怕。** 每个 session 的布局会自动存盘，开机后 `wmux resume` 就回来了，连每个 pane 屏幕上的输出一起（`save-history`，默认 500 行）。
-- **后台的事会主动告诉你。** 没在看的窗口有输出就在状态栏标 `#`，响铃 `!`，太久没动静 `~`（`monitor-activity`），`prefix M-n` 直接跳过去；程序挂了 pane 也能留着写明退出码（`remain-on-exit`），不会无声无息地消失。
-- **能装插件。** 和 tmux 一样，插件就是一个目录加几个脚本，用 `run-shell`、hook 和状态栏格式串往里挂东西。
-- **手机上也能看、也能敲。** `wmux web` 在终端里打出一个二维码，同一个 Wi-Fi 下手机扫一下，浏览器里就能看到所有 pane，点进去看屏幕、往里输入。不用装 App。
+- wmux 把键盘事件按 Windows 原生的格式（Windows Terminal 用的那套 win32-input-mode）转给每个 pane，所以 PSReadLine 的组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法、WSL 里的 vim 和 htop，表现和不用 wmux 时一样。
+- 按键和命令都沿用 tmux 的：`Ctrl+b` 前缀，`%` 和 `"` 分屏，`c` 开窗口，`d` 脱离，`[` 进 copy mode，`:` 敲命令。命令行也是那些名字：`new-session`、`attach`、`ls`、`send-keys`……配置文件是 `.tmux.conf` 的语法。
+- 每个 session 的布局会自动存盘，重启电脑后 `wmux resume` 就能恢复，连每个 pane 屏幕上的输出一起（`save-history`，默认 500 行）。
+- 没在看的窗口有输出就在状态栏标 `#`，响铃标 `!`，太久没动静标 `~`（`monitor-activity`），`prefix M-n` 直接跳过去。程序退出后 pane 也可以留着，写明退出码（`remain-on-exit`）。
+- 和 tmux 一样能装插件：插件就是一个目录加几个脚本，用 `run-shell`、hook 和状态栏格式串往里挂东西。
+- `wmux web` 在终端里打出一个二维码，同一个 Wi-Fi 下手机扫一下，浏览器里就能看到所有 pane，点进去看屏幕、往里输入，手机上不用装任何东西。
 
 <p align="center">
   <img src="docs/img/wmux-alerts.gif" width="880"
@@ -140,7 +138,7 @@ copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0`
 
 ## 重启之后接着用
 
-每个 session 的"形状"——有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录——都会存成一个文件，放在 `%LOCALAPPDATA%\wmux\sessions` 下面。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启、崩溃还是手滑 `kill-session`，文件都还在：
+每个 session 的结构（有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录）都会存成一个文件，放在 `%LOCALAPPDATA%\wmux\sessions` 下面。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启、崩溃还是手滑 `kill-session`，文件都还在：
 
 ```powershell
 wmux resume              # 把存过的 session 全恢复出来，进第一个
@@ -160,9 +158,9 @@ wmux startup status      # 看看注册了什么
 wmux startup off         # 取消
 ```
 
-它只在当前用户的 `Run` 注册表键下写一个值——不需要管理员，不碰任务计划——通过 `conhost --headless` 启动 server，登录时不会闪出控制台窗口。重启之后 `wmux attach` 进去，东西都在。
+它只在当前用户的 `Run` 注册表键下写一个值，不需要管理员权限，也不碰任务计划；server 通过 `conhost --headless` 启动，登录时不会闪出控制台窗口。重启之后 `wmux attach` 进去，东西都在。
 
-升级：装了新版 wmux，已经在跑的 server 不会被换掉——它还是旧程序，你的 session 都在它里面。
+升级：装了新版 wmux，已经在跑的 server 不会被换掉。它还是旧程序，你的 session 都在它里面。
 
 ```powershell
 wmux version          # 这个 wmux 的版本；server 版本不同时一并显示
@@ -195,19 +193,17 @@ wmux windows-terminal status
 wmux windows-terminal remove
 ```
 
-这是一个 profile *片段*——wmux 自己的一个 JSON 文件，放在 `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wmux\` 下，Windows Terminal 会把它合并进来，不碰你的 `settings.json`；重装也保持同一个 profile 身份，你给它改的字体、配色都还在。从它开的每个标签页都进同一个 session，和 `tmux new -A -s main` 一样。
+这是一个 profile *片段*，也就是 wmux 自己的一个 JSON 文件，放在 `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wmux\` 下，Windows Terminal 会把它合并进来，不碰你的 `settings.json`；重装也保持同一个 profile 身份，你给它改的字体、配色都还在。从它开的每个标签页都进同一个 session，和 `tmux new -A -s main` 一样。
 
 ### pane 记住自己在哪个目录
 
-pane 的目录跟着 shell 的 `cd` 走，不用你配置：启动 PowerShell（pwsh 或 Windows PowerShell）时 wmux 挂一个 prompt 钩子，每次提示符后面追加一段不可见的 OSC 9;9 上报目录（你自己的 prompt、oh-my-posh 之类照旧）；`cmd.exe` 和其他程序则直接读进程自己的工作目录。shell 自己上报的目录（OSC 9;9，带不带引号都行；WSL 里 bash/zsh 的 OSC 7）优先采信，`wmux set-cwd`（不带参数就是你运行它时所在的目录）可以手动指定：
+pane 的目录跟着 shell 的 `cd` 走，不用你配置：启动 PowerShell（pwsh 或 Windows PowerShell）时 wmux 挂一个 prompt 钩子，每次提示符后面追加一段不可见的 OSC 9;9 上报目录（你自己的 prompt、oh-my-posh 之类照旧）；`cmd.exe` 和其他程序则直接读进程自己的工作目录。shell 自己上报的目录（OSC 9;9，带不带引号都行；WSL 里 bash/zsh 的 OSC 7）优先采信，`wmux set-cwd`（不带参数就是你运行它时所在的目录）可以手动指定，也可以 `wmux set-cwd -t work:0.1 D:\proj` 给别的 pane 指定。
 
-WSL 里的 bash 用 OSC 7，`/mnt/c/...` 这样的路径会自动映射回 `C:\...`：
+WSL 里的 bash 用 OSC 7 上报，`/mnt/c/...` 这样的路径会自动映射回 `C:\...`：
 
 ```bash
 PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 ```
-
-二是手动记一下，在 pane 里敲 `wmux set-cwd`，当前目录就记下了；也可以 `wmux set-cwd -t work:0.1 D:\proj` 指定。
 
 `list-panes` 能看到每个 pane 记的目录，状态栏里用 `#{pane_current_path}` 显示。
 
@@ -264,7 +260,7 @@ source-file ~/.wmux/themes/nord.conf
 
 `set -g pane-border-status top`（或 `bottom`）会在每个 pane 的边框上放一行 `pane-border-format` 的内容，默认是 pane 编号和标题，当前 pane 加粗。
 
-`status-left`、`status-right`、`window-status-format`、`window-status-current-format`、`pane-border-format` 接受 tmux 的格式串：`#S` session 名，`#W` 窗口名，`#I` 窗口编号，`#P` pane 编号，`#T` pane 标题，`#H` 主机名，`#F` 标记，`#{session_name}` 这种长写法，`#{?条件,真,假}` 条件（条件可以是变量名，也可以是 `变量==值` / `变量!=值`），`%H:%M` 之类的时间字段，`#[fg=colour39,bg=black,bold]` 改样式，还有 `#(命令)`——每隔 `status-interval` 秒（默认 15）跑一次，取输出的第一行（`display-message -p`、`jobs -F` 这种一次性命令会当场跑，最多等 3 秒）。`status-left-length` / `status-right-length` 限制长度。`status-justify left|centre|right|absolute-centre` 决定窗口列表放在哪，`window-status-separator` 是窗口标签之间的分隔（默认一个空格）。
+`status-left`、`status-right`、`window-status-format`、`window-status-current-format`、`pane-border-format` 接受 tmux 的格式串：`#S` session 名，`#W` 窗口名，`#I` 窗口编号，`#P` pane 编号，`#T` pane 标题，`#H` 主机名，`#F` 标记，`#{session_name}` 这种长写法，`#{?条件,真,假}` 条件（条件可以是变量名，也可以是 `变量==值` / `变量!=值`），`%H:%M` 之类的时间字段，`#[fg=colour39,bg=black,bold]` 改样式，还有 `#(命令)`：每隔 `status-interval` 秒（默认 15）跑一次，取输出的第一行（`display-message -p`、`jobs -F` 这种一次性命令会当场跑，最多等 3 秒）。`status-left-length` / `status-right-length` 限制长度。`status-justify left|centre|right|absolute-centre` 决定窗口列表放在哪，`window-status-separator` 是窗口标签之间的分隔（默认一个空格）。
 
 ```tmux
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
@@ -308,16 +304,16 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 - `choose-client`：列出连着的客户端，选一个踢下线。
 - `send-keys -X <copy 命令>`：用脚本开 copy mode 干活（`search-backward`、`begin-selection`、`copy-selection` ……名字和 tmux 一样）。
 - `capture-pane -p [-e] [-J] [-S -N]`：把 pane 的内容打出来，`-e` 连颜色一起，`-J` 把被折行的长行拼回一行，`-S -N` 带上 N 行回滚（`-S -` 全部）。
-- `find-text 关键词`：在**所有 pane 打印过的内容**里找（不是找窗口名），告诉你在哪个 pane、往回第几行：`ft:0.0  -8  REDIS-TIMEOUT-here`。`-C` 区分大小写，`-t` 限定 session 或窗口，`-n` 限制每个 pane 最多几条。tmux 的 `find-window` 只搜名字和标题，搜不了内容。
-- `jobs`：任务板。整个 server 上每个 pane 一行——程序还在跑还是已经退出（退出码多少）、跑了多久、多久没有输出、pid、命令、目录。`-t session` 只看一个 session；`-F 格式` 自己定输出（`#{pane_start_time}`、`#{pane_activity}`、`#{pane_dead_time}` 是原始时间戳）。`prefix B`（`choose-jobs`）是同一张板的可操作版：`Enter` 跳到那个 pane，`x` 杀掉，`r` 重启，开着的时候行会原地刷新。
+- `find-text 关键词`：在所有 pane 打印过的内容里找，告诉你在哪个 pane、往回第几行：`ft:0.0  -8  REDIS-TIMEOUT-here`。`-C` 区分大小写，`-t` 限定 session 或窗口，`-n` 限制每个 pane 最多几条。wmux 的 `find-window` 只搜窗口名和标题。
+- `jobs`：任务板。整个 server 上每个 pane 一行：程序还在跑还是已经退出（退出码多少）、跑了多久、多久没有输出、pid、命令、目录。`-t session` 只看一个 session；`-F 格式` 自己定输出（`#{pane_start_time}`、`#{pane_activity}`、`#{pane_dead_time}` 是原始时间戳）。`prefix B`（`choose-jobs`）是同一张板的可操作版：`Enter` 跳到那个 pane，`x` 杀掉，`r` 重启，开着的时候行会原地刷新。
 
   ```
   PANE       STATE    UP     IDLE   PID    COMMAND       DIR
   build:0.0  running  2h13m  4s     21608  cargo build   C:\src\wmux
   web:0.0    exit 1   2h13m  1h02m  28748  npm run dev   C:\src\site
   ```
-- `record [-t 目标] out.cast`：从现在起把这个 pane 打印的一切写成 [asciinema](https://asciinema.org) v2 文件（连窗口尺寸变化一起）；`record -t 目标` 不带路径就是停。`asciinema play` 能回放，也能上传或嵌进网页——给别人看的是一段能动的终端，不是截图。
-- `notify [-T 标题] 消息`：弹一个 Windows 桌面通知（toast，通知中心里以 wmux 自己的名字出现）；`set -g notify on` 之后每次告警都弹，终端被别的窗口盖住时也能收到。告警的通知带一个 **Go to pane** 按钮：点了打开一个 `wmux://` 链接，执行 `focus-pane`，让所有接着的客户端切到那个 pane 并把窗口提到前面（尽力而为：Windows Terminal 不一定允许别的进程把它拉到前台）。第一次弹 toast 会在 `HKCU\Software\Classes` 下登记两个键（AppUserModelID 和 `wmux:` 协议），不碰系统范围；弹不出 toast 时退回托盘气泡。
+- `record [-t 目标] out.cast`：从现在起把这个 pane 打印的一切写成 [asciinema](https://asciinema.org) v2 文件（连窗口尺寸变化一起）；`record -t 目标` 不带路径就是停。`asciinema play` 能回放，也能上传或嵌进网页。
+- `notify [-T 标题] 消息`：弹一个 Windows 桌面通知（toast，通知中心里以 wmux 自己的名字出现）；`set -g notify on` 之后每次告警都弹，终端被别的窗口盖住时也能收到。告警的通知带一个“Go to pane”按钮：点了打开一个 `wmux://` 链接，执行 `focus-pane`，让所有接着的客户端切到那个 pane 并把窗口提到前面（尽力而为：Windows Terminal 不一定允许别的进程把它拉到前台）。第一次弹 toast 会在 `HKCU\Software\Classes` 下登记两个键（AppUserModelID 和 `wmux:` 协议），不碰系统范围；弹不出 toast 时退回托盘气泡。
 - `focus-pane %N`：单独用这条命令，所有接着的客户端都切到 pane `%N`（`list-panes` 和 `#{pane_id}` 显示的那个 id）。
 
 窗口和 pane 相关的命令都接受 `-t 目标`，写法和 tmux 一样：`session`、`session:窗口`、`:窗口`、`session:窗口.pane`，窗口那段可以是编号、名字，也可以是 `+`、`-`、`!`。只有 `select-pane` 例外，它的 `-t` 跟的是要跳到哪个 pane（`next`、`last` 或编号），和 `-L` `-R` `-U` `-D` 是一类。
