@@ -136,7 +136,7 @@ wmux kill-server
 | `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
 | `M-n` / `M-p` | 跳到下一个 / 上一个有提醒的窗口（见 `monitor-activity`） |
 
-焦点换了地方的时候（用键盘或鼠标选了别的 pane、放大或还原、切到别的窗口或 session），会有一个框从原来的位置飞过去，用时 160 毫秒。内容在下面已经换好了，不用等它。`set -g animation off` 关掉，`animation-time` 设毫秒数。
+放大有动画：pane 本身逐渐长大到铺满窗口，它的四个顶点各自朝窗口的四个顶点靠拢（已经贴着窗口边的那条边不动），还原时反过来缩回去。放大状态下切 pane，新 pane 也这样长出来。焦点换到别处时（用键盘或鼠标选别的 pane、切窗口或 session），会有一个框从原来的位置飞过去。都是 160 毫秒，程序只按最终大小调整一次，不用等动画。`set -g animation off` 关掉，`animation-time` 设毫秒数。
 
 copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转，`PageUp` / `PageDown` 和 `C-b` / `C-f` 翻页，`C-u` / `C-d` 翻半页（`C-b` 是前缀键，按两下：`C-b C-b` 就是 copy mode 的上翻页），前面加数字就重复（`3j`），`Space` 或 `v` 开始选，`C-v` 切成矩形选择，`Enter` 或 `y` 复制（同时进粘贴缓冲区和 Windows 剪贴板），`/` 往新的方向搜、`?` 往回翻历史搜、`n` `N` 找下一个，`q` 退出。脚本想干同样的事就用 `send-keys -X <命令名>`，命令名和 tmux 一样。
 
@@ -275,7 +275,7 @@ set -g log-history on             # 输出存盘，每个 pane 每天一个文�
 set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir 改存放位置）
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
-set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数）
+set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数，0 到 10000）
 
 bind | split-window -h
 bind - split-window -v

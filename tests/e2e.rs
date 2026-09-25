@@ -1559,11 +1559,23 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     c.wait_for("gone again", |s| corners(s) == 0).await;
     c.prefix('l').await;
     c.wait_for("back right", |s| corners(s) == 0).await;
-    for (what, keys) in [("select-pane", 'h'), ("zoom", 'z'), ("unzoom", 'z')] {
-        c.prefix(keys).await;
-        c.wait_for(what, |s| corners(s) == 4).await;
-        c.wait_for("gone again", |s| corners(s) == 0).await;
-    }
+    c.prefix('h').await;
+    c.wait_for("select-pane", |s| corners(s) == 4).await;
+    c.wait_for("gone again", |s| corners(s) == 0).await;
+    // Zooming the left pane: the pane itself grows, its corners heading for
+    // the window's, the left edge (on the window's edge) staying put, over
+    // the right pane, which shows until it is covered.
+    h.cli(&["send-keys", "-t", "a:0.1", "echo right-side-mark", "Enter"]).await;
+    c.wait_for("the mark", |s| s.contents().contains("right-side-mark")).await;
+    c.prefix('z').await;
+    c.wait_for("growing over the right pane", |s| {
+        corners(s) == 4 && s.contents().contains("right-side-mark") && s.cell(0, 0).is_some_and(|c| c.contents() == "╭")
+    })
+    .await;
+    c.wait_for("grown", |s| corners(s) == 0 && !s.contents().contains("right-side-mark")).await;
+    c.prefix('z').await;
+    c.wait_for("unzoom", |s| corners(s) == 4).await;
+    c.wait_for("gone again", |s| corners(s) == 0 && s.contents().contains("right-side-mark")).await;
     // Another window: the frame closes in on it.
     c.prefix('c').await;
     c.wait_for("new window", |s| corners(s) == 4).await;
@@ -1584,6 +1596,49 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     }
     assert!(frames > 0, "the window did change");
     assert!(c.screen.screen().contents().matches("wmux>").count() >= 2, "back on the split window");
+    h.cli(&["kill-server"]).await;
+}
+
+/// A zoom in motion when the ground moves under it: border rows above the
+/// panes, the terminal resized half way, another pane closed half way, down
+/// to a terminal too small for anything. The server goes on answering and
+/// ends where it should.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zoom_in_motion_survives_what_happens_meanwhile() {
+    let h = Harness::start("anim-edge").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "e"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    h.cli(&["set", "-g", "animation-time", "2000"]).await;
+    h.cli(&["set", "-g", "pane-border-status", "top"]).await;
+    h.cli(&["split-window", "-h", "-t", "e"]).await;
+    h.cli(&["split-window", "-v", "-t", "e"]).await;
+    let corners = |s: &vt100::Screen| s.contents().matches(['╭', '╮', '╰', '╯']).count();
+    let zoomed =
+        async || h.cli(&["display-message", "-p", "-t", "e", "#{window_zoomed_flag}"]).await.1.trim().to_string();
+    // Border rows: the zoom starts and grows as usual.
+    c.prefix('z').await;
+    c.wait_for("zooming under border rows", |s| corners(s) == 4).await;
+    // Resized half way: drawn at the new size, then settled there.
+    c.send(ClientMsg::Resize { cols: 60, rows: 16 }).await;
+    c.wait_for("settled after the resize", |s| corners(s) == 0).await;
+    assert_eq!(zoomed().await, "1");
+    // Unzooming, and the pane it grows out of closes half way.
+    c.prefix('z').await;
+    c.wait_for("unzooming", |s| corners(s) == 4).await;
+    let (_, ids, _) = h.cli(&["list-panes", "-t", "e", "-F", "#{pane_id} #{pane_active}"]).await;
+    let other = ids.lines().find(|l| l.ends_with(" 0")).unwrap().split(' ').next().unwrap().to_string();
+    h.cli(&["set", "-g", "undo-kill-time", "0"]).await;
+    assert_eq!(h.cli(&["kill-pane", "-t", &other]).await.0, 0);
+    c.wait_for("settled with two panes", |s| corners(s) == 0).await;
+    assert_eq!(h.cli(&["list-panes", "-t", "e"]).await.1.lines().count(), 2);
+    // A terminal too small for anything, a zoom in motion in it.
+    c.send(ClientMsg::Resize { cols: 3, rows: 2 }).await;
+    c.prefix('z').await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
+    c.wait_for("settled at 80x24", |s| corners(s) == 0 && s.contents().contains("wmux>")).await;
+    assert_eq!(h.cli(&["display-message", "-p", "ok"]).await.1.trim(), "ok", "the server still answers");
     h.cli(&["kill-server"]).await;
 }
 

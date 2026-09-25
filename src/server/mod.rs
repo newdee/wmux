@@ -414,12 +414,16 @@ enum Anim {
     /// Into a window just switched to: from the whole window down to its
     /// active pane, or out from the middle when it has only the one.
     Enter { start: Instant },
+    /// A pane zooming in or out: the pane itself grows from its place in
+    /// the layout to the whole window, or shrinks back, over the other
+    /// panes as they are laid out; an edge on the window's edge stays put.
+    Zoom { pane: PaneId, from: Rect, to: Rect, start: Instant },
 }
 
 impl Anim {
     fn start(&self) -> Instant {
         match self {
-            Anim::Move { start, .. } | Anim::Enter { start } => *start,
+            Anim::Move { start, .. } | Anim::Enter { start } | Anim::Zoom { start, .. } => *start,
         }
     }
 }
@@ -469,13 +473,6 @@ impl Window {
         self.rects.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
     }
 
-    /// Where pane `id` sits in the layout itself, zoomed or not.
-    fn layout_rect_of(&self, area: Rect, id: PaneId) -> Option<Rect> {
-        let mut rects = Vec::new();
-        self.layout.clone().layout(area, &mut rects);
-        rects.into_iter().find(|(i, _)| *i == id).map(|(_, r)| r)
-    }
-
     /// Start the focus frame moving from `from` to `to` (both known and
     /// not the same place).
     fn animate(&mut self, from: Option<Rect>, to: Option<Rect>) {
@@ -500,6 +497,33 @@ impl Window {
     /// `border`: `pane-border-status` wants a row above (`Some(true)`) or
     /// below (`Some(false)`) every pane, which is taken off the pane itself
     /// and left for the border text.
+    /// The panes' rectangles as they are without the zoom, border rows
+    /// taken off as `relayout` does, for drawing what a zoom grows over.
+    fn unzoomed_rects(&self, area: Rect, border: Option<bool>) -> Vec<(PaneId, Rect)> {
+        let mut rects = Vec::new();
+        self.layout.clone().layout(area, &mut rects);
+        if let Some(top) = border {
+            for (_, r) in &mut rects {
+                if r.h >= 2 {
+                    if top {
+                        r.y += 1;
+                    }
+                    r.h -= 1;
+                }
+            }
+        }
+        rects
+    }
+
+    /// Start a zoom animation of pane `pane` from `from` to `to`.
+    fn animate_zoom(&mut self, pane: PaneId, from: Option<Rect>, to: Option<Rect>) {
+        if let (Some(from), Some(to)) = (from, to)
+            && from != to
+        {
+            self.anim = Some(Anim::Zoom { pane, from, to, start: Instant::now() });
+        }
+    }
+
     fn relayout(&mut self, area: Rect, border: Option<bool>) {
         self.rects.clear();
         if self.zoomed && self.pane(self.active).is_some() {
@@ -3561,6 +3585,7 @@ impl Server {
                 let area = self.window_area(scols, srows);
                 let pane_base = self.opts.pane_base_index;
                 let keep_zoom = self.opts.keep_zoom;
+                let border = self.border_rows();
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 let order = w.layout.panes();
                 let cur = order.iter().position(|p| *p == w.active).unwrap_or(0);
@@ -3584,9 +3609,14 @@ impl Server {
                 };
                 match next {
                     Some(id) if id != w.active => {
-                        // The frame flies from the pane left, or, when the zoom
-                        // moves, from where the new pane sits in the layout.
-                        let from = if w.zoomed && keep_zoom { w.layout_rect_of(area, id) } else { w.rect_of(w.active) };
+                        // The frame flies from the pane left; when the zoom moves,
+                        // the new pane grows from where it sits in the layout.
+                        let zoom_moves = w.zoomed && keep_zoom;
+                        let from = if zoom_moves {
+                            w.unzoomed_rects(area, border).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+                        } else {
+                            w.rect_of(w.active)
+                        };
                         w.last_pane = Some(w.active);
                         w.active = id;
                         // Zoomed, the zoom moves to the pane selected (`keep-zoom`,
@@ -3597,7 +3627,11 @@ impl Server {
                         }
                         let w = &mut self.session_mut(sid).unwrap().windows[widx];
                         let to = w.rect_of(id);
-                        w.animate(from, to);
+                        if zoom_moves {
+                            w.animate_zoom(id, from, to);
+                        } else {
+                            w.animate(from, to);
+                        }
                         self.fire_hook("after-select-pane", cid);
                         Outcome::Ok
                     }
@@ -3676,7 +3710,7 @@ impl Server {
                 if let Some((id, from)) = zoom_from {
                     let w = &mut self.session_mut(sid).unwrap().windows[widx];
                     let to = w.rect_of(id);
-                    w.animate(Some(from), to);
+                    w.animate_zoom(id, Some(from), to);
                 }
                 Outcome::Ok
             }
@@ -6060,12 +6094,18 @@ impl Server {
         self.chooser_go(cid, sid, Some(wid));
         let keep_zoom = self.opts.keep_zoom;
         let area = self.session(sid).map(|s| self.window_area(s.cols, s.rows)).unwrap_or_default();
+        let border = self.border_rows();
         if let Some(s) = self.session_mut(sid)
             && let Some(w) = s.windows.iter_mut().find(|w| w.id == wid)
             && w.active != pid
             && w.pane(pid).is_some()
         {
-            let from = if w.zoomed && keep_zoom { w.layout_rect_of(area, pid) } else { w.rect_of(w.active) };
+            let zoom_moves = w.zoomed && keep_zoom;
+            let from = if zoom_moves {
+                w.unzoomed_rects(area, border).into_iter().find(|(p, _)| *p == pid).map(|(_, r)| r)
+            } else {
+                w.rect_of(w.active)
+            };
             w.last_pane = Some(w.active);
             w.active = pid;
             // As select-pane: a zoomed window zooms the pane gone to (or,
@@ -6077,7 +6117,11 @@ impl Server {
             }
             if let Some(w) = self.session_mut(sid).and_then(|s| s.windows.iter_mut().find(|w| w.id == wid)) {
                 let to = w.rect_of(pid);
-                w.animate(from, to);
+                if zoom_moves {
+                    w.animate_zoom(pid, from, to);
+                } else {
+                    w.animate(from, to);
+                }
             }
             self.fire_hook("after-select-pane", Some(cid));
         }
@@ -6544,6 +6588,8 @@ impl Server {
         }
         let (from, to) = match a {
             Anim::Move { from, to, .. } => (from, to),
+            // Drawn as the pane itself growing (`zoom_frame`), not as a frame.
+            Anim::Zoom { .. } => return None,
             // Into a window: from all of it down to the active pane, or,
             // with nothing smaller to close in on, out from the middle.
             Anim::Enter { .. } => {
@@ -6557,17 +6603,30 @@ impl Server {
                 (from, to)
             }
         };
-        // On the borders around a pane, where there are any, rather than on
-        // its text; at the window's edge, just inside it.
         let area = self.window_area(s.cols, s.rows);
-        let around = |r: Rect| {
-            let x = r.x.saturating_sub(1).max(area.x);
-            let y = r.y.saturating_sub(1).max(area.y);
-            let x1 = (r.x + r.w + 1).min(area.x + area.w);
-            let y1 = (r.y + r.h + 1).min(area.y + area.h);
-            Rect { x, y, w: x1.saturating_sub(x), h: y1.saturating_sub(y) }
-        };
-        Some(render::frame_at(around(from), around(to), t))
+        Some(render::frame_at(frame_around(from, area), frame_around(to, area), t))
+    }
+
+    /// A zoom in motion in session `spos`'s window: the pane zooming, the
+    /// rectangle it has grown (or shrunk) to by now, and the panes as they
+    /// are laid out without the zoom, which it grows over.
+    fn zoom_frame(&self, spos: usize) -> Option<ZoomFrame> {
+        if !self.opts.animation || self.opts.animation_time == 0 {
+            return None;
+        }
+        let s = &self.sessions[spos];
+        let w = s.windows.get(s.cur)?;
+        let Some(Anim::Zoom { pane, from, to, start }) = w.anim else { return None };
+        let t = start.elapsed().as_secs_f32() * 1000.0 / self.opts.animation_time as f32;
+        if t >= 1.0 || w.pane(pane).is_none() {
+            return None;
+        }
+        let area = self.window_area(s.cols, s.rows);
+        Some(ZoomFrame {
+            pane,
+            rect: render::frame_at(from, to, t),
+            layout: w.unzoomed_rects(area, self.border_rows()),
+        })
     }
 
     /// Whether a window on some client's screen has its focus frame
@@ -6717,7 +6776,10 @@ impl Server {
             }
         }
         let sess_size = (self.sessions[spos].cols, self.sessions[spos].rows);
-        let stamps_on = self.opts.pane_timestamps;
+        // A zoom in motion: the window is drawn as it is without the zoom,
+        // and the zooming pane over it at its size of the moment (below).
+        let zooming = self.zoom_frame(spos);
+        let stamps_on = self.opts.pane_timestamps && zooming.is_none();
         let s = &mut self.sessions[spos];
         let Some(w) = s.window_mut() else { return };
         let active = w.active;
@@ -6745,7 +6807,7 @@ impl Server {
             }
         }
         let mut views = Vec::new();
-        for (id, rect) in &w.rects {
+        for (id, rect) in zooming.as_ref().map_or(&w.rects, |z| &z.layout) {
             let Some(p) = w.pane(*id) else { continue };
             views.push(PaneView {
                 rect: *rect,
@@ -6813,13 +6875,24 @@ impl Server {
                 }
             }
         }
-        // `animation`: the focus frame on its way to where the keys now go.
+        // `animation`: the focus frame on its way to where the keys now go,
+        // or the zooming pane at its size of the moment, framed.
+        let frame_style = render::Style {
+            bold: true,
+            ..render::Style::colors(self.opts.pane_border_active_fg, vt100::Color::Default)
+        };
         if let Some(r) = self.anim_frame(spos) {
-            let style = render::Style {
-                bold: true,
-                ..render::Style::colors(self.opts.pane_border_active_fg, vt100::Color::Default)
-            };
-            render::draw_frame(&mut grid, r, style);
+            render::draw_frame(&mut grid, r, frame_style);
+        }
+        if let Some(z) = &zooming {
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            if let Some(p) = w.pane(z.pane) {
+                grid.fill(z.rect, render::Style::default());
+                grid.blit_screen(z.rect, p.screen());
+                let area = self.window_area(sess_size.0, sess_size.1);
+                render::draw_frame(&mut grid, frame_around(z.rect, area), frame_style);
+            }
+            cursor = None;
         }
         // `clock-mode`: a big clock over the panes that asked for one.
         {
@@ -7440,6 +7513,27 @@ fn stamp_parts(m: &pane::Mark, now: chrono::DateTime<chrono::Local>, short: bool
         None => {}
     }
     parts
+}
+
+/// A zoom in motion, as one frame draws it (`Server::zoom_frame`).
+struct ZoomFrame {
+    /// The pane zooming in or out.
+    pane: PaneId,
+    /// Where it is drawn now, between its place and the whole window.
+    rect: Rect,
+    /// The other panes' places without the zoom, drawn beneath it.
+    layout: Vec<(PaneId, Rect)>,
+}
+
+/// The rectangle a focus frame takes around `r`: on the borders around a
+/// pane, where there are any, rather than on its text; at the window's
+/// edge, just inside it.
+fn frame_around(r: Rect, area: Rect) -> Rect {
+    let x = r.x.saturating_sub(1).max(area.x);
+    let y = r.y.saturating_sub(1).max(area.y);
+    let x1 = (r.x + r.w + 1).min(area.x + area.w);
+    let y1 = (r.y + r.h + 1).min(area.y + area.h);
+    Rect { x, y, w: x1.saturating_sub(x), h: y1.saturating_sub(y) }
 }
 
 /// A size as people read it: `812 B`, `14 KB`, `1.2 MB`.

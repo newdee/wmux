@@ -103,7 +103,7 @@ pub struct Options {
     /// zooming, and switching windows or sessions. Drawn over content that
     /// is already in place, so nothing waits for it.
     pub animation: bool,
-    /// How long it takes, in milliseconds; 0 is the same as off.
+    /// How long it takes, in milliseconds (at most 10000); 0 is the same as off.
     pub animation_time: u64,
 }
 
@@ -565,7 +565,13 @@ impl Options {
             "log-history" => self.log_history = parse_bool(value)?,
             "keep-zoom" => self.keep_zoom = parse_bool(value)?,
             "animation" => self.animation = parse_bool(value)?,
-            "animation-time" => self.animation_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            // An animation that never ends would redraw for ever.
+            "animation-time" => {
+                self.animation_time = match value.trim().parse::<u64>() {
+                    Ok(ms) if ms <= 10_000 => ms,
+                    _ => return Err(format!("bad animation-time '{value}' (milliseconds, 0 to 10000)")),
+                }
+            }
             "log-history-days" => self.log_history_days = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "log-history-dir" => self.log_history_dir = value.to_string(),
             "undo-kill-time" => self.undo_kill_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -992,6 +998,13 @@ mod tests {
         assert!(o.set("history-limit", "").is_err(), "a number still needs a value");
         assert!(o.set("nonsense", "1").is_err());
         assert!(o.set("mouse", "maybe").is_err());
+        // An animation has an end: at most ten seconds.
+        assert!(o.set("animation-time", "10000").is_ok() && o.set("animation-time", "0").is_ok());
+        for bad in ["10001", "18446744073709551615", "-1", "fast"] {
+            let e = o.set("animation-time", bad).unwrap_err();
+            assert!(e.contains("0 to 10000"), "{bad}: {e}");
+        }
+        assert_eq!(o.get("animation-time").as_deref(), Some("0"), "a refused value leaves the old one");
         assert!(o.set("history-limit", "x").is_err());
         assert_eq!(o.prefix.to_string(), "C-a");
     }

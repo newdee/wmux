@@ -187,11 +187,15 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
 | `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
-When the keys move somewhere else (another pane selected with a key or the
-mouse, a pane zoomed or unzoomed, another window or session), a frame flies
-there from where they were, in 160 ms. The content is already in place
-underneath, so nothing waits for it. `set -g animation off` turns it off,
-and `animation-time` sets the milliseconds.
+Zooming is animated: the pane itself grows to fill the window, each of its
+corners heading for the window's corner (an edge already on the window's
+edge stays where it is), and shrinks back the same way. Moving between the
+panes of a zoomed window does the same with the pane moved to. When the keys
+move anywhere else (another pane selected with a key or the mouse, another
+window or session), a frame flies there from where they were. It all takes
+160 ms, and programs are resized once, to the size they end up at, so
+nothing waits for it. `set -g animation off` turns it off, and
+`animation-time` sets the milliseconds.
 
 In copy mode: `h` `j` `k` `l` and the arrows move, `w` `b` `e` walk words,
 `0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, `PageUp` /
@@ -433,7 +437,7 @@ set -g log-history on             # keep what panes print, a file per pane per d
 set -g log-history-days 30        # for how long; 0 keeps everything (log-history-dir moves the files)
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
-set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds)
+set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D

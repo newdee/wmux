@@ -43,7 +43,7 @@ const ZH = {
     "<kbd>C-b Space</kbd> 在五种布局之间切换：等宽列、等高行、主 pane 在左或在上，还有平铺。<kbd>C-b E</kbd> 把当前 pane 旁边那一排调成一样大。",
   "c2.p2": "<kbd>C-b q</kbd> 在每个 pane 上显示一个数字，按那个数字就跳过去。",
   "c2.p5":
-    "焦点换到别的 pane、进入放大或切到别的窗口时，会有一个框从原来的位置飞过去。内容已经换好了，不用等它；<code>set -g animation off</code> 可以关掉。放大的窗口里切 pane 会一直保持放大，直到按 <kbd>C-b z</kbd>。",
+    "放大时 pane 本身逐渐长大，四个顶点朝窗口的四个顶点靠拢，还原时缩回去；焦点换到别的 pane 或窗口时，会有一个框飞过去。程序只调整一次大小，不用等它；<code>set -g animation off</code> 可以关掉。放大的窗口里切 pane 会一直保持放大，直到按 <kbd>C-b z</kbd>。",
   "c2.p3":
     "copy mode 里 <kbd>/</kbd> 往前搜、<kbd>?</kbd> 往回搜，<kbd>n</kbd> <kbd>N</kbd> 重复上一次搜索，匹配的那一行会滚到屏幕中间。",
   "c2.p4":
