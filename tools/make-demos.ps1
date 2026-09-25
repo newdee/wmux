@@ -3,7 +3,7 @@
   Re-record the demos and re-cut every picture in docs/img from them.
 
 .DESCRIPTION
-  1. tests/demo_frames.rs plays two scripted sessions into the real wmux.exe
+  1. tests/demo_frames.rs plays three scripted sessions into the real wmux.exe
      and writes each screen as JSON: f0001.json ... for the animation, and
      still-<name>.json wherever the script marks a picture.
   2. tools/render-frames.ps1 draws them as PNGs.

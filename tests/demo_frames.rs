@@ -8,7 +8,7 @@
 //!
 //! It is a test so that it runs the same way the console tests do, and it is
 //! ignored by default because it is a recording, not an assertion. The whole
-//! job (both recordings, the frames, the GIF and MP4, and every still that
+//! job (the three recordings, the frames, the GIF and MP4, and every still that
 //! `still()` marks, into docs/img) is one command:
 //!
 //! ```powershell
@@ -294,6 +294,36 @@ struct Demo {
     tmp: std::path::PathBuf,
     exe: String,
     socket: String,
+    /// Where the panes work; given back when the demo is dropped.
+    _drive: Drive,
+}
+
+/// A drive letter standing for the recording's project directory (`subst`,
+/// no administrator rights needed), so the paths on screen are short and
+/// say nothing about this machine. Given back when the recording ends,
+/// however it ends.
+struct Drive(String);
+
+impl Drive {
+    fn map(dir: &std::path::Path) -> Drive {
+        for letter in ['W', 'V', 'U', 'T', 'S', 'R', 'Q'] {
+            let d = format!("{letter}:");
+            if std::path::Path::new(&format!("{d}\\")).exists() {
+                continue;
+            }
+            let ok = std::process::Command::new("subst").arg(&d).arg(dir).status().is_ok_and(|s| s.success());
+            if ok {
+                return Drive(d);
+            }
+        }
+        panic!("no free drive letter for the recording");
+    }
+}
+
+impl Drop for Drive {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("subst").args([self.0.as_str(), "/d"]).status();
+    }
 }
 
 impl Demo {
@@ -306,6 +336,13 @@ impl Demo {
         let tmp = std::env::temp_dir().join(format!("wmux-{socket}-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).expect("temp dir");
         let sessions = tmp.join("sessions");
+        // A project to work in: a git repository (its branch is on the status
+        // line) on a drive of its own.
+        let project = tmp.join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        std::fs::write(project.join("README.md"), "# demo\n").expect("project file");
+        let _ = std::process::Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&project).status();
+        let drive = Drive::map(&project);
 
         // A short prompt, so the recording shows wmux rather than path names.
         let prompt = tmp.join("prompt.ps1");
@@ -316,31 +353,33 @@ impl Demo {
         // (`pane-timestamps`, the history log) as a plain pwsh does.
         std::fs::write(
             &prompt,
-            // C:\ so that `list-panes` (which prints each pane's directory)
-            // shows a path that is the same on every machine.
+            // The project's drive, so that `list-panes` (which prints each
+            // pane's directory) and the status line show a short path.
             format!(
                 "function global:prompt {{ 'PS> ' }}\n\
                  $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
                  try {{ Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing }} catch {{}}\n\
-                 Set-Location C:\\\n\
+                 Set-Location {}\\\n\
                  {}\n\
                  Clear-Host\n",
+                drive.0,
                 wmux::config::POWERSHELL_PROMPT_HOOK
             ),
         )
         .expect("prompt script");
         let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
         let conf = tmp.join("wmux.conf");
-        // The recordings wear the Tokyo Night theme from themes/, with just
-        // a clock on the right: the recording should show wmux, not this
-        // machine's paths or load.
+        // The recordings wear the Tokyo Night theme from themes/, status line
+        // and all: the branch, the directory, the machine's load, the clock.
+        // The focus frame is slowed down so that the pictures, taken five
+        // times a second, catch it moving (160 ms, the default, falls
+        // between two of them).
         let theme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/tokyo-night.conf"))
             .expect("themes/tokyo-night.conf");
         std::fs::write(
             &conf,
             format!(
-                "set -g default-command \"{shell}\"\n{theme}\n\
-                 set -g status-right \"#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M \"\n{extra_conf}"
+                "set -g default-command \"{shell}\"\n{theme}\nset -g animation-time 600\n{extra_conf}"
             ),
         )
         .expect("config");
@@ -384,7 +423,7 @@ impl Demo {
             raw: Vec::new(),
             child,
         };
-        Demo { rec, tmp, exe, socket: socket.to_string() }
+        Demo { rec, tmp, exe, socket: socket.to_string(), _drive: drive }
     }
 
     /// Kill the server (and with it every pane) and the scratch directory.
