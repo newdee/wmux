@@ -378,9 +378,7 @@ impl Demo {
             .expect("themes/tokyo-night.conf");
         std::fs::write(
             &conf,
-            format!(
-                "set -g default-command \"{shell}\"\n{theme}\nset -g animation-time 600\n{extra_conf}"
-            ),
+            format!("set -g default-command \"{shell}\"\n{theme}\nset -g animation-time 600\n{extra_conf}"),
         )
         .expect("config");
 
