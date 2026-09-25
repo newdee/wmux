@@ -30,7 +30,8 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "ffmpeg is 
 
 $takes = @(
     @{ Env = "WMUX_DEMO_OUT"; Test = "record_demo"; Name = "wmux-demo" },
-    @{ Env = "WMUX_DEMO_OUT2"; Test = "record_alerts"; Name = "wmux-alerts" }
+    @{ Env = "WMUX_DEMO_OUT2"; Test = "record_alerts"; Name = "wmux-alerts" },
+    @{ Env = "WMUX_DEMO_OUT3"; Test = "record_history"; Name = "wmux-history" }
 )
 foreach ($t in $takes) {
     $frames = Join-Path $Work "$($t.Name)-frames"

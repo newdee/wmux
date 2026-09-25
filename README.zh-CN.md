@@ -37,7 +37,7 @@ wmux web
 
 <p align="center">
   <img src="docs/img/phone-zh.png" width="620"
-       alt="手机上的 wmux web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，下方是一排按键和输入框">
+       alt="手机上的 wmux web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，左侧一栏是每条命令的时间，下方是一排按键和输入框">
 </p>
 
 二维码里是地址加一个密钥，密钥每次启动重新生成（128 位随机数）。除了页面本身，没有密钥什么都拿不到；手机只能看、往 pane 里输入、用那个 + 菜单，发不了任何自己的 wmux 命令。不启动就不开，按 Ctrl+C 就关。
@@ -142,6 +142,11 @@ copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0`
 
 ## 命令时间和历史
 
+<p align="center">
+  <img src="docs/img/wmux-history.gif" width="880"
+       alt="每条命令行尾显示时间，其中一条失败；历史面板按 pane 位置和日期列出；在查看器里打开某一天；手滑关掉的 pane 按 C-b u 找回">
+</p>
+
 PowerShell pane 会报告自己跑的每条命令（wmux 的 prompt hook 做这件事，就是报告目录的那个）。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
 
 ```text
@@ -150,6 +155,8 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 ```
 
 时间画在行尾的空白里。pane 宽度不变，程序输出的内容一个字不改（copy mode 和 `capture-pane` 看不到它），一行满到放不下就不画。脚本要用的话，`wmux list-marks` 打印同样的信息。手机上点 ⏱ 按钮，时间显示在左边一栏。
+
+带脚本启动的 PowerShell（`-File`、`-Command`）wmux 不去动它，也就没有 hook；可以在那个脚本里加一行 `Invoke-Expression (wmux __shell-hook | Out-String)` 自己装上。
 
 别的 shell 用 Windows Terminal 和 VS Code 也认的那套序列（OSC 133）报告命令。WSL 里的 bash：
 

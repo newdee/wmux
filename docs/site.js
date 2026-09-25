@@ -54,7 +54,6 @@ const ZH = {
   "c3.p2":
     "文件里还存着每个 pane 输出过的内容：<code>save-history</code> 默认保留最后 500 行，设成 <code>all</code> 就保留全部回滚内容，颜色也在。恢复出来的 pane 显示的是原来的输出，而不是一个空提示符。",
   "c3.p3": "<code>wmux list-saved</code> 列出能恢复的 session，<code>wmux resume work</code> 只恢复这一个。",
-  "c3.p4": "关错了 pane？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。窗口也一样。",
 
   "c35.title": "你没看着的时候，那个任务跑完了",
   "c35.sub":
@@ -65,12 +64,19 @@ const ZH = {
     "开了 <code>remain-on-exit</code> 之后，程序退出了 pane 也不会关，上面写着 <code>[cmd exited with 3]</code>。凌晨三点崩掉的任务，早上还能看到。<code>respawn-pane</code> 在原位置重新启动它。",
   "c35.p2":
     "<code>pipe-pane \"$input | Add-Content build.log\"</code> 把 pane 输出的所有内容交给一个命令；那个命令处理不过来时，wmux 会提示你。",
-  "c35.p4":
-    "<kbd>C-b C-t</kbd> 在每条命令那一行的末尾显示它什么时候开始、跑了多久、有没有失败。pane 宽度不变；手机上这些时间单独占一栏。",
-  "c35.p5":
-    "pane 输出过的东西都存在磁盘上，每个 pane 每天一个文件，留 30 天。<kbd>C-b /</kbd> 列出来，按 Enter 在查看器里打开某一天，<kbd>[</kbd> <kbd>]</kbd> 在命令之间跳。",
   "c35.p3":
     "脚本之间可以互相等待：<code>wmux wait-for ready</code> 会一直等，直到另一个客户端执行 <code>wmux wait-for -S ready</code>；<code>-L</code> 和 <code>-U</code> 可以当锁用。",
+
+  "ch.title": "跑了什么、什么时候、花了多久",
+  "ch.sub":
+    "<kbd>C-b C-t</kbd> 把每条命令的开始时间、耗时和结果写在它那一行的末尾。pane 输出过的东西按天保存，<kbd>C-b /</kbd> 打开任意一天。",
+  "ch.caption":
+    "三条命令和它们的时间，其中一条失败；历史面板和查看器里的一天；手滑关掉的 pane，<kbd>C-b u</kbd> 找回来。",
+  "ch.p1":
+    "时间画在行尾的空白里。pane 宽度不变，程序输出的内容一个字不改。手机上点 ⏱ 按钮，时间单独占一栏。",
+  "ch.p2":
+    "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
+  "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
 
   "c4.title": "你的 .tmux.conf，基本能直接用",
   "c4.sub":

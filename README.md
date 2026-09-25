@@ -66,7 +66,7 @@ it open like an app.
 
 <p align="center">
   <img src="docs/img/phone.png" width="620"
-       alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log, with a row of keys and a box to type in">
+       alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
 </p>
 
 The code carries the address and a key made fresh at each start (128 random
@@ -207,6 +207,11 @@ clipboard into the pane, as the terminal itself would.
 
 ## Command times and history
 
+<p align="center">
+  <img src="docs/img/wmux-history.gif" width="880"
+       alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
+</p>
+
 A PowerShell pane reports each command it runs (wmux's prompt hook does
 this, the same hook that reports the directory). `C-b C-t` (or `set -g
 pane-timestamps on`) shows, at the right end of the line the command was
@@ -222,6 +227,10 @@ nothing is added to what the program printed (copy mode and `capture-pane`
 do not see it), and a line too full to hold it goes without. `wmux
 list-marks` prints the same for a script. On the phone, the ⏱ button does
 the same in a column to the left.
+
+A PowerShell started with a script of its own (`-File`, `-Command`) is left
+as it is, hook and all; that script can install the hook itself with
+`Invoke-Expression (wmux __shell-hook | Out-String)`.
 
 Other shells report their commands with the sequences Windows Terminal and
 VS Code read too (OSC 133). For bash under WSL:

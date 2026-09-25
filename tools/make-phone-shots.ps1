@@ -41,6 +41,9 @@ Set-Content $prompt -Encoding utf8 -Value @"
 function global:prompt { 'PS> ' }
 try { Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing } catch {}
 Set-Location '$repo'
+# A shell started with a script gets no prompt hook from wmux; this one
+# installs it, so the pane reports its commands (the times in the picture).
+Invoke-Expression (& '$w' __shell-hook | Out-String)
 Clear-Host
 "@
 $shell = @("pwsh.exe", "-NoLogo", "-NoProfile", "-NoExit", "-File", $prompt)
@@ -68,8 +71,9 @@ function Type-Line($target, $text, $expect) {
     & $w -L $socket send-keys -t $target Enter
     Wait-Screen $target "the output" { param($s) $s -match $expect }
 }
+Type-Line "dev:0.0" "Test-Path Cargo.toml" "True"
 Type-Line "dev:0.0" "git --no-pager log --oneline --graph --decorate --color=always -12" "\* [0-9a-f]{7}.*\n.*\* [0-9a-f]{7}"
-Type-Line "dev:0.1" "git status -sb" "## "
+Type-Line "dev:0.1" "git status -sb | Select-Object -First 5" "## "
 Type-Line "dev:1" "Get-ChildItem src | Select-Object -First 8 Name, Length" "Length"
 # Something running, so the list names a program and not only shells.
 Type-Line "ops:0" "ping -n 600 127.0.0.1" "127\.0\.0\.1.*(time|时间)"
@@ -85,7 +89,7 @@ try {
     $pane = (& $w -L $socket list-panes -t dev:0 -F "#{pane_id}" | Select-Object -First 1).TrimStart("%")
     $shots = @(
         @{ Name = "phone-list"; View = "list"; Url = "http://127.0.0.1:17682/#k=$key" },
-        @{ Name = "phone-pane"; View = "pane"; Url = "http://127.0.0.1:17682/#k=$key&p=$pane" }
+        @{ Name = "phone-pane"; View = "pane-detail"; Url = "http://127.0.0.1:17682/#k=$key&p=$pane" }
     )
     # puppeteer-core drives this machine's Edge as a phone would show the
     # page; it lives under target/, fetched on first use.

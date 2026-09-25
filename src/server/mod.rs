@@ -4768,7 +4768,11 @@ impl Server {
                     Err(e) => return Outcome::Error(e),
                 };
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
-                Outcome::Text(list_marks(p).join("\n"))
+                // Nothing to list prints nothing, not an empty line.
+                match list_marks(p) {
+                    lines if lines.is_empty() => Outcome::Ok,
+                    lines => Outcome::Text(lines.join("\n")),
+                }
             }
             Cmd::SourceFile { path } => self.source_file(&path).map(|_| ()).into(),
             // Window-scoped, so it is not in the global table: answer it from

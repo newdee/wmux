@@ -133,6 +133,14 @@ fn main() {
         let _ = std::fs::remove_file(path);
         std::process::exit(code);
     }
+    // `wmux __shell-hook`: the prompt hook wmux gives an interactive
+    // PowerShell, for a shell started with a script of its own (which gets
+    // none): `Invoke-Expression (wmux __shell-hook)` in that script. The
+    // picture scripts in tools/ use it.
+    if args.first().map(String::as_str) == Some("__shell-hook") {
+        println!("{}", wmux::config::POWERSHELL_PROMPT_HOOK);
+        return;
+    }
     // A notification's "Go to pane" button opens a wmux:// URL, which the
     // protocol registration hands to us as the one argument.
     if let Some(url) = args.first().filter(|a| a.starts_with("wmux://")).cloned() {

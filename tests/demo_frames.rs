@@ -189,6 +189,104 @@ fn record_alerts() {
     d.finish();
 }
 
+/// The third recording: each command's time at the end of its line, the
+/// history log read back a day at a time, and a pane closed by mistake
+/// coming back.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_history() {
+    let out_dir = std::env::var("WMUX_DEMO_OUT3").unwrap_or_else(|_| "target/demo-frames-3".into());
+    let mut d = Demo::start("demo3", &out_dir, "");
+    // Earlier days, so the picker shows what a few days of use leave: a
+    // second session's pane over three days, another pane yesterday.
+    let history = d.tmp.join("sessions").join("history");
+    let today = chrono::Local::now().date_naive();
+    let seed = |session: &str, key: &str, days_ago: u64, text: &str| {
+        let dir = history.join(session).join(key);
+        std::fs::create_dir_all(&dir).expect("history dir");
+        let day = today - chrono::Days::new(days_ago);
+        std::fs::write(dir.join(format!("{}.log", day.format("%Y-%m-%d"))), text).expect("history file");
+    };
+    let build = "── 09:12:03 · 3m41s · ✓ ──\nPS> cargo build --release\n   Compiling wmux v0.12.0\n    \
+                 Finished `release` profile [optimized] target(s) in 3m 41s\n";
+    seed("ops", "0.0", 1, &build.repeat(40));
+    seed("ops", "0.0", 2, &build.repeat(25));
+    seed("ops", "0.0", 5, &build.repeat(60));
+    seed("dev", "0.1", 1, "── 17:40:12 · 1.2s · ✗ 1 ──\nPS> npm test\n2 tests failed\n");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("wmux -L {socket} new -s dev"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(3);
+
+    // C-b C-t: when each command started, how long it took, how it ended,
+    // in the blank end of its line.
+    rec.key("\x02\x14");
+    rec.wait_for("times on", |s| s.contents().contains("pane-timestamps on"), 10);
+    rec.hold(4);
+    let stamped = |n: usize| move |s: &vt100::Screen| s.contents().matches(['✓', '✗']).count() >= n;
+    rec.type_line("Start-Sleep 2; 'build ok'");
+    rec.wait_for("first time", stamped(1), 20);
+    rec.hold(4);
+    rec.type_line("cmd /c \"echo 2 tests failed & exit 1\"");
+    rec.wait_for("second time", stamped(2), 20);
+    rec.hold(4);
+    rec.type_line("1..4 | ForEach-Object { \"step $_ done\" }");
+    rec.wait_for("third time", stamped(3), 20);
+    rec.hold(6);
+    rec.still("timestamps");
+
+    // Enough output to scroll: what leaves the screen goes to today's file.
+    rec.type_line("1..40 | ForEach-Object { \"log line $_\" }");
+    rec.wait_for(
+        "the long one",
+        |s| {
+            let rows: Vec<String> = s.rows(0, COLS).collect();
+            rows.iter().position(|r| r.trim() == "log line 40").is_some_and(|i| rows[i + 1].starts_with("PS>"))
+        },
+        20,
+    );
+    rec.hold(4);
+
+    // C-b /: the pane positions with history, and their days.
+    rec.key("\x02/");
+    rec.wait_for("the history picker", |s| s.contents().contains("today"), 10);
+    rec.hold(6);
+    // Enter: that day in the viewer, at the end; [ goes back a command.
+    rec.key("\r");
+    rec.wait_for("the viewer", |s| s.contents().contains("q quit"), 10);
+    rec.hold(5);
+    rec.key("[");
+    rec.hold(4);
+    rec.key("[");
+    rec.hold(6);
+    rec.still("viewer");
+    rec.key("q");
+    rec.hold(3);
+
+    // A pane closed by mistake: C-b u within ten seconds brings it back,
+    // with what it was running.
+    rec.type_line("Clear-Host");
+    rec.hold(2);
+    rec.key("\x02%");
+    rec.hold(3);
+    rec.type_line("'a job worth keeping'");
+    rec.hold(3);
+    rec.key("\x02x");
+    rec.wait_for("the confirmation", |s| s.contents().contains("(y/n)"), 10);
+    rec.hold(3);
+    rec.key("y");
+    rec.wait_for("the undo hint", |s| s.contents().contains("undo-kill"), 10);
+    rec.hold(5);
+    rec.key("\x02u");
+    rec.wait_for("the pane back", |s| s.contents().contains("a job worth keeping"), 10);
+    rec.hold(8);
+
+    d.finish();
+}
+
 /// Everything a recording needs: a pty running a plain shell with wmux on
 /// the PATH, a scratch directory, and the frame recorder itself.
 struct Demo {
@@ -213,15 +311,22 @@ impl Demo {
         let prompt = tmp.join("prompt.ps1");
         // No prediction and no shared history: a recording must show wmux,
         // never whatever this machine's shell history happens to hold.
+        // A shell started with a script of its own gets no prompt hook from
+        // wmux, so the script installs it: the panes report their commands
+        // (`pane-timestamps`, the history log) as a plain pwsh does.
         std::fs::write(
             &prompt,
             // C:\ so that `list-panes` (which prints each pane's directory)
             // shows a path that is the same on every machine.
-            "function global:prompt { 'PS> ' }\n\
-             $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
-             try { Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing } catch {}\n\
-             Set-Location C:\\\n\
-             Clear-Host\n",
+            format!(
+                "function global:prompt {{ 'PS> ' }}\n\
+                 $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
+                 try {{ Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing }} catch {{}}\n\
+                 Set-Location C:\\\n\
+                 {}\n\
+                 Clear-Host\n",
+                wmux::config::POWERSHELL_PROMPT_HOOK
+            ),
         )
         .expect("prompt script");
         let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());

@@ -2,7 +2,9 @@
 // twice-the-pixels page in the machine's Edge, taken once the page has
 // something on it. Used by tools/make-phone-shots.ps1.
 //
-//   node phone-shot.mjs <edge.exe> <url> <out.png> <list|pane> [en|zh-CN]
+//   node phone-shot.mjs <edge.exe> <url> <out.png> <list|pane|pane-detail> [en|zh-CN]
+//
+// pane-detail: the pane with its command times on (the ⏱ button).
 import puppeteer from "puppeteer-core";
 
 const [edge, url, out, view, lang = "en"] = process.argv.slice(2);
@@ -13,6 +15,7 @@ try {
   await page.evaluateOnNewDocument((l) => {
     Object.defineProperty(navigator, "language", { get: () => l });
   }, lang);
+  await page.evaluateOnNewDocument((on) => localStorage.setItem("wmux-detail", on ? "1" : "0"), view === "pane-detail");
   await page.emulate({
     viewport: { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
     userAgent:
@@ -21,7 +24,12 @@ try {
   await page.goto(url, { waitUntil: "load" });
   // Ready: the list has its panes, or the pane its text.
   await page.waitForFunction(
-    (v) => (v === "list" ? document.querySelectorAll(".pane").length > 0 : document.getElementById("screen").textContent.trim().length > 0),
+    (v) =>
+      v === "list"
+        ? document.querySelectorAll(".pane").length > 0
+        : v === "pane-detail"
+          ? document.querySelectorAll(".stamp").length >= 2
+          : document.getElementById("screen").textContent.trim().length > 0,
     { timeout: 15000 },
     view,
   );

@@ -100,7 +100,7 @@
           </p>
         </header>
         <figure class="shot phone-shot">
-          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log, with a row of keys and a box to type in" />
+          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
         </figure>
         <ul class="points">
           <li data-i18n="cw.p1">wmux sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
@@ -154,7 +154,6 @@
           <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and <code>wmux resume</code> brings back the windows, the pane layout, and each pane's command and directory.</li>
           <li data-i18n="c3.p2">The file also keeps what each pane printed: <code>save-history</code> stores the last 500 lines by default, or the whole scrollback with <code>all</code>, colours included. A resumed pane shows its old output instead of an empty prompt.</li>
           <li data-i18n="c3.p3"><code>wmux list-saved</code> shows what can be restored, and <code>wmux resume work</code> restores just that session.</li>
-          <li data-i18n="c3.p4">Closed the wrong pane? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was. Windows too.</li>
         </ul>
       </section>
 
@@ -178,8 +177,6 @@
         <ul class="points">
           <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
           <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
-          <li data-i18n="c35.p4"><kbd>C-b C-t</kbd> shows, at the end of each command's line, when it started, how long it took and whether it failed. The pane keeps its width; on the phone the times get a column of their own.</li>
-          <li data-i18n="c35.p5">What panes print is kept on disk, a file per pane per day for 30 days. <kbd>C-b /</kbd> lists them, and Enter opens a day in a pager where <kbd>[</kbd> and <kbd>]</kbd> jump from command to command.</li>
           <li data-i18n="c35.p3">Scripts can wait on each other: <code>wmux wait-for ready</code> blocks until another client runs <code>wmux wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
         </ul>
       </section>
@@ -187,6 +184,33 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">06</span>
+          <h2 data-i18n="ch.title">What ran, when, and how long</h2>
+          <p data-i18n="ch.sub">
+            <kbd>C-b C-t</kbd> writes each command's start time, duration and result at the end of its line.
+            What panes print is kept a day at a time, and <kbd>C-b /</kbd> opens any day.
+          </p>
+        </header>
+        <figure class="stage">
+          <img src="img/wmux-history.gif" width="880" loading="lazy" alt="Command times appear at the end of each command's line, the history picker lists pane positions and days, a day opens in a pager, and a pane closed by mistake comes back with C-b u" />
+          <figcaption data-i18n="ch.caption">
+            Three commands with their times, one of them failing; the history picker and a day in the pager;
+            a pane closed by mistake, back with <kbd>C-b u</kbd>.
+          </figcaption>
+        </figure>
+        <div class="pair">
+          <figure class="shot"><img src="img/timestamps.png" alt="Three commands, each with its start time, duration and a tick or a cross at the right end of its line" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/viewer.png" alt="A day of history in the pager popup, each command after a grey line with its time" loading="lazy" /></figure>
+        </div>
+        <ul class="points">
+          <li data-i18n="ch.p1">The time goes in the blank end of the line. The pane keeps its width and nothing is added to what the program printed. On the phone, the ⏱ button puts the times in a column of their own.</li>
+          <li data-i18n="ch.p2">What scrolls off a pane is written to a file for that pane and day, kept for 30 days, with a line of times before each command. In the pager, <kbd>[</kbd> and <kbd>]</kbd> jump from command to command and <kbd>/</kbd> searches.</li>
+          <li data-i18n="ch.p3">Closed the wrong pane or window? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">07</span>
           <h2 data-i18n="c4.title">Your .tmux.conf, more or less</h2>
           <p data-i18n="c4.sub">
             The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
@@ -214,7 +238,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">07</span>
+          <span class="num">08</span>
           <h2 data-i18n="c6.title">Git branch, CPU and memory on the status line</h2>
           <p data-i18n="c6.sub">
             The default status line shows your git branch, the pane's directory, CPU and memory use, and the
@@ -233,7 +257,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter install">
         <header class="chapter-head">
-          <span class="num">08</span>
+          <span class="num">09</span>
           <h2 data-i18n="c5.title">Install</h2>
         </header>
         <div class="cards">
