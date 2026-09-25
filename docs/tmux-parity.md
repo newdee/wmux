@@ -238,7 +238,8 @@ Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
 the session file, colours kept; `all` for the whole scrollback), `autosave`, `restore-on-start`, `sessions-dir`,
 `plugin-path`, `pane-timestamps` (each reported command's time at the end of its
 line), `log-history`, `log-history-days`, `log-history-dir` (the history
-log), `undo-kill-time`, and `@user` options.
+log), `undo-kill-time`, `keep-zoom`, `animation`, `animation-time` (a frame flying to
+where the keys go), and `@user` options.
 
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`
 and `set -p` are accepted and set the option for the server.

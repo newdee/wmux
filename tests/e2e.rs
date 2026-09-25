@@ -1530,6 +1530,63 @@ async fn repeatable_keys_chain_without_the_prefix() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `animation`: a frame flies to the pane the keys now go to (selecting a
+/// pane, zooming, switching windows), then leaves the screen as it was; off,
+/// there is none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_focus_frame_flies_to_where_the_keys_go() {
+    let h = Harness::start("anim").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "a"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    // Slow enough to be caught between two looks at the screen.
+    h.cli(&["set", "-g", "animation-time", "1500"]).await;
+    let corners = |s: &vt100::Screen| s.contents().matches(['╭', '╮', '╰', '╯']).count();
+    c.prefix('%').await;
+    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    // It moves: frame after frame while it lasts, not one now and then.
+    c.prefix('h').await;
+    let (t0, mut frames) = (Instant::now(), 0);
+    while t0.elapsed() < Duration::from_millis(1000) {
+        if let Ok(Ok(Some(ServerMsg::Output(b)))) =
+            tokio::time::timeout(Duration::from_millis(100), read_frame::<_, ServerMsg>(&mut c.rd)).await
+        {
+            c.screen.process(&b);
+            frames += 1;
+        }
+    }
+    assert!(frames >= 20, "a moving frame, {frames} frames in a second");
+    c.wait_for("gone again", |s| corners(s) == 0).await;
+    c.prefix('l').await;
+    c.wait_for("back right", |s| corners(s) == 0).await;
+    for (what, keys) in [("select-pane", 'h'), ("zoom", 'z'), ("unzoom", 'z')] {
+        c.prefix(keys).await;
+        c.wait_for(what, |s| corners(s) == 4).await;
+        c.wait_for("gone again", |s| corners(s) == 0).await;
+    }
+    // Another window: the frame closes in on it.
+    c.prefix('c').await;
+    c.wait_for("new window", |s| corners(s) == 4).await;
+    c.wait_for("gone again", |s| corners(s) == 0).await;
+    // Off: nothing drawn, however long one looks.
+    h.cli(&["set", "-g", "animation", "off"]).await;
+    c.prefix('p').await;
+    let t0 = Instant::now();
+    let mut frames = 0;
+    while t0.elapsed() < Duration::from_millis(600) {
+        if let Ok(Ok(Some(ServerMsg::Output(b)))) =
+            tokio::time::timeout(Duration::from_millis(50), read_frame::<_, ServerMsg>(&mut c.rd)).await
+        {
+            c.screen.process(&b);
+            frames += 1;
+        }
+        assert_eq!(corners(c.screen.screen()), 0, "no frame with animation off");
+    }
+    assert!(frames > 0, "the window did change");
+    assert!(c.screen.screen().contents().matches("wmux>").count() >= 2, "back on the split window");
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn zoomed_pane_still_navigates_by_direction() {
     let h = Harness::start("zoom-nav").await;
@@ -2827,8 +2884,29 @@ async fn a_killed_pane_or_window_comes_back_with_undo_kill() {
     let (code, _, err) = h.cli(&["split-window", "-d", "-t", "u:0", "cmd.exe", "/c", "ping -n 2 127.0.0.1 >nul"]).await;
     assert_eq!(code, 0, "{err}");
     let short = ids().await.into_iter().find(|i| !old.contains(i)).unwrap();
+    let running = |pid: &str| {
+        let out =
+            std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
+    };
+    // Waited for rather than slept on: a loaded machine is slow to start
+    // and to end processes.
+    let gone = async |pid: &str, what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while running(pid) {
+            assert!(Instant::now() < deadline, "{what}: process {pid} still running");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    let pid_of = async |id: &str| {
+        let out = h.cli(&["display-message", "-p", "-t", id, "#{pane_pid}"]).await.1;
+        out.trim().to_string()
+    };
+    let short_pid = pid_of(&short).await;
     assert_eq!(h.cli(&["kill-pane", "-t", &short]).await.0, 0);
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    gone(&short_pid, "the short job").await;
+    // Its exit reaches the server a moment after the process is gone.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let (code, _, err) = h.cli(&["undo-kill"]).await;
     assert!(code != 0 && err.contains("nothing to undo"), "{err}");
 
@@ -2838,15 +2916,9 @@ async fn a_killed_pane_or_window_comes_back_with_undo_kill() {
     let (id, pid) =
         line.split_once(' ').map(|(i, rest)| (i.to_string(), rest.split(' ').next().unwrap().to_string())).unwrap();
     h.cli(&["kill-pane", "-t", &id]).await;
-    let running = |pid: &str| {
-        let out =
-            std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
-    };
     assert!(running(&pid), "kept, the program still runs");
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    gone(&pid, "past the time, its program is ended").await;
     assert_ne!(h.cli(&["undo-kill"]).await.0, 0);
-    assert!(!running(&pid), "past the time, its program is ended");
     h.cli(&["set", "-g", "undo-kill-time", "0"]).await;
     let id = panes().await.lines().nth(1).unwrap().split(' ').next().unwrap().to_string();
     h.cli(&["kill-pane", "-t", &id]).await;
@@ -3448,7 +3520,7 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     // Edges: nothing typed yet lists the first options; an unknown or
     // ambiguous name, a user @option, and a third word have nothing to offer.
     for (typed, want) in [
-        ("set ", "(autosave base-index default-command default-shell display-time history-limit +"),
+        ("set ", "(animation animation-time autosave base-index default-command default-shell +"),
         ("set zzz o", "(no completion) set zzz o"),
         ("set mo o", "(no completion) set mo o"),
         ("set @my", "(no completion) set @my"),

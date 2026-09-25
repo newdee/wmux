@@ -399,6 +399,29 @@ struct Window {
     alert_silence: bool,
     /// When this window last printed anything (`monitor-silence`).
     last_output: Instant,
+    /// The focus frame moving to where the eye should go (`animation`).
+    anim: Option<Anim>,
+}
+
+/// A focus-frame animation (`animation`): a rounded frame that moves and
+/// grows from where the eye was to where it now is, drawn over content
+/// that is already there, so nothing waits for it.
+#[derive(Clone, Copy, Debug)]
+enum Anim {
+    /// From one rectangle to another: a pane selected, a pane zoomed or
+    /// unzoomed.
+    Move { from: Rect, to: Rect, start: Instant },
+    /// Into a window just switched to: from the whole window down to its
+    /// active pane, or out from the middle when it has only the one.
+    Enter { start: Instant },
+}
+
+impl Anim {
+    fn start(&self) -> Instant {
+        match self {
+            Anim::Move { start, .. } | Anim::Enter { start } => *start,
+        }
+    }
 }
 
 impl Window {
@@ -444,6 +467,23 @@ impl Window {
     }
     fn rect_of(&self, id: PaneId) -> Option<Rect> {
         self.rects.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
+    }
+
+    /// Where pane `id` sits in the layout itself, zoomed or not.
+    fn layout_rect_of(&self, area: Rect, id: PaneId) -> Option<Rect> {
+        let mut rects = Vec::new();
+        self.layout.clone().layout(area, &mut rects);
+        rects.into_iter().find(|(i, _)| *i == id).map(|(_, r)| r)
+    }
+
+    /// Start the focus frame moving from `from` to `to` (both known and
+    /// not the same place).
+    fn animate(&mut self, from: Option<Rect>, to: Option<Rect>) {
+        if let (Some(from), Some(to)) = (from, to)
+            && from != to
+        {
+            self.anim = Some(Anim::Move { from, to, start: Instant::now() });
+        }
     }
     /// The pane's layout cell, border-status row included: what a split
     /// divides. Dividing the drawn rect instead leaves the tree one row
@@ -512,6 +552,7 @@ impl Session {
         if idx < self.windows.len() && idx != self.cur {
             self.last = self.windows.get(self.cur).map(|w| w.id);
             self.cur = idx;
+            self.windows[idx].anim = Some(Anim::Enter { start: Instant::now() });
         }
     }
 }
@@ -769,9 +810,9 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
             // screen is never left behind; a key after a pause is drawn
             // at once.
             if last_render.elapsed() >= FRAME {
-                srv.render_all();
+                // A moving focus frame asks for the next frame by itself.
+                render_due = srv.render_all();
                 last_render = Instant::now();
-                render_due = false;
             } else {
                 render_due = true;
             }
@@ -2600,6 +2641,7 @@ impl Server {
             alert_bell: false,
             alert_silence: false,
             last_output: Instant::now(),
+            anim: None,
         };
         w.relayout(area, self.border_rows());
         let s = self.session_mut(sid).unwrap();
@@ -3542,6 +3584,9 @@ impl Server {
                 };
                 match next {
                     Some(id) if id != w.active => {
+                        // The frame flies from the pane left, or, when the zoom
+                        // moves, from where the new pane sits in the layout.
+                        let from = if w.zoomed && keep_zoom { w.layout_rect_of(area, id) } else { w.rect_of(w.active) };
                         w.last_pane = Some(w.active);
                         w.active = id;
                         // Zoomed, the zoom moves to the pane selected (`keep-zoom`,
@@ -3550,6 +3595,9 @@ impl Server {
                             w.zoomed = keep_zoom;
                             self.relayout_session(sid);
                         }
+                        let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                        let to = w.rect_of(id);
+                        w.animate(from, to);
                         self.fire_hook("after-select-pane", cid);
                         Outcome::Ok
                     }
@@ -3565,6 +3613,9 @@ impl Server {
                 let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(scols, srows);
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                // Zooming: the frame grows from the pane to the window, or
+                // shrinks back into it.
+                let zoom_from = if zoom { w.rect_of(w.active).map(|r| (w.active, r)) } else { None };
                 if zoom {
                     w.zoomed = !w.zoomed && w.panes.len() > 1;
                 } else if let Some(d) = dir {
@@ -3622,6 +3673,11 @@ impl Server {
                     }
                 }
                 self.relayout_session(sid);
+                if let Some((id, from)) = zoom_from {
+                    let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                    let to = w.rect_of(id);
+                    w.animate(Some(from), to);
+                }
                 Outcome::Ok
             }
             Cmd::PaneTitle { target, title, mark, unmark } => {
@@ -3820,6 +3876,7 @@ impl Server {
                     alert_bell: false,
                     alert_silence: false,
                     last_output: Instant::now(),
+                    anim: None,
                 });
                 let idx = s.windows.len() - 1;
                 s.select_window(idx);
@@ -4415,6 +4472,10 @@ impl Server {
                 self.fit_session(cur, None); // one client fewer there
                 if let Some(s) = self.session_mut(sid) {
                     s.last_used = Instant::now();
+                    // Another session: the frame closes in on where the keys go.
+                    if let Some(w) = s.window_mut() {
+                        w.anim = Some(Anim::Enter { start: Instant::now() });
+                    }
                 }
                 Outcome::Ok
             }
@@ -5998,11 +6059,13 @@ impl Server {
         }
         self.chooser_go(cid, sid, Some(wid));
         let keep_zoom = self.opts.keep_zoom;
+        let area = self.session(sid).map(|s| self.window_area(s.cols, s.rows)).unwrap_or_default();
         if let Some(s) = self.session_mut(sid)
             && let Some(w) = s.windows.iter_mut().find(|w| w.id == wid)
             && w.active != pid
             && w.pane(pid).is_some()
         {
+            let from = if w.zoomed && keep_zoom { w.layout_rect_of(area, pid) } else { w.rect_of(w.active) };
             w.last_pane = Some(w.active);
             w.active = pid;
             // As select-pane: a zoomed window zooms the pane gone to (or,
@@ -6011,6 +6074,10 @@ impl Server {
             if w.zoomed {
                 w.zoomed = keep_zoom;
                 self.relayout_session(sid);
+            }
+            if let Some(w) = self.session_mut(sid).and_then(|s| s.windows.iter_mut().find(|w| w.id == wid)) {
+                let to = w.rect_of(pid);
+                w.animate(from, to);
             }
             self.fire_hook("after-select-pane", Some(cid));
         }
@@ -6304,8 +6371,10 @@ impl Server {
         // a pane back puts it in copy mode, whose keys go to the active
         // pane (tmux's WheelUpPane binding selects the pane first too).
         if (pressed != 0 || wheel.is_some()) && mouse_opt && pid != w.active {
+            let from = w.rect_of(w.active);
             w.last_pane = Some(w.active);
             w.active = pid;
+            w.animate(from, Some(rect));
         }
         let pane = w.pane_mut(pid).unwrap();
         let app_mouse = pane.screen().mouse_protocol_mode();
@@ -6460,7 +6529,65 @@ impl Server {
 
     // ---------------------------------------------------------------- render
 
-    fn render_all(&mut self) {
+    /// Where the focus frame of session `spos`'s window is now, while it
+    /// moves (`animation`).
+    fn anim_frame(&self, spos: usize) -> Option<Rect> {
+        if !self.opts.animation || self.opts.animation_time == 0 {
+            return None;
+        }
+        let s = &self.sessions[spos];
+        let w = s.windows.get(s.cur)?;
+        let a = w.anim?;
+        let t = a.start().elapsed().as_secs_f32() * 1000.0 / self.opts.animation_time as f32;
+        if t >= 1.0 {
+            return None;
+        }
+        let (from, to) = match a {
+            Anim::Move { from, to, .. } => (from, to),
+            // Into a window: from all of it down to the active pane, or,
+            // with nothing smaller to close in on, out from the middle.
+            Anim::Enter { .. } => {
+                let area = self.window_area(s.cols, s.rows);
+                let to = w.rect_of(w.active)?;
+                let from = if to == area || w.rects.len() < 2 {
+                    Rect { x: area.x + area.w / 4, y: area.y + area.h / 4, w: area.w / 2, h: area.h / 2 }
+                } else {
+                    area
+                };
+                (from, to)
+            }
+        };
+        // On the borders around a pane, where there are any, rather than on
+        // its text; at the window's edge, just inside it.
+        let area = self.window_area(s.cols, s.rows);
+        let around = |r: Rect| {
+            let x = r.x.saturating_sub(1).max(area.x);
+            let y = r.y.saturating_sub(1).max(area.y);
+            let x1 = (r.x + r.w + 1).min(area.x + area.w);
+            let y1 = (r.y + r.h + 1).min(area.y + area.h);
+            Rect { x, y, w: x1.saturating_sub(x), h: y1.saturating_sub(y) }
+        };
+        Some(render::frame_at(around(from), around(to), t))
+    }
+
+    /// Whether a window on some client's screen has its focus frame
+    /// moving, so the next frame is due soon. A little past the end, so
+    /// the frame after the last one takes it off the screen.
+    fn animating(&self) -> bool {
+        if !self.opts.animation || self.opts.animation_time == 0 {
+            return false;
+        }
+        let last = Duration::from_millis(self.opts.animation_time) + FRAME * 2;
+        self.clients
+            .values()
+            .filter_map(|c| c.session)
+            .filter_map(|sid| self.session(sid).and_then(|s| s.windows.get(s.cur)))
+            .any(|w| w.anim.is_some_and(|a| a.start().elapsed() < last))
+    }
+
+    /// Draw every attached client; true while an animation wants the next
+    /// frame soon.
+    fn render_all(&mut self) -> bool {
         let now = Instant::now();
         self.sweep_alerts();
         // display-time 0 means "until the next key press" (see handle_key).
@@ -6479,6 +6606,7 @@ impl Server {
         for cid in ids {
             self.render_client(cid);
         }
+        self.animating()
     }
 
     fn render_client(&mut self, cid: ClientId) {
@@ -6684,6 +6812,14 @@ impl Server {
                     render::draw_stamp(&mut grid, *rect, *row, &stamp_parts(m, now, true));
                 }
             }
+        }
+        // `animation`: the focus frame on its way to where the keys now go.
+        if let Some(r) = self.anim_frame(spos) {
+            let style = render::Style {
+                bold: true,
+                ..render::Style::colors(self.opts.pane_border_active_fg, vt100::Color::Default)
+            };
+            render::draw_frame(&mut grid, r, style);
         }
         // `clock-mode`: a big clock over the panes that asked for one.
         {

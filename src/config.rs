@@ -99,6 +99,12 @@ pub struct Options {
     /// (the zoom moves to it); only `resize-pane -Z` (prefix z) undoes it.
     /// Off: selecting unzooms, as tmux does.
     pub keep_zoom: bool,
+    /// A frame flies to the pane the keys now go to: on selecting a pane,
+    /// zooming, and switching windows or sessions. Drawn over content that
+    /// is already in place, so nothing waits for it.
+    pub animation: bool,
+    /// How long it takes, in milliseconds; 0 is the same as off.
+    pub animation_time: u64,
 }
 
 /// Options `show-options` can print, in display order.
@@ -147,6 +153,8 @@ pub const SHOWABLE: &[&str] = &[
     "log-history-dir",
     "undo-kill-time",
     "keep-zoom",
+    "animation",
+    "animation-time",
 ];
 
 impl Default for Options {
@@ -202,6 +210,8 @@ impl Default for Options {
             log_history_dir: String::new(),
             undo_kill_time: 10,
             keep_zoom: true,
+            animation: true,
+            animation_time: 160,
         }
     }
 }
@@ -286,6 +296,8 @@ fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
 /// Every option wmux actually does something with, plus `synchronize-panes`
 /// (which the server handles itself). Used to expand an abbreviation.
 pub const KNOWN: &[&str] = &[
+    "animation",
+    "animation-time",
     "autosave",
     "base-index",
     "default-command",
@@ -359,6 +371,7 @@ pub const ACCEPTED: &[&str] = &[
 
 /// Options that are on or off, so `set -g mouse` with no value flips them.
 const BOOLEAN: &[&str] = &[
+    "animation",
     "autosave",
     "keep-zoom",
     "log-history",
@@ -551,6 +564,8 @@ impl Options {
             "pane-timestamps" => self.pane_timestamps = parse_bool(value)?,
             "log-history" => self.log_history = parse_bool(value)?,
             "keep-zoom" => self.keep_zoom = parse_bool(value)?,
+            "animation" => self.animation = parse_bool(value)?,
+            "animation-time" => self.animation_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "log-history-days" => self.log_history_days = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "log-history-dir" => self.log_history_dir = value.to_string(),
             "undo-kill-time" => self.undo_kill_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
@@ -649,6 +664,8 @@ impl Options {
             "pane-timestamps" => onoff(self.pane_timestamps),
             "log-history" => onoff(self.log_history),
             "keep-zoom" => onoff(self.keep_zoom),
+            "animation" => onoff(self.animation),
+            "animation-time" => self.animation_time.to_string(),
             "log-history-days" => self.log_history_days.to_string(),
             "undo-kill-time" => self.undo_kill_time.to_string(),
             "log-history-dir" => {

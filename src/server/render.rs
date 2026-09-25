@@ -652,6 +652,50 @@ pub fn draw_stamp(g: &mut Grid, rect: Rect, row: u16, parts: &[(String, Style)])
     true
 }
 
+/// The rectangle a focus frame is at, `t` of the way (0..=1) from `from`
+/// to `to`, eased out: quick to leave, gentle to arrive.
+pub fn frame_at(from: Rect, to: Rect, t: f32) -> Rect {
+    let t = t.clamp(0.0, 1.0);
+    let e = 1.0 - (1.0 - t).powi(3);
+    let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * e).round() as u16;
+    Rect { x: lerp(from.x, to.x), y: lerp(from.y, to.y), w: lerp(from.w, to.w), h: lerp(from.h, to.h) }
+}
+
+/// A focus frame: a rounded outline on the edge of `r`, over whatever is
+/// there. A wide character it cuts in half loses the other half too, so no
+/// half character is left to shift the row.
+pub fn draw_frame(g: &mut Grid, r: Rect, style: Style) {
+    if r.w < 2 || r.h < 2 {
+        return;
+    }
+    let (x1, y1) = (r.x + r.w - 1, r.y + r.h - 1);
+    let mut put = |x: u16, y: u16, s: &str| {
+        if x >= g.cols || y >= g.rows {
+            return;
+        }
+        let c = g.get(x, y);
+        if c.wide {
+            g.set(x + 1, y, Cell::blank(c.style));
+        } else if c.cont && x > 0 {
+            let head = g.get(x - 1, y).style;
+            g.set(x - 1, y, Cell::blank(head));
+        }
+        g.set(x, y, Cell::new(s, false, style));
+    };
+    for x in r.x + 1..x1 {
+        put(x, r.y, "─");
+        put(x, y1, "─");
+    }
+    for y in r.y + 1..y1 {
+        put(r.x, y, "│");
+        put(x1, y, "│");
+    }
+    put(r.x, r.y, "╭");
+    put(x1, r.y, "╮");
+    put(r.x, y1, "╰");
+    put(x1, y1, "╯");
+}
+
 pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {
     let style = Style::colors(Color::Idx(0), if active { Color::Idx(2) } else { Color::Idx(4) });
     let text = number.to_string();
@@ -748,6 +792,46 @@ pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_focus_frame_moves_and_stays_whole() {
+        let a = Rect { x: 0, y: 0, w: 10, h: 4 };
+        let b = Rect { x: 20, y: 10, w: 40, h: 12 };
+        assert_eq!(frame_at(a, b, 0.0), a);
+        assert_eq!(frame_at(a, b, 1.0), b);
+        assert_eq!(frame_at(a, b, 7.0), b, "past the end stays at the end");
+        // Eased out: more than half way at half time, and never back.
+        let mid = frame_at(a, b, 0.5);
+        assert!(mid.x > 10 && mid.w > 25, "{mid:?}");
+        let xs: Vec<u16> = (0..=10).map(|i| frame_at(a, b, i as f32 / 10.0).x).collect();
+        assert!(xs.windows(2).all(|p| p[0] <= p[1]), "{xs:?}");
+        // Too small to draw, or off the grid: nothing, no panic.
+        let mut g = Grid::new(8, 4);
+        let before = g.clone();
+        for r in [Rect { x: 0, y: 0, w: 1, h: 3 }, Rect { x: 0, y: 0, w: 3, h: 1 }, Rect { x: 0, y: 0, w: 0, h: 0 }] {
+            draw_frame(&mut g, r, Style::default());
+        }
+        assert_eq!(g, before);
+        draw_frame(&mut g, Rect { x: 6, y: 2, w: 10, h: 10 }, Style::default());
+        assert_eq!(g.get(6, 2).text(), "╭");
+        // Over a wide character: its other half goes too, none is left
+        // half drawn.
+        let mut g = Grid::new(8, 3);
+        g.put_str(0, 0, "中文字", Style::default(), 8);
+        draw_frame(&mut g, Rect { x: 1, y: 0, w: 4, h: 3 }, Style::default());
+        let row: Vec<(String, bool, bool)> =
+            (0..8).map(|x| (g.get(x, 0).text().to_string(), g.get(x, 0).wide, g.get(x, 0).cont)).collect();
+        for (x, (_, wide, _)) in row.iter().enumerate() {
+            if *wide {
+                assert!(row.get(x + 1).is_some_and(|c| c.2), "a wide cell keeps its second half: {row:?}");
+            }
+        }
+        for (x, (_, _, cont)) in row.iter().enumerate() {
+            if *cont {
+                assert!(x > 0 && row[x - 1].1, "a second half keeps its first: {row:?}");
+            }
+        }
+    }
 
     #[test]
     fn a_stamp_goes_only_into_blank_cells_that_fit_it() {

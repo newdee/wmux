@@ -187,6 +187,12 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
 | `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
+When the keys move somewhere else (another pane selected with a key or the
+mouse, a pane zoomed or unzoomed, another window or session), a frame flies
+there from where they were, in 160 ms. The content is already in place
+underneath, so nothing waits for it. `set -g animation off` turns it off,
+and `animation-time` sets the milliseconds.
+
 In copy mode: `h` `j` `k` `l` and the arrows move, `w` `b` `e` walk words,
 `0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, `PageUp` /
 `PageDown` and `C-b` / `C-f` page, `C-u` / `C-d` half-page (with `C-b` as
@@ -427,6 +433,7 @@ set -g log-history on             # keep what panes print, a file per pane per d
 set -g log-history-days 30        # for how long; 0 keeps everything (log-history-dir moves the files)
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
+set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D
