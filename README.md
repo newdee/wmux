@@ -48,7 +48,10 @@ wmux web
 
 prints a QR code in the terminal. Scan it with the phone's camera (same
 network) and the browser opens a page that lists every pane with the program
-running in it. Tap one to see its screen, colours and all, kept up to date;
+running in it, and with the window's alert marks from the status line (`#`
+printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so
+you can see which job finished. Tap one to see its screen, colours and all;
+wmux sends it again whenever it changes, so there is no refresh to wait for;
 type into it from the box at the bottom, or with the row of keys the phone
 keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
 + menu splits the pane, opens a window or closes the pane. Everything runs
@@ -424,7 +427,10 @@ Variables: `session_name` `session_id` `session_windows` `session_attached`
 plus `git_branch` (the branch of the pane's directory, read from `.git`,
 empty outside a repository), `pane_current_path_short` (`~` for home) and
 `pane_pid_command` (the program the pane is running right now, `cargo`
-during a build). The default `status-right` uses them:
+during a build), and `pane_output_count` (how many times the pane has
+printed; a script can compare two readings to tell whether anything
+changed, which `pane_activity`, in whole seconds, cannot). The default
+`status-right` uses them:
 `#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU
 #{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT
 #{battery_percentage},} | %H:%M`; `set -g status-right ...` replaces it,

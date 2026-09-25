@@ -1715,6 +1715,7 @@ impl Server {
         w.last_output = Instant::now();
         if let Some(p) = w.panes.iter_mut().find(|p| p.id == pid) {
             p.last_output = w.last_output;
+            p.output_count = p.output_count.wrapping_add(1);
         }
         w.alert_silence = false;
         if current {
@@ -4606,6 +4607,7 @@ impl Server {
             ctx.pane_pid = p.pid;
             ctx.pane_start_time = unix(p.spawned_at);
             ctx.pane_activity = unix(p.last_output);
+            ctx.pane_output_count = p.output_count;
             ctx.pane_dead_time = p.died_at.map(unix).unwrap_or(0);
             ctx.pane_last = w.last_pane == Some(pid);
             ctx.pane_mode = if p.copy.is_some() { "copy-mode".into() } else { String::new() };

@@ -222,11 +222,14 @@ times and flags (`session_activity` `session_last_attached` `window_activity` `w
 `cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`
 `battery_charging` `uptime` `git_branch` `pane_current_path_short`
 `pane_pid_command` (tmux users get these from plugins such as tmux-cpu
-and tmux-battery). Modifiers: `=N:` `=-N:` `b:` `d:` `t:` `s/a/b/:`, nestable.
-Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`, `#{?name!=value,…}`.
-Not there: tmux's `#{||:…}` / `#{&&:…}`, `#{m:pattern,var}`, `#{e|…}`
-arithmetic, `#{l:…}` literals, `#{a:…}`, `#{C:…}` search, loops
-(`#{S:…}` `#{W:…}` `#{P:…}`), and the client/cursor/mouse variables.
+and tmux-battery), and `pane_output_count` (how many times the pane has
+printed, which `wmux web` watches). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
+`s/a/b/:`, nestable. Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`,
+`#{?name!=value,…}`; comparisons `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}`
+`#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and
+`#{m:pattern,text}` (`m/i:` ignores case).
+Not there: `#{e|…}` arithmetic, `#{l:…}` literals, `#{a:…}`, `#{C:…}`
+search, loops (`#{S:…}` `#{W:…}` `#{P:…}`), and the mouse variables.
 Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
 `terminal-overrides`, `focus-events`, `set-clipboard`, `renumber-windows`,
 `allow-rename`, `automatic-rename`, `window-status-current-style`,

@@ -47,6 +47,8 @@ $shell = @("pwsh.exe", "-NoLogo", "-NoProfile", "-NoExit", "-File", $prompt)
 $socket = "phone-shots"
 & $w -L $socket kill-server 2>$null
 & $w -L $socket new -d -s dev -n build -x 70 -y 40 @shell
+# A background window that prints gets its alert mark, in the list too.
+& $w -L $socket set -g monitor-activity on
 & $w -L $socket split-window -v -t dev @shell
 & $w -L $socket new-window -d -t dev -n logs @shell
 & $w -L $socket new -d -s ops -n deploy -x 70 -y 40 @shell

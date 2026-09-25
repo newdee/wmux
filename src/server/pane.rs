@@ -213,6 +213,10 @@ pub struct Pane {
     pub spawned_at: std::time::Instant,
     /// When it last printed anything (`jobs`, idle time).
     pub last_output: std::time::Instant,
+    /// How many times it has printed (`#{pane_output_count}`): unlike a
+    /// time, it changes with every output, so a watcher can tell whether
+    /// the screen may have changed without reading it.
+    pub output_count: u64,
     /// When its program exited, while `remain-on-exit` keeps the pane
     /// (`#{pane_dead_time}`; `jobs` stops the clock there).
     pub died_at: Option<std::time::Instant>,
@@ -481,6 +485,7 @@ impl Pane {
             pid,
             spawned_at: std::time::Instant::now(),
             last_output: std::time::Instant::now(),
+            output_count: 0,
             died_at: None,
         })
     }

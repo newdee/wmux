@@ -2917,6 +2917,82 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `wmux web` pushes a watched pane's screen when it changes, says when the
+/// pane is gone, and the list carries each window's alert marks.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = Harness::start("webpush").await;
+    h.cli(&["set", "-g", "monitor-activity", "on"]).await;
+    h.cli(&["new", "-d", "-s", "p"]).await;
+    h.cli(&["new-window", "-d", "-t", "p"]).await;
+    h.wait_capture("p:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("p:1", "shell prompt", |t| t.contains("wmux>")).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let key = "push-test-key";
+    tokio::spawn(wmux::web::serve(listener, std::sync::Arc::new(wmux::web::State::new(&h.socket, key, false, false))));
+    let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+    let ids: Vec<String> = list.split("\"id\":\"%").skip(1).map(|s| s.split('"').next().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 2, "{list}");
+    let (front, back) = (format!("%25{}", ids[0]), format!("%25{}", ids[1]));
+
+    // Watching needs the key too.
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    s.write_all(format!("GET /api/watch?pane={front} HTTP/1.1\r\nX-Wmux-Key: nope\r\n\r\n").as_bytes()).await.unwrap();
+    let mut refused = String::new();
+    s.read_to_string(&mut refused).await.unwrap();
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+
+    // The stream opens with the screen as it is.
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    s.write_all(format!("GET /api/watch?pane={front} HTTP/1.1\r\nX-Wmux-Key: {key}\r\n\r\n").as_bytes()).await.unwrap();
+    let mut got = String::new();
+    let mut buf = [0u8; 8192];
+    let mut read_until =
+        async |s: &mut tokio::net::TcpStream, got: &mut String, what: &str, pred: &dyn Fn(&str) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !pred(got) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "timeout waiting for {what}: {got}");
+                match tokio::time::timeout(left, s.read(&mut buf)).await {
+                    Ok(Ok(0)) | Err(_) => panic!("stream ended waiting for {what}: {got}"),
+                    Ok(Ok(n)) => got.push_str(&String::from_utf8_lossy(&buf[..n])),
+                    Ok(Err(e)) => panic!("{e}"),
+                }
+            }
+        };
+    read_until(&mut s, &mut got, "the first screen", &|g| g.contains("text/event-stream") && g.contains("data: "))
+        .await;
+    assert!(got.contains("wmux>"), "{got}");
+
+    // Something typed shows up without asking again, and soon.
+    let sent = Instant::now();
+    http(addr, "POST", &format!("/api/send?pane={front}"), key, "echo pushed-9").await;
+    http(addr, "POST", &format!("/api/send?pane={front}&key=Enter"), key, "").await;
+    read_until(&mut s, &mut got, "the pushed output", &|g| g.contains("pushed-9\\n")).await;
+    let latency = sent.elapsed();
+    assert!(latency < Duration::from_secs(3), "pushed after {latency:?}");
+
+    // A background window that prints is marked in the list.
+    h.cli(&["send-keys", "-t", "p:1", "echo busy", "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+        if list.contains("\"activity\":true") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no activity mark: {list}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Closing the watched pane ends the stream with `gone`.
+    h.cli(&["kill-pane", "-t", &front.replace("%25", "%")]).await;
+    read_until(&mut s, &mut got, "gone", &|g| g.contains("event: gone")).await;
+    let _ = back;
+    h.cli(&["kill-server"]).await;
+}
+
 /// The prefix handed over as a bare byte (character 0x02, no Ctrl flag, no
 /// key code), as hosts that pass input on as bytes do: it is still C-b.
 #[tokio::test(flavor = "multi_thread")]

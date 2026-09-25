@@ -14,7 +14,7 @@
 <style>
   :root {
     --bg: #1a1b26; --bar: #16161e; --card: #24283b; --line: #3b4261;
-    --fg: #c0caf5; --muted: #565f89; --accent: #7aa2f7; --green: #9ece6a; --red: #f7768e;
+    --fg: #c0caf5; --muted: #565f89; --accent: #7aa2f7; --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
     --vh: 100dvh;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -49,6 +49,13 @@
   .pane.dead .dot { background: var(--red); }
   .pane .what { flex: 1; min-width: 0; }
   .pane .cmd { font-weight: 600; }
+  /* The window's alerts, the marks the status line shows: # printed, ! bell, ~ silent. */
+  .pane.alert { border-color: var(--yellow); }
+  .marks { display: flex; gap: 4px; flex: none; }
+  .mark { font: 600 13px ui-monospace, Menlo, Consolas, monospace; border-radius: 6px; padding: 2px 7px; }
+  .mark.activity { color: var(--bar); background: var(--yellow); }
+  .mark.bell { color: var(--bar); background: var(--red); }
+  .mark.silence { color: var(--bar); background: var(--muted); }
   .pane .where { color: var(--muted); font-size: 13px; }
   .empty, .error { margin: 24px 16px; color: var(--muted); }
   .error { color: var(--red); }
@@ -165,10 +172,14 @@ function renderList() {
   let html = "", last = null;
   for (const p of panes) {
     if (p.session !== last) { html += `<div class="session">${esc(p.session)}</div>`; last = p.session; }
-    const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : ""].join(" ");
+    const marks = (p.activity ? `<span class="mark activity" title="${t("printed", "有输出")}">#</span>` : "") +
+      (p.bell ? `<span class="mark bell" title="${t("bell", "响铃")}">!</span>` : "") +
+      (p.silence ? `<span class="mark silence" title="${t("silent", "没动静")}">~</span>` : "");
+    const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : "", marks ? "alert" : ""].join(" ");
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
       `<div class="cmd">${esc(p.command || "?")}</div>` +
-      `<div class="where">${esc(p.windowName)} · ${p.window}.${p.pane} · ${p.cols}×${p.rows}</div></span></button>`;
+      `<div class="where">${esc(p.windowName)} · ${p.window}.${p.pane} · ${p.cols}×${p.rows}</div></span>` +
+      (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
   }
   $("list").innerHTML = html;
 }
@@ -190,11 +201,12 @@ function open(id, push) {
   $("back").classList.remove("hidden");
   $("plus").classList.toggle("hidden", readOnly); $("footer").classList.toggle("hidden", readOnly);
   lastText = ""; $("screen").innerHTML = ""; stick = true;
-  fitFont(); tick();
+  stopWatch(); fitFont(); tick();
 }
 
 function showList(push) {
   current = null;
+  stopWatch();
   if (push) history.pushState({}, "");
   $("title").textContent = "wmux";
   $("screen").classList.add("hidden"); $("list").classList.remove("hidden");
@@ -227,20 +239,64 @@ $("main").addEventListener("scroll", () => {
   const m = $("main"); stick = m.scrollHeight - m.scrollTop - m.clientHeight < 40;
 });
 
+function showScreen(text) {
+  if (text === lastText) return;
+  lastText = text;
+  // The rows under the last line with something on it are empty: without
+  // them, following the bottom shows the last output, not blank rows.
+  const lines = text.split("\n");
+  const blank = (l) => !l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim();
+  while (lines.length && blank(lines[lines.length - 1])) lines.pop();
+  $("screen").innerHTML = ansiToHtml(lines.join("\n"));
+  if (stick) $("main").scrollTop = $("main").scrollHeight;
+}
+const showError = (msg) => ($("screen").innerHTML = `<span style="color:var(--red)">${esc(msg)}</span>`);
+
+// Polling, for a browser that cannot read a response as it arrives.
 async function loadScreen() {
   try {
-    const { text } = await (await api(`/api/screen?pane=${encodeURIComponent(current)}&history=300`)).json();
-    if (text === lastText) return;
-    lastText = text;
-    // The rows under the last line with something on it are empty: without
-    // them, following the bottom shows the last output, not blank rows.
-    const lines = text.split("\n");
-    const blank = (l) => !l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim();
-    while (lines.length && blank(lines[lines.length - 1])) lines.pop();
-    $("screen").innerHTML = ansiToHtml(lines.join("\n"));
-    if (stick) $("main").scrollTop = $("main").scrollHeight;
-  } catch (e) {
-    $("screen").innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    showScreen((await (await api(`/api/screen?pane=${encodeURIComponent(current)}&history=300`)).json()).text);
+  } catch (e) { showError(e.message); }
+}
+
+// The screen, pushed: one long response that carries the screen again each
+// time it changes. Reconnects after a drop; stops when the pane is left or
+// the page is hidden (which saves the phone's battery).
+let watcher = null, streaming = true;
+function stopWatch() { if (watcher) { watcher.abort(); watcher = null; } }
+async function watchScreen() {
+  stopWatch();
+  const ctl = new AbortController(); watcher = ctl;
+  const id = current;
+  while (!ctl.signal.aborted && current === id) {
+    try {
+      const r = await fetch(`/api/watch?pane=${encodeURIComponent(id)}&history=300`,
+        { headers: { "X-Wmux-Key": key }, cache: "no-store", signal: ctl.signal });
+      if (r.status === 401) { showError(t("This page needs the code again: run `wmux web` and scan it.", "需要重新扫码：在电脑上运行 `wmux web` 再扫一次。")); return; }
+      if (!r.ok) { showError((await r.text()) || r.statusText); throw new Error("retry"); }
+      if (!r.body || !r.body.getReader) {
+        // This browser cannot read a response as it arrives: ask every
+        // half second instead.
+        streaming = false; watcher = null; tick(); return;
+      }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let end;
+        while ((end = buf.indexOf("\n\n")) >= 0) {
+          const ev = buf.slice(0, end); buf = buf.slice(end + 2);
+          if (ev.startsWith("event: gone")) { showError(t("This pane is gone.", "这个 pane 已经关了。")); ctl.abort(); return; }
+          const data = ev.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
+          if (data) showScreen(JSON.parse(data).text);
+        }
+      }
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+    }
+    await new Promise((res) => setTimeout(res, 1000)); // then connect again
   }
 }
 
@@ -249,7 +305,7 @@ async function send(query, body) {
   if (!current) return;
   try {
     await api(`/api/send?pane=${encodeURIComponent(current)}${query}`, { method: "POST", body: body || "" });
-    setTimeout(loadScreen, 120);
+    if (!streaming) setTimeout(loadScreen, 120); // pushed otherwise
   } catch (e) { toast(e.message); }
 }
 const sendKey = (k) => (k.startsWith("=") ? send("", k.slice(1)) : send(`&key=${encodeURIComponent(k)}`));
@@ -338,15 +394,18 @@ function ansiToHtml(text) {
   return out;
 }
 
-// ---- Refresh: the pane often, the list now and then, nothing when hidden ----
+// ---- Refresh: a pane is pushed (or polled where it cannot be); the list is
+// asked for every two seconds; nothing while the page is hidden ----
 async function tick() {
   clearTimeout(timer);
-  if (document.visibilityState === "visible") {
-    if (current) await loadScreen(); else await loadList();
-  }
+  if (document.visibilityState !== "visible") return;
+  if (current && streaming) { if (!watcher) watchScreen(); return; }
+  if (current) await loadScreen(); else await loadList();
   timer = setTimeout(tick, current ? 500 : 2000);
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tick(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") tick(); else { clearTimeout(timer); stopWatch(); }
+});
 
 // The keyboard takes part of the screen: keep the input above it.
 if (window.visualViewport) {

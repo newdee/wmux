@@ -323,8 +323,112 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
             return Ok(());
         }
     };
+    // The one answer that is not a single response: a pane's screen, sent
+    // again each time it changes, for as long as the phone keeps looking.
+    if req.method == "GET" && req.path == "/api/watch" {
+        if let Some(refused) = check_key(&req, peer, state) {
+            return write_response(&mut stream, &refused).await;
+        }
+        let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
+            return write_response(&mut stream, &Response::text(400, "pane: %N")).await;
+        };
+        let history = req.param("history").and_then(|h| h.parse().ok()).unwrap_or(0).min(MAX_HISTORY);
+        return watch(&mut stream, state, pane, history).await;
+    }
     let resp = handle(&req, peer, state).await;
     write_response(&mut stream, &resp).await
+}
+
+/// How often a watched pane is asked whether it changed. The question is a
+/// few bytes over the local pipe; the screen is read only when the answer
+/// changes.
+const WATCH_EVERY: Duration = Duration::from_millis(100);
+/// A comment line now and then, so a phone that went away is noticed (the
+/// write fails) and a proxy does not close a quiet connection.
+const WATCH_PING: Duration = Duration::from_secs(15);
+/// The phone opens a new stream after this; nothing lives forever.
+const WATCH_LONGEST: Duration = Duration::from_secs(30 * 60);
+
+/// Stream a pane's screen as server-sent events: `data: {"text":...}`
+/// whenever it may have changed (its output count or size moved), a
+/// comment to keep the line alive, and `event: gone` when the pane is.
+async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32) -> Result<()> {
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n\
+                X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
+    stream.write_all(head.as_bytes()).await?;
+    let query = |argv: Vec<String>| async move {
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        crate::client::query(&state.socket, &argv).await
+    };
+    let started = std::time::Instant::now();
+    let mut last_stamp = String::new();
+    let mut last_write = std::time::Instant::now();
+    while started.elapsed() < WATCH_LONGEST {
+        let stamp = match query(vec![
+            "display-message".into(),
+            "-p".into(),
+            "-t".into(),
+            pane.into(),
+            "#{pane_output_count} #{pane_width}x#{pane_height} #{pane_dead}".into(),
+        ])
+        .await
+        {
+            Ok((0, s, _)) => s,
+            // The pane (or the server) is gone: say so and end.
+            _ => {
+                stream.write_all(b"event: gone\ndata: {}\n\n").await.ok();
+                break;
+            }
+        };
+        if stamp != last_stamp {
+            let mut argv = vec!["capture-pane".into(), "-p".into(), "-e".into(), "-t".into(), pane.to_string()];
+            if history > 0 {
+                argv.extend(["-S".into(), format!("-{history}")]);
+            }
+            if let Ok((0, text, _)) = query(argv).await {
+                let event = format!("data: {{\"text\":{}}}\n\n", json_str(&text));
+                if stream.write_all(event.as_bytes()).await.is_err() {
+                    return Ok(()); // the phone went away
+                }
+                last_stamp = stamp;
+                last_write = std::time::Instant::now();
+            }
+        } else if last_write.elapsed() >= WATCH_PING {
+            if stream.write_all(b": ping\n\n").await.is_err() {
+                return Ok(());
+            }
+            last_write = std::time::Instant::now();
+        }
+        // Wait for the next look, and meanwhile notice at once when the phone
+        // closes the connection (it sends nothing more, so a read ending is
+        // that), rather than at the next write, up to WATCH_PING later.
+        let mut probe = [0u8; 64];
+        tokio::select! {
+            _ = tokio::time::sleep(WATCH_EVERY) => {}
+            r = stream.read(&mut probe) => {
+                if matches!(r, Ok(0) | Err(_)) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    stream.shutdown().await.ok();
+    Ok(())
+}
+
+/// None when the request carries the key; otherwise the refusal to send.
+/// The first request from each address, let in or not, is announced in the
+/// terminal.
+fn check_key(req: &Request, peer: IpAddr, state: &State) -> Option<Response> {
+    let ok = req.key.as_deref().is_some_and(|k| same_key(k, &state.key));
+    if state.announce && state.seen.lock().map(|mut s| s.insert((peer, ok))).unwrap_or(false) {
+        if ok {
+            println!("{peer} connected");
+        } else {
+            println!("{peer} refused: no key or a wrong one");
+        }
+    }
+    (!ok).then(|| Response::text(401, "wrong key: scan the code again"))
 }
 
 async fn write_response(stream: &mut TcpStream, r: &Response) -> Result<()> {
@@ -365,16 +469,8 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     if !req.path.starts_with("/api/") {
         return Response::text(404, "not found");
     }
-    let ok = req.key.as_deref().is_some_and(|k| same_key(k, &state.key));
-    if state.announce && state.seen.lock().map(|mut s| s.insert((peer, ok))).unwrap_or(false) {
-        if ok {
-            println!("{peer} connected");
-        } else {
-            println!("{peer} refused: no key or a wrong one");
-        }
-    }
-    if !ok {
-        return Response::text(401, "wrong key: scan the code again");
+    if let Some(refused) = check_key(req, peer, state) {
+        return refused;
     }
     if get && matches!(req.path.as_str(), "/api/send" | "/api/action") {
         return Response::text(405, "POST");
@@ -396,7 +492,8 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             const FIELDS: &str = "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}\t\
                                   #{?pane_pid_command,#{pane_pid_command},#{pane_current_command}}\t\
                                   #{pane_active}\t#{window_active}\t#{pane_width}\t\
-                                  #{pane_height}\t#{pane_dead}\t#{session_attached}";
+                                  #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
+                                  #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}";
             match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
@@ -496,13 +593,16 @@ fn panes_json(out: &str) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 12 {
+            if f.len() < 15 {
                 return None;
             }
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
+            // The window's alerts, as the status line marks them: it printed
+            // (#), rang (!), or went quiet (~) while nobody looked.
             Some(format!(
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
-                 \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{}}}",
+                 \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
+                 \"activity\":{},\"bell\":{},\"silence\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -514,7 +614,10 @@ fn panes_json(out: &str) -> String {
                 num(f[8]),
                 num(f[9]),
                 f[10] == "1",
-                num(f[11]) > 0
+                num(f[11]) > 0,
+                f[12] == "1",
+                f[13] == "1",
+                f[14] == "1"
             ))
         })
         .collect();
@@ -639,10 +742,10 @@ mod tests {
     fn the_code_and_the_pane_list() {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
-        let json = panes_json("%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\nshort line\n");
+        let json = panes_json("%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\nshort line\n");
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true}]"#
         );
         assert_eq!(panes_json(""), "[]");
     }
