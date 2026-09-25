@@ -9,7 +9,7 @@
       content="A tmux-style terminal multiplexer for Windows. Split panes, detach and reattach, and pick a session back up after a reboot. Native ConPTY, no Cygwin, no WSL required."
     />
     <meta property="og:title" content="wmux" />
-    <meta property="og:description" content="tmux, on Windows. Panes, sessions that survive the terminal, and your tmux muscle memory." />
+    <meta property="og:description" content="tmux for Windows: split panes, sessions that outlive the terminal, and the same keys and commands as tmux." />
     <meta property="og:image" content="img/panes.png" />
     <meta name="theme-color" content="#0d1017" />
     <!-- fonts ship with the page: a stylesheet from Google's CDN blocks
@@ -42,9 +42,9 @@
         <span class="eyebrow" data-i18n="hero.eyebrow">Open source · Native Windows</span>
         <h1 data-i18n="hero.title">tmux, on Windows.</h1>
         <p class="lede" data-i18n="hero.lede">
-          Split a terminal into panes, walk between them with <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>,
-          close the window and find everything still running when you come back, or check on it from your
-          phone. PowerShell, cmd and WSL all live inside panes, with every keystroke arriving intact.
+          Split a terminal into panes and move between them with <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
+          Close the window and everything keeps running; attach again later, or check on it from your phone.
+          PowerShell, cmd and WSL run inside panes, and every keystroke reaches them unchanged.
         </p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/wmux/releases/latest" data-i18n="hero.download">Download for Windows</a>
@@ -83,9 +83,9 @@
           <figure class="shot"><img src="img/sync.png" alt="The same three panes after one echo typed with synchronize-panes on: the line ran in every pane, S on the status line" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c1.p1"><b>Real terminals.</b> Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave exactly as they do outside wmux.</li>
-          <li data-i18n="c1.p2"><b>Mouse too.</b> Click a pane to focus it, drag a border to resize, drag to select and the text lands on the Windows clipboard.</li>
-          <li data-i18n="c1.p3"><b>Type into all of them.</b> <kbd>C-b S</kbd>, or <code>:set sync</code> (Tab completes the name), types every key into every pane of the window; <code>split-window -N 3</code> makes three more panes at once, tiled.</li>
+          <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside wmux.</li>
+          <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the Windows clipboard.</li>
+          <li data-i18n="c1.p3"><kbd>C-b S</kbd> or <code>:set sync</code> (Tab completes the name) sends every key to every pane in the window. <code>split-window -N 3</code> adds three panes at once and tiles them.</li>
         </ul>
       </section>
 
@@ -94,19 +94,19 @@
           <span class="num">02</span>
           <h2 data-i18n="cw.title">Your panes, on your phone</h2>
           <p data-i18n="cw.sub">
-            Leave a build, a deploy or an agent running and walk away. <code>wmux web</code> prints a QR code;
-            scan it on the same Wi-Fi and the phone's browser lists every pane, shows any of them as it is on
-            the screen, and types into it. No app to install.
+            Start <code>wmux web</code> before you walk away from a long build. It prints a QR code; scan it on
+            the same Wi-Fi and the phone's browser lists every pane, shows any of them as it appears on screen,
+            and lets you type into it. Nothing to install on the phone.
           </p>
         </header>
         <figure class="shot phone-shot">
           <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log, with a row of keys and a box to type in" />
         </figure>
         <ul class="points">
-          <li data-i18n="cw.p1"><b>What is on the screen, live.</b> Colours and all, refreshed as it changes; scroll up for what went by.</li>
-          <li data-i18n="cw.p2"><b>Keys the phone lacks.</b> Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3 in a row under the screen, and a box for anything longer. The <b>+</b> menu splits, opens a window or closes the pane.</li>
-          <li data-i18n="cw.p3"><b>Runs here, only shows there.</b> The phone looks and types; no command of its own reaches wmux. <code>--read-only</code> makes it look only.</li>
-          <li data-i18n="cw.p4"><b>Off until you start it.</b> The code carries a key made fresh each time (128 random bits); Ctrl+C stops it. Plain HTTP for your own network; from elsewhere, through Tailscale or the like.</li>
+          <li data-i18n="cw.p1">The screen updates as it changes, colours included, and you can scroll up through what already went by.</li>
+          <li data-i18n="cw.p2">A row under the screen has the keys a phone keyboard lacks: Esc, Tab, Shift+Tab, the arrows, Ctrl+C, y, n, 1, 2 and 3. Longer input goes in the text box. The <kbd>+</kbd> menu splits the pane, opens a window or closes the pane.</li>
+          <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
+          <li data-i18n="cw.p4">It works only while <code>wmux web</code> is running, and the QR code carries a new 128-bit key each time. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
         </ul>
       </section>
 
@@ -130,17 +130,17 @@
           <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c2.p1"><b>Rearrange in one key.</b> <kbd>C-b Space</kbd> cycles the five layouts: even columns, even rows, one main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to this one.</li>
-          <li data-i18n="c2.p2"><b>Find the pane.</b> <kbd>C-b q</kbd> writes a number across every pane; press it to go there.</li>
-          <li data-i18n="c2.p3"><b>Search the scrollback.</b> In copy mode <kbd>/</kbd> searches forward and <kbd>?</kbd> back, <kbd>n</kbd> and <kbd>N</kbd> repeat, and the hit lands in the middle of the screen.</li>
-          <li data-i18n="c2.p4"><b>A box over the window.</b> <code>display-popup</code> runs a program in a box and takes it away when it finishes — a quick <code>git log</code> without disturbing the layout.</li>
+          <li data-i18n="c2.p1"><kbd>C-b Space</kbd> cycles through five layouts: even columns, even rows, a main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to the current one.</li>
+          <li data-i18n="c2.p2"><kbd>C-b q</kbd> draws a number on every pane; press the number to jump there.</li>
+          <li data-i18n="c2.p3">In copy mode, <kbd>/</kbd> searches forward and <kbd>?</kbd> backward, <kbd>n</kbd> and <kbd>N</kbd> repeat the search, and the match is scrolled to the middle of the screen.</li>
+          <li data-i18n="c2.p4"><code>display-popup</code> runs a program in a box over the window and closes the box when the program exits. It is handy for a quick <code>git log</code> without touching the layout.</li>
         </ul>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">04</span>
-          <h2 data-i18n="c3.title">Close the terminal. Nothing dies.</h2>
+          <h2 data-i18n="c3.title">Close the terminal, the programs keep running</h2>
           <p data-i18n="c3.sub">
             <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>wmux attach</code>
             picks the session up again, from any terminal window.
@@ -151,9 +151,9 @@
           <figure class="shot"><img src="img/attach.png" alt="The same layout after attaching again" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c3.p1"><b>Reboots too.</b> Each session is saved to its own file whenever its shape changes, so <code>wmux resume</code> brings back the windows, the pane layout, each pane's command and its directory.</li>
-          <li data-i18n="c3.p2"><b>And what it printed.</b> <code>save-history</code> (500 lines by default; <code>all</code> keeps the whole scrollback, colours included) goes into that file too, so a resumed pane comes back with its output on screen, not just its prompt.</li>
-          <li data-i18n="c3.p3"><b>Per session.</b> <code>wmux list-saved</code> shows what can come back; <code>wmux resume work</code> restores one of them.</li>
+          <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and <code>wmux resume</code> brings back the windows, the pane layout, and each pane's command and directory.</li>
+          <li data-i18n="c3.p2">The file also keeps what each pane printed: <code>save-history</code> stores the last 500 lines by default, or the whole scrollback with <code>all</code>, colours included. A resumed pane shows its old output instead of an empty prompt.</li>
+          <li data-i18n="c3.p3"><code>wmux list-saved</code> shows what can be restored, and <code>wmux resume work</code> restores just that session.</li>
         </ul>
       </section>
 
@@ -162,9 +162,9 @@
           <span class="num">05</span>
           <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
           <p data-i18n="c35.sub">
-            A window you are not looking at can say so: <code>monitor-activity</code> marks it with
-            <b>#</b> when it prints, <b>!</b> on a bell, <b>~</b> when it has been silent too long.
-            <kbd>C-b M-n</kbd> jumps to the next window that has something to report.
+            <code>monitor-activity</code> marks a window you are not looking at with <b>#</b> when it prints,
+            <b>!</b> on a bell, and <b>~</b> when it has been silent too long. <kbd>C-b M-n</kbd> jumps to the
+            next marked window.
           </p>
         </header>
         <figure class="stage">
@@ -175,9 +175,9 @@
           </figcaption>
         </figure>
         <ul class="points">
-          <li data-i18n="c35.p1"><b>A dead job leaves evidence.</b> With <code>remain-on-exit</code> the pane stays when its program exits, showing <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts it again in place.</li>
-          <li data-i18n="c35.p2"><b>Keep the whole log.</b> <code>pipe-pane "$input | Add-Content build.log"</code> copies everything a pane prints into a command, and says so if that command cannot keep up.</li>
-          <li data-i18n="c35.p3"><b>Scripts can wait for each other.</b> <code>wmux wait-for ready</code> blocks until another client runs <code>wmux wait-for -S ready</code>; <code>-L</code> and <code>-U</code> are a lock.</li>
+          <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
+          <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
+          <li data-i18n="c35.p3">Scripts can wait on each other: <code>wmux wait-for ready</code> blocks until another client runs <code>wmux wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
         </ul>
       </section>
 
@@ -203,27 +203,28 @@ bind | split-window -h
 bind -n M-Right next-window       <span class="c"># -n: no prefix at all</span>
 set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         <ul class="points">
-          <li data-i18n="c4.p0"><b>Short names.</b> Command names take an unambiguous prefix (<code>wmux att</code>, <code>wmux splitw -h</code>) and so do option names: <code>set sync</code> is <code>set synchronize-panes</code>, <code>set mon-act on</code> is <code>set monitor-activity on</code>, and an on/off option with no value flips.</li>
-          <li data-i18n="c4.p1"><b>Scriptable.</b> <code>wmux send-keys</code> (including tmux's <code>-X</code> copy-mode commands), <code>wmux capture-pane -p -e</code> and <code>wmux split-window</code> drive a session from outside; inside a pane they need no socket name.</li>
-          <li data-i18n="c4.p2"><b>Plugins.</b> A directory with a <code>&lt;name&gt;.wmux</code> file of commands, plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
+          <li data-i18n="c4.p0">A command name can be cut to any unambiguous prefix (<code>wmux att</code>, <code>wmux splitw -h</code>), and so can an option name: <code>set sync</code> means <code>set synchronize-panes</code>, <code>set mon-act on</code> means <code>set monitor-activity on</code>, and an on/off option given no value flips.</li>
+          <li data-i18n="c4.p1"><code>wmux send-keys</code> (tmux's <code>-X</code> copy-mode commands included), <code>wmux capture-pane -p -e</code> and <code>wmux split-window</code> drive a session from a script. Run inside a pane, they need no socket name.</li>
+          <li data-i18n="c4.p2">A plugin is a directory with a <code>&lt;name&gt;.wmux</code> file of commands plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
         </ul>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">07</span>
-          <h2 data-i18n="c6.title">A status line that knows the machine</h2>
+          <h2 data-i18n="c6.title">Git branch, CPU and memory on the status line</h2>
           <p data-i18n="c6.sub">
-            The branch you are on, where the pane is, how busy the machine is, the battery when there is one.
-            Read inside wmux every second, no helper processes; replace the line with your own, or turn it off.
+            The default status line shows your git branch, the pane's directory, CPU and memory use, and the
+            battery if there is one. wmux reads these itself once a second without starting any helper process.
+            You can replace the line with your own or turn it off.
           </p>
         </header>
         <pre class="code statusline"><code>[work] 0:editor* 1:build 2:logs     master | ~\Documents\dfine\wmux | CPU 9% MEM 65% | 11:45</code></pre>
         <ul class="points">
-          <li data-i18n="c6.p1"><b>Yours to change.</b> <code>#{git_branch}</code>, <code>#{cpu_percentage}</code>, <code>#{ram_percentage}</code>, <code>#{battery_percentage}</code>, <code>#{pane_current_path_short}</code>, <code>#{pane_pid_command}</code> (the program the pane is running right now) go anywhere in <code>status-right</code>; <code>set -g status off</code> hides the line.</li>
-          <li data-i18n="c6.p2"><b>Two terminals, two sizes.</b> <code>window-size</code> says which one sizes the session; a smaller terminal gets its own view of the window and pans it with <kbd>Shift</kbd> + arrows.</li>
-          <li data-i18n="c6.p3"><b>The small things.</b> A right click pastes, <kbd>Tab</kbd> completes commands, flags, targets and option names at the <kbd>:</kbd> prompt, and <code>wmux completion powershell</code> teaches PowerShell every command, flag, option and session name.</li>
-          <li data-i18n="c6.p4"><b>Upgrades keep your sessions.</b> <code>wmux update</code> installs a new release; <code>wmux restart-server</code> moves every running session to it, history and directories included, and attached terminals follow by themselves.</li>
+          <li data-i18n="c6.p1"><code>#{git_branch}</code>, <code>#{cpu_percentage}</code>, <code>#{ram_percentage}</code>, <code>#{battery_percentage}</code>, <code>#{pane_current_path_short}</code> and <code>#{pane_pid_command}</code> (the program running in the pane right now) can go anywhere in <code>status-right</code>. <code>set -g status off</code> hides the line.</li>
+          <li data-i18n="c6.p2">When two terminals attach at different sizes, <code>window-size</code> decides which one sizes the session. The smaller terminal sees part of the window and pans with <kbd>Shift</kbd> + arrows.</li>
+          <li data-i18n="c6.p3">A right click pastes. At the <kbd>:</kbd> prompt, <kbd>Tab</kbd> completes commands, flags, targets and option names, and <code>wmux completion powershell</code> gives PowerShell the same completions.</li>
+          <li data-i18n="c6.p4"><code>wmux update</code> installs a new release, and <code>wmux restart-server</code> moves every running session to it with history and directories. Attached terminals reconnect on their own.</li>
         </ul>
       </section>
 
@@ -257,7 +258,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
       </section>
 
       <section class="closing">
-        <h2 data-i18n="close.title">Split it. Walk away. Come back.</h2>
+        <h2 data-i18n="close.title">Try it on your next long build.</h2>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/wmux/releases/latest" data-i18n="hero.download">Download for Windows</a>
           <a class="btn ghost" href="https://github.com/newdee/wmux#readme" data-i18n="close.docs">Read the docs</a>
