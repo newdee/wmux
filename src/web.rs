@@ -381,12 +381,8 @@ async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32) 
             }
         };
         if stamp != last_stamp {
-            let mut argv = vec!["capture-pane".into(), "-p".into(), "-e".into(), "-t".into(), pane.to_string()];
-            if history > 0 {
-                argv.extend(["-S".into(), format!("-{history}")]);
-            }
-            if let Ok((0, text, _)) = query(argv).await {
-                let event = format!("data: {{\"text\":{}}}\n\n", json_str(&text));
+            if let Ok(json) = screen_json(&state.socket, pane, history).await {
+                let event = format!("data: {json}\n\n");
                 if stream.write_all(event.as_bytes()).await.is_err() {
                     return Ok(()); // the phone went away
                 }
@@ -414,6 +410,77 @@ async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32) 
     }
     stream.shutdown().await.ok();
     Ok(())
+}
+
+/// A pane's screen as the page reads it: `{"text": ..., "marks": [...]}`,
+/// the text `capture-pane -e` gives (the last `history` lines of the
+/// scrollback first) and, for each command the pane's shell ran on one of
+/// those lines, `[line, start, end, exit]` (`list-marks`, its times in Unix
+/// milliseconds, null where unknown).
+async fn screen_json(socket: &str, pane: &str, history: u32) -> Result<String, (u16, String)> {
+    let q = |argv: Vec<String>| async move {
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        crate::client::query(socket, &argv).await
+    };
+    let mut argv = vec!["capture-pane".into(), "-p".into(), "-e".into(), "-t".into(), pane.to_string()];
+    if history > 0 {
+        argv.extend(["-S".into(), format!("-{history}")]);
+    }
+    let text = match q(argv).await {
+        Ok((0, out, _)) => out,
+        Ok((_, _, err)) => return Err((404, err.trim().to_string())),
+        Err(e) => return Err((500, format!("{e:#}"))),
+    };
+    let marks = q(vec!["list-marks".into(), "-t".into(), pane.into()]).await;
+    let size = q(vec!["display-message".into(), "-p".into(), "-t".into(), pane.into(), "#{history_size}".into()]).await;
+    let marks = match (marks, size) {
+        (Ok((0, marks, _)), Ok((0, size, _))) => marks_json(&text, &marks, history, size.trim().parse().unwrap_or(0)),
+        _ => "[]".into(),
+    };
+    Ok(format!("{{\"text\":{},\"marks\":{marks}}}", json_str(&text)))
+}
+
+/// `list-marks` lines placed on the lines of `text`, a capture holding the
+/// last `history` of `scrollback` lines above the screen. A mark whose line
+/// does not read as it did (output arrived between the two questions) is
+/// left out rather than put against the wrong line.
+fn marks_json(text: &str, marks: &str, history: u32, scrollback: usize) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let above = i64::from(history).min(scrollback as i64);
+    let num = |s: &str| if s.parse::<i64>().is_ok() { s.to_string() } else { "null".to_string() };
+    let mut out = Vec::new();
+    for m in marks.lines() {
+        let mut f = m.splitn(5, ' ');
+        let (Some(row), Some(start), Some(end), Some(exit)) = (f.next(), f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let said = f.next().unwrap_or("");
+        let Some(i) = row.parse::<i64>().ok().map(|r| r + above).filter(|i| *i >= 0) else { continue };
+        if lines.get(i as usize).is_some_and(|l| without_escapes(l).trim_end() == said) {
+            out.push(format!("[{i},{},{},{}]", num(start), num(end), num(exit)));
+        }
+    }
+    format!("[{}]", out.join(","))
+}
+
+/// A captured line without its colour sequences (`ESC [ ... m`).
+fn without_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// None when the request carries the key; otherwise the refusal to send.
@@ -505,14 +572,9 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 return Response::text(400, "pane: %N");
             };
             let history: u32 = req.param("history").and_then(|h| h.parse().ok()).unwrap_or(0).min(MAX_HISTORY);
-            let mut argv = vec!["capture-pane".into(), "-p".into(), "-e".into(), "-t".into(), pane.to_string()];
-            if history > 0 {
-                argv.extend(["-S".into(), format!("-{history}")]);
-            }
-            match q(argv).await {
-                Ok((0, out, _)) => Response::json(format!("{{\"text\":{}}}", json_str(&out))),
-                Ok((_, _, err)) => Response::text(404, err.trim()),
-                Err(e) => Response::text(500, &format!("{e:#}")),
+            match screen_json(&state.socket, pane, history).await {
+                Ok(json) => Response::json(json),
+                Err((status, msg)) => Response::text(status, &msg),
             }
         }
         (false, "/api/send") | (false, "/api/action") if state.read_only => Response::text(403, "read-only"),
@@ -736,6 +798,19 @@ mod tests {
         assert_eq!(handle(&req("POST", "/api/action", Some("sekrit")), ip, &ro).await.status, 403);
         let info = handle(&req("GET", "/api/info", Some("sekrit")), ip, &ro).await;
         assert!(String::from_utf8_lossy(&info.body).contains("\"readOnly\":true"));
+    }
+
+    #[test]
+    fn marks_land_on_the_captured_lines_that_still_read_so() {
+        // Two lines of scrollback above a three-line screen, all captured.
+        let text = "PS> ls\nfile\n\x1b[32mPS> \x1b[0mbad\x1b[0m\nerr\nPS>";
+        let marks = "-2 1000 1500 0 PS> ls\n0 2000 2100 1 PS> bad\n1 3000 3100 0 PS> gone";
+        assert_eq!(marks_json(text, marks, 300, 2), "[[0,1000,1500,0],[2,2000,2100,1]]");
+        // With less history asked for than there is, lines shift with it.
+        assert_eq!(marks_json("PS> \x1b[1mbad\nerr\nPS>", marks, 0, 2), "[[0,2000,2100,1]]");
+        // Unknown times and codes are null; a torn line is skipped.
+        assert_eq!(marks_json("PS> x", "0 - 5 - PS> x\nnonsense", 0, 0), "[[0,null,5,null]]");
+        assert_eq!(without_escapes("\x1b[38;2;1;2;3ma\x1b[0mb"), "ab");
     }
 
     #[test]

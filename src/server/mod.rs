@@ -121,6 +121,8 @@ enum ChooserItem {
     Menu(usize),
     /// A pane on the task board (`choose-jobs`).
     Job(SessionId, WindowId, PaneId),
+    /// A pane position in the history picker, or one of its days.
+    Log(usize, Option<usize>),
     /// A title or separator line: shown, never selected.
     Separator,
 }
@@ -140,6 +142,9 @@ enum ChooserKind {
     Found,
     /// A `display-menu` and the commands its entries run.
     Menu(Vec<MenuItem>),
+    /// The history log on disk (`choose-history`), read when opened; the
+    /// positions in `open` show their days.
+    History { kept: Vec<crate::histlog::Kept>, open: HashSet<usize> },
 }
 
 impl ChooserKind {
@@ -230,6 +235,41 @@ impl Chooser {
 /// A `display-popup`: its own pane, drawn in a box over the client's window
 /// and fed every key until it closes. The size is kept as it was asked for so
 /// the box follows the terminal when it is resized.
+/// A pane or window a command killed, kept for `undo-kill-time` seconds
+/// with its programs still running, so `undo-kill` can put it back as it
+/// was. Dropping it ends it for good.
+enum Killed {
+    Pane {
+        pane: Box<Pane>,
+        session: SessionId,
+        window: WindowId,
+        /// The window's layout with the pane still in it.
+        layout: Node,
+        at: Instant,
+    },
+    Window {
+        window: Window,
+        session: SessionId,
+        index: usize,
+        at: Instant,
+    },
+}
+
+impl Killed {
+    fn at(&self) -> Instant {
+        match self {
+            Killed::Pane { at, .. } | Killed::Window { at, .. } => *at,
+        }
+    }
+
+    fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        match self {
+            Killed::Pane { pane, .. } => (pane.id == id).then_some(&mut **pane),
+            Killed::Window { window, .. } => window.pane_mut(id),
+        }
+    }
+}
+
 struct Popup {
     pane: Pane,
     rect: Rect,
@@ -537,6 +577,13 @@ pub struct Server {
     socket: String,
     had_session: bool,
     started: Instant,
+    /// When old history log files were last cleared out (once a day).
+    history_pruned: Option<Instant>,
+    /// `log-history` at the last tick, to tell when it was turned on.
+    history_was_on: bool,
+    /// What `kill-pane` / `kill-window` took in the last `undo-kill-time`
+    /// seconds, newest last, for `undo-kill`.
+    killed: Vec<Killed>,
     quit: bool,
     /// Restore saved sessions at start even with `restore-on-start off`.
     force_restore: bool,
@@ -744,6 +791,8 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     // Stop accepting (releases the pipe name), let client writers flush.
     listener.abort();
     drop(srv);
+    // Closed panes left their screens for the history log: see them written.
+    crate::histlog::flush(Duration::from_secs(3));
     tokio::time::sleep(Duration::from_millis(150)).await;
     log::info!("server exiting");
     Ok(())
@@ -843,6 +892,8 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("s", "choose-tree -Zs"),
         ("D", "choose-client"),
         ("B", "choose-jobs"),
+        ("/", "choose-history"),
+        ("u", "undo-kill"),
         (
             ">",
             "display-menu -T \"pane #P\" \"Split horizontally\" h \"split-window -h\" \
@@ -863,6 +914,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("C-s", "save-session"),
         ("C-r", "restore-session"),
         ("S", "set-option -w synchronize-panes"),
+        ("C-t", "set-option -g pane-timestamps"),
     ];
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
@@ -898,6 +950,9 @@ impl Server {
             socket,
             had_session: false,
             started: Instant::now(),
+            history_pruned: None,
+            history_was_on: true,
+            killed: Vec::new(),
             quit: false,
             force_restore: false,
             config_override: None,
@@ -919,6 +974,100 @@ impl Server {
             events,
             last_saved: HashMap::new(),
         }
+    }
+
+    // ----------------------------------------------------------- log-history
+
+    fn history_dir(&self) -> PathBuf {
+        if self.opts.log_history_dir.is_empty() {
+            crate::histlog::default_dir()
+        } else {
+            PathBuf::from(expand_home(&self.opts.log_history_dir))
+        }
+    }
+
+    /// Today's history file for every pane, by where it is now (its
+    /// session, and its window and pane numbers as the status line shows
+    /// them).
+    fn history_paths(&self) -> Vec<(PaneId, PathBuf)> {
+        let dir = self.history_dir();
+        let day = chrono::Local::now().date_naive();
+        let mut out = Vec::new();
+        for s in &self.sessions {
+            for (wi, w) in s.windows.iter().enumerate() {
+                for (pi, id) in w.layout.panes().into_iter().enumerate() {
+                    let file = crate::histlog::file_for(
+                        &dir,
+                        &s.name,
+                        wi + self.opts.base_index,
+                        pi + self.opts.pane_base_index,
+                        day,
+                    );
+                    out.push((id, file));
+                }
+            }
+        }
+        out
+    }
+
+    /// Once a second: point each pane at its history file (the day turns,
+    /// panes move and sessions are renamed), or at none when logging is
+    /// off; once a day, clear out the old files.
+    fn history_tick(&mut self) {
+        let on = self.opts.log_history;
+        let turned_on = on && !std::mem::replace(&mut self.history_was_on, on);
+        let paths: HashMap<PaneId, PathBuf> =
+            if on { self.history_paths().into_iter().collect() } else { HashMap::new() };
+        for w in self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()) {
+            for p in &mut w.panes {
+                if !on {
+                    // Off: what was held back still goes out, and nothing
+                    // from now on is kept.
+                    if p.log_to.is_some() {
+                        p.log_take(false);
+                        p.flush_log();
+                        p.log_to = None;
+                    }
+                    p.logged = p.logged.max(p.screen().scrolled_total());
+                    continue;
+                }
+                if turned_on {
+                    // From what scrolls next, not what scrolled while off.
+                    p.logged = p.logged.max(p.screen().scrolled_total());
+                }
+                // The day turned or the pane moved: what is gathered goes
+                // where it was written, then the rest to the new file.
+                let to = paths.get(&p.id).cloned();
+                if p.log_to != to {
+                    p.flush_log();
+                    p.log_to = to;
+                }
+                p.flush_log();
+            }
+        }
+        if self.opts.log_history && self.history_pruned.is_none_or(|t| t.elapsed() >= Duration::from_secs(86_400)) {
+            self.history_pruned = Some(Instant::now());
+            crate::histlog::prune(self.history_dir(), self.opts.log_history_days);
+        }
+    }
+
+    /// After a pane printed: what left its screen goes to its history file.
+    fn log_output(&mut self, id: PaneId) {
+        if !self.find_pane_mut(id).is_some_and(|p| p.log_pending()) {
+            return;
+        }
+        // A pane newer than the last tick has no file yet: its first
+        // screenful may scroll off before the tick comes round.
+        let path = match self.find_pane_mut(id).and_then(|p| p.log_to.clone()) {
+            Some(path) => path,
+            None => match self.history_paths().into_iter().find(|(p, _)| *p == id) {
+                Some((_, path)) => path,
+                None => return,
+            },
+        };
+        let Some(p) = self.find_pane_mut(id) else { return };
+        p.log_to = Some(path);
+        p.log_take(false);
     }
 
     // ------------------------------------------------------------- resurrect
@@ -1413,6 +1562,9 @@ impl Server {
                         self.note_message(&format!("pipe-pane %{id}: {command} is not keeping up; output dropped"));
                     }
                     self.note_output(id);
+                    if self.opts.log_history {
+                        self.log_output(id);
+                    }
                 }
             }
             Event::Pane(PaneEvent::Exit(id, generation, code)) => {
@@ -1431,6 +1583,25 @@ impl Server {
                 }
                 if self.find_pane_mut(id).is_some_and(|p| p.generation != generation) {
                     return; // the previous process of a respawned pane
+                }
+                // A pane kept for undo-kill whose program ended meanwhile:
+                // nothing is left of it to bring back.
+                if let Some(i) = self.killed.iter_mut().position(|k| k.pane_mut(id).is_some()) {
+                    let gone = match &mut self.killed[i] {
+                        Killed::Pane { .. } => true,
+                        Killed::Window { window, .. } => {
+                            window.layout.remove(id);
+                            window.panes.retain(|p| p.id != id);
+                            if window.active == id {
+                                window.active = window.layout.panes().first().copied().unwrap_or(0);
+                            }
+                            window.panes.is_empty()
+                        }
+                    };
+                    if gone {
+                        self.killed.remove(i);
+                    }
+                    return;
                 }
                 let command = self.find_pane_mut(id).map(|p| p.command.clone()).unwrap_or_default();
                 log::info!("pane %{id} ({command}) exited with {code}");
@@ -1548,10 +1719,23 @@ impl Server {
             Event::EndSession(done) => {
                 log::info!("session ending: saving every session");
                 self.save_everything();
+                // And what the panes show goes to their history logs.
+                for w in self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()) {
+                    for p in &mut w.panes {
+                        if p.log_to.is_some() {
+                            p.log_take(true);
+                        }
+                    }
+                }
+                crate::histlog::flush(Duration::from_secs(2));
                 let _ = done.send(());
             }
             Event::Tick => {
                 self.autosave_changed();
+                self.history_tick();
+                // Kept long enough: gone for good.
+                let keep = Duration::from_secs(self.opts.undo_kill_time);
+                self.killed.retain(|k| k.at().elapsed() < keep);
                 // A server nobody uses has no reason to live (e.g. started by
                 // `wmux attach` when there was nothing to attach to).
                 if self.sessions.is_empty()
@@ -1818,6 +2002,10 @@ impl Server {
     fn find_pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
         if self.sessions.iter().flat_map(|s| s.windows.iter()).any(|w| w.pane(id).is_some()) {
             return self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()).find_map(|w| w.pane_mut(id));
+        }
+        // A killed pane kept for undo-kill still prints.
+        if self.killed.iter_mut().any(|k| k.pane_mut(id).is_some()) {
+            return self.killed.iter_mut().find_map(|k| k.pane_mut(id));
         }
         // A popup's pane belongs to no window, but its output still arrives.
         self.clients.values_mut().find_map(|c| c.popup.as_mut().filter(|p| p.pane.id == id).map(|p| &mut p.pane))
@@ -2194,9 +2382,126 @@ impl Server {
     }
 
     /// Remove a pane (dead or killed) and collapse empty windows/sessions.
-    fn remove_pane(&mut self, id: PaneId, exit_code: Option<u32>) {
-        let Some(sid) = self.session_of_pane(id) else { return };
+    /// `kill-pane` with `undo-kill-time` set: take pane `id` out of its
+    /// window but keep it, running, for `undo-kill`. The last pane of a
+    /// window keeps the whole window instead; the last one of a session is
+    /// not kept (the session ends with it). False when nothing was kept.
+    fn keep_killed_pane(&mut self, id: PaneId) -> bool {
+        let Some(sid) = self.session_of_pane(id) else { return false };
+        let s = self.session(sid).unwrap();
+        let Some(widx) = s.windows.iter().position(|w| w.pane(id).is_some()) else { return false };
+        let w = &s.windows[widx];
+        if w.panes.len() == 1 {
+            return self.keep_killed_window(sid, widx);
+        }
+        let (window, layout) = (w.id, w.layout.clone());
+        let Some(mut pane) = self.remove_pane(id, None) else { return false };
+        // Still running: if it is never brought back, dropping it must
+        // end its program (a pane marked exited is not killed on drop).
+        pane.exit_code = None;
+        self.killed.push(Killed::Pane { pane: Box::new(pane), session: sid, window, layout, at: Instant::now() });
+        self.trim_killed();
+        true
+    }
+
+    /// `kill-window` with `undo-kill-time` set: take the window out of its
+    /// session but keep it, panes running, for `undo-kill`. A session's
+    /// only window is not kept. False when nothing was kept.
+    fn keep_killed_window(&mut self, sid: SessionId, widx: usize) -> bool {
+        let Some(s) = self.session_mut(sid) else { return false };
+        if s.windows.len() < 2 || widx >= s.windows.len() {
+            return false;
+        }
+        let w = s.windows.remove(widx);
+        // The current window moves as it does when a window's last pane exits.
+        if s.last == Some(w.id) {
+            s.last = None;
+        }
+        if let Some(last) = s.last.and_then(|l| s.windows.iter().position(|x| x.id == l)) {
+            s.cur = last;
+            s.last = None;
+        } else if s.cur >= s.windows.len() || s.cur > widx {
+            s.cur = s.cur.saturating_sub(1).min(s.windows.len() - 1);
+        }
+        self.killed.push(Killed::Window { window: w, session: sid, index: widx, at: Instant::now() });
+        self.trim_killed();
+        self.relayout_session(sid);
+        true
+    }
+
+    /// At most twenty kills are kept; older ones end now.
+    fn trim_killed(&mut self) {
+        while self.killed.len() > 20 {
+            self.killed.remove(0);
+        }
+    }
+
+    /// Tell the client that did it how to take a kill back.
+    fn say_undo(&mut self, cid: Option<ClientId>, kept: usize, what: &str) {
+        let Some(cid) = cid.filter(|_| kept > 0) else { return };
+        let what = if kept == 1 { format!("{what} killed") } else { format!("{kept} {what}s killed") };
+        let secs = self.opts.undo_kill_time;
+        self.message(cid, &format!("{what}; undo-kill (prefix u) brings it back within {secs}s"));
+    }
+
+    /// `undo-kill`: put back the pane or window killed last, where it was.
+    fn undo_kill(&mut self) -> Outcome {
+        let Some(k) = self.killed.pop() else {
+            return Outcome::Error("nothing to undo: no pane or window killed lately".into());
+        };
+        match k {
+            Killed::Window { window, session, index, .. } => {
+                let Some(s) = self.session_mut(session) else {
+                    return Outcome::Error("its session is gone".into());
+                };
+                let i = index.min(s.windows.len());
+                s.windows.insert(i, window);
+                s.select_window(i);
+                self.relayout_session(session);
+            }
+            Killed::Pane { pane, session, window, layout, .. } => {
+                let Some(s) = self.session_mut(session) else {
+                    return Outcome::Error("its session is gone".into());
+                };
+                match s.windows.iter().position(|w| w.id == window) {
+                    Some(widx) => {
+                        let w = &mut s.windows[widx];
+                        // Nothing else changed: the layout it was in comes
+                        // back exactly. Otherwise it splits the active pane.
+                        let before: Vec<PaneId> = layout.panes().into_iter().filter(|p| *p != pane.id).collect();
+                        if w.layout.panes() == before {
+                            w.layout = layout;
+                        } else {
+                            let rect =
+                                w.rects.iter().find(|(id, _)| *id == w.active).map(|(_, r)| *r).unwrap_or_default();
+                            let horizontal = rect.w >= rect.h * 2;
+                            w.layout.split(w.active, horizontal, pane.id, rect);
+                        }
+                        w.zoomed = false;
+                        w.last_pane = Some(w.active);
+                        w.active = pane.id;
+                        w.panes.push(*pane);
+                        s.select_window(widx);
+                    }
+                    // Its window went since: a window of its own.
+                    None => {
+                        self.add_window(session, *pane, None);
+                    }
+                }
+                self.relayout_session(session);
+            }
+        }
+        Outcome::Ok
+    }
+
+    /// Take a pane out of its window (the window out of its session when it
+    /// was the last, the session off the server when that was the last) and
+    /// hand it back: dropping it ends it; `kill-pane` may keep it a while
+    /// for `undo-kill`.
+    fn remove_pane(&mut self, id: PaneId, exit_code: Option<u32>) -> Option<Pane> {
+        let sid = self.session_of_pane(id)?;
         let mut session_dead = false;
+        let removed;
         {
             let s = self.session_mut(sid).unwrap();
             let widx = s.windows.iter().position(|w| w.pane(id).is_some()).unwrap();
@@ -2205,7 +2510,7 @@ impl Server {
                 p.exit_code = exit_code.or(Some(0));
             }
             w.layout.remove(id);
-            w.panes.retain(|p| p.id != id);
+            removed = w.panes.iter().position(|p| p.id == id).map(|i| w.panes.remove(i));
             if w.active == id {
                 w.active = w
                     .last_pane
@@ -2241,6 +2546,7 @@ impl Server {
             self.relayout_session(sid);
         }
         self.fire_hook("pane-exited", None);
+        removed
     }
 
     fn kill_session(&mut self, sid: SessionId, reason: &str) {
@@ -2268,6 +2574,14 @@ impl Server {
         let (cols, rows) = self.session(sid).map(|s| (s.cols, s.rows)).ok_or("no such session")?;
         let area = self.window_area(cols, rows);
         let pane = self.spawn_pane(argv, cwd, area.w, area.h)?;
+        Ok(self.add_window(sid, pane, name))
+    }
+
+    /// A new window around `pane`, at the end of the session's list, made
+    /// current. Returns its index.
+    fn add_window(&mut self, sid: SessionId, pane: Pane, name: Option<String>) -> usize {
+        let (cols, rows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap_or((80, 24));
+        let area = self.window_area(cols, rows);
         let wid = self.alloc_id();
         let name = name.unwrap_or_else(|| pane.command.clone());
         let mut w = Window {
@@ -2292,7 +2606,7 @@ impl Server {
         s.windows.push(w);
         let idx = s.windows.len() - 1;
         s.select_window(idx);
-        Ok(idx)
+        idx
     }
 
     fn new_session(
@@ -2917,19 +3231,27 @@ impl Server {
                     Err(e) => return Outcome::Error(e),
                 };
                 let s = self.session(sid).unwrap();
-                let ids: Vec<PaneId> = s
-                    .windows
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| (*i == widx) != all_but)
-                    .flat_map(|(_, w)| w.panes.iter().map(|p| p.id))
-                    .collect();
-                for id in ids {
-                    if let Some(p) = self.find_pane_mut(id) {
-                        p.kill();
+                let wids: Vec<WindowId> =
+                    s.windows.iter().enumerate().filter(|(i, _)| (*i == widx) != all_but).map(|(_, w)| w.id).collect();
+                let mut kept = 0;
+                for wid in wids {
+                    // Looked up again each time: taking one renumbers the rest.
+                    let Some(i) = self.session(sid).and_then(|s| s.windows.iter().position(|w| w.id == wid)) else {
+                        continue;
+                    };
+                    if self.opts.undo_kill_time > 0 && self.keep_killed_window(sid, i) {
+                        kept += 1;
+                        continue;
                     }
-                    self.remove_pane(id, Some(0));
+                    let ids: Vec<PaneId> = self.session(sid).unwrap().windows[i].panes.iter().map(|p| p.id).collect();
+                    for id in ids {
+                        if let Some(p) = self.find_pane_mut(id) {
+                            p.kill();
+                        }
+                        self.remove_pane(id, Some(0));
+                    }
                 }
+                self.say_undo(cid, kept, "window");
                 Outcome::Ok
             }
             Cmd::RenameWindow { target, name } => {
@@ -3167,13 +3489,19 @@ impl Server {
                     .map(|p| p.id)
                     .filter(|id| (*id == pid) != all_but)
                     .collect();
+                let mut kept = 0;
                 for id in ids {
+                    if self.opts.undo_kill_time > 0 && self.keep_killed_pane(id) {
+                        kept += 1;
+                        continue;
+                    }
                     if let Some(p) = self.find_pane_mut(id) {
                         p.kill();
                     }
                     self.remove_pane(id, Some(0));
                 }
                 self.fire_hook("after-kill-pane", cid);
+                self.say_undo(cid, kept, "pane");
                 Outcome::Ok
             }
             Cmd::SelectPane { sel } => {
@@ -4039,6 +4367,15 @@ impl Server {
                             c.send(ServerMsg::SetMouse(mouse));
                         }
                     }
+                    // Flipped from a key (`prefix C-t`): say which way, since
+                    // a pane with no commands to stamp shows no change.
+                    if value.is_empty()
+                        && let Some(cid) = cid
+                        && crate::config::resolve_name(&name).as_deref() == Ok("pane-timestamps")
+                    {
+                        let on = if self.opts.pane_timestamps { "on" } else { "off" };
+                        self.message(cid, &format!("pane-timestamps {on}"));
+                    }
                 }
                 r.into()
             }
@@ -4132,6 +4469,34 @@ impl Server {
                 c.prompt = None;
                 c.overlay = None;
                 c.chooser = Some(Chooser::new(ChooserKind::Jobs, items, lines, sel));
+                Outcome::Ok
+            }
+            Cmd::UndoKill => self.undo_kill(),
+            Cmd::ChooseHistory => {
+                let Some(cid) = cid else { return Outcome::Error("choose-history: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("choose-history: client not attached".into());
+                }
+                let kept = crate::histlog::scan(&self.history_dir());
+                if kept.is_empty() {
+                    let why = if self.opts.log_history { "" } else { " (log-history is off)" };
+                    return Outcome::Error(format!("no history yet{why}"));
+                }
+                // Open at the client's own pane, on its newest day.
+                let here = self.resolve(None, Some(cid)).ok().and_then(|(sid, widx, pid)| {
+                    let s = self.session(sid)?;
+                    let pidx = s.windows.get(widx)?.layout.panes().iter().position(|p| *p == pid)?;
+                    let key = format!("{}.{}", widx + self.opts.base_index, pidx + self.opts.pane_base_index);
+                    let session = crate::histlog::safe_name(&s.name);
+                    kept.iter().position(|k| k.session == session && k.key == key)
+                });
+                let open: HashSet<usize> = here.into_iter().collect();
+                let (items, lines) = history_lines(&kept, &open);
+                let sel = here.and_then(|i| items.iter().position(|x| *x == ChooserItem::Log(i, Some(0)))).unwrap_or(0);
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser::new(ChooserKind::History { kept, open }, items, lines, sel));
                 Outcome::Ok
             }
             Cmd::ChooseClient => {
@@ -4384,9 +4749,26 @@ impl Server {
                     let (rows, cols) = p.screen().size();
                     let mut fresh = vt100::Parser::new_with_callbacks(rows, cols, hist, pane::Callbacks::default());
                     fresh.process(&p.screen().state_formatted());
+                    // What scrolled off so far is logged by the old parser;
+                    // the new one counts its lines from where it starts.
+                    if p.log_to.is_some() {
+                        p.log_take(false);
+                        p.flush_log();
+                    }
                     p.parser = fresh;
+                    p.logged = p.screen().scrolled_total();
+                    // Their lines were counted by the parser just replaced.
+                    p.marks.clear();
                 }
                 Outcome::Ok
+            }
+            Cmd::ListMarks { target } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                Outcome::Text(list_marks(p).join("\n"))
             }
             Cmd::SourceFile { path } => self.source_file(&path).map(|_| ()).into(),
             // Window-scoped, so it is not in the global table: answer it from
@@ -5242,7 +5624,7 @@ impl Server {
                 lines = align_columns(&rows);
                 return Some((items, lines));
             }
-            ChooserKind::Found | ChooserKind::Menu(_) => return None,
+            ChooserKind::Found | ChooserKind::Menu(_) | ChooserKind::History { .. } => return None,
         };
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
@@ -5354,6 +5736,32 @@ impl Server {
                 }
             }
             (KeyCode::Char('T'), false, false) if ch.kind.live() => ch.tagged.clear(),
+            // The history picker: a position folds and unfolds its days
+            // (Enter too, on the position's own line).
+            (KeyCode::Left | KeyCode::Right | KeyCode::Enter, _, _) | (KeyCode::Char('-' | '+'), false, false)
+                if matches!(ch.kind, ChooserKind::History { .. })
+                    && !(k.code == KeyCode::Enter
+                        && matches!(ch.items.get(ch.sel), Some(ChooserItem::Log(_, Some(_))))) =>
+            {
+                let Some(ChooserItem::Log(i, _)) = ch.items.get(ch.sel).copied() else { return };
+                let ChooserKind::History { kept, open } = &mut ch.kind else { return };
+                let unfold = match k.code {
+                    KeyCode::Left | KeyCode::Char('-') => false,
+                    KeyCode::Right | KeyCode::Char('+') => true,
+                    _ => !open.contains(&i),
+                };
+                if unfold {
+                    open.insert(i);
+                } else {
+                    open.remove(&i);
+                }
+                let (items, lines) = history_lines(kept, open);
+                // Unfolded: on its newest day; folded: on the position.
+                let at = ChooserItem::Log(i, unfold.then_some(0));
+                ch.sel = items.iter().position(|x| *x == at).unwrap_or(0);
+                ch.items = items;
+                ch.lines = lines;
+            }
             // Fold and unfold one session of the tree; the cursor goes to
             // its line, since its windows are gone from the list.
             (KeyCode::Left, _, _) | (KeyCode::Char('-'), false, false)
@@ -5450,10 +5858,20 @@ impl Server {
                     }
                     _ => None,
                 };
+                let log = match (&ch.kind, target) {
+                    (ChooserKind::History { kept, .. }, Some(ChooserItem::Log(i, Some(d)))) => {
+                        kept.get(i).and_then(|k| k.days.get(d)).map(|(_, path, _)| path.clone())
+                    }
+                    _ => None,
+                };
                 c.chooser = None;
                 if let Some(cmd) = menu {
                     let out = self.exec(*cmd, Some(cid));
                     self.reply(cid, out);
+                    return;
+                }
+                if let Some(path) = log {
+                    self.view_log(cid, &path);
                     return;
                 }
                 match target {
@@ -5466,7 +5884,7 @@ impl Server {
                         }
                     }
                     Some(ChooserItem::Job(sid, wid, pid)) => self.chooser_go_pane(cid, sid, wid, pid),
-                    Some(ChooserItem::Menu(_)) | Some(ChooserItem::Separator) => {}
+                    Some(ChooserItem::Menu(_)) | Some(ChooserItem::Separator) | Some(ChooserItem::Log(..)) => {}
                     Some(ChooserItem::Buffer(i)) => {
                         let name = self.buffers.get(i).map(|(n, _)| n.clone());
                         match name {
@@ -5482,6 +5900,33 @@ impl Server {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A day of the history log in `wmux view`, in a popup over the window.
+    fn view_log(&mut self, cid: ClientId, path: &std::path::Path) {
+        // Gone since the list was read (cleared out, deleted by hand): the
+        // viewer would fail and its popup vanish before it could say so.
+        if !path.is_file() {
+            self.message(cid, &format!("{} is gone", path.display()));
+            return;
+        }
+        let Some(exe) = pane::helper_exe() else {
+            self.message(cid, "no wmux.exe to view the log with");
+            return;
+        };
+        let cmd = Cmd::DisplayPopup {
+            close: false,
+            close_on_exit: true,
+            width: Some("90%".into()),
+            height: Some("90%".into()),
+            x: None,
+            y: None,
+            cwd: None,
+            argv: vec![exe.to_string_lossy().into_owned(), "view".into(), path.to_string_lossy().into_owned()],
+        };
+        if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
+            self.message(cid, &e);
         }
     }
 
@@ -6130,16 +6575,23 @@ impl Server {
             }
         }
         let sess_size = (self.sessions[spos].cols, self.sessions[spos].rows);
+        let stamps_on = self.opts.pane_timestamps;
         let s = &mut self.sessions[spos];
         let Some(w) = s.window_mut() else { return };
         let active = w.active;
         // Apply copy-mode scroll offsets for rendering and precompute the
         // copy views (they need mutable access to the scrollback).
         let mut copy_views: HashMap<PaneId, CopyView> = HashMap::new();
+        // `pane-timestamps`: the commands on each pane's view, by row.
+        let mut stamps: Vec<(PaneId, u16, pane::Mark)> = Vec::new();
         for p in &mut w.panes {
             if p.bell {
                 p.bell = false;
                 bell = true;
+            }
+            if stamps_on {
+                let off = p.copy.as_ref().map_or(0, |c| c.offset);
+                stamps.extend(p.visible_marks(off).into_iter().map(|(row, m)| (p.id, row, m)));
             }
             if p.copy.is_some() {
                 let cur_abs = copy_abs(p);
@@ -6204,6 +6656,19 @@ impl Server {
         for p in &mut w.panes {
             if p.copy.is_some() {
                 p.parser.screen_mut().set_scrollback(0);
+            }
+        }
+        // `pane-timestamps`: each command's time in the blank end of its
+        // line, the short form when the long one does not fit, nothing when
+        // neither does. Nothing moves: the pane keeps its width.
+        if !stamps.is_empty() {
+            let now = chrono::Local::now();
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            for (id, row, m) in &stamps {
+                let Some((_, rect)) = w.rects.iter().find(|(i, _)| i == id) else { continue };
+                if !render::draw_stamp(&mut grid, *rect, *row, &stamp_parts(m, now, false)) {
+                    render::draw_stamp(&mut grid, *rect, *row, &stamp_parts(m, now, true));
+                }
             }
         }
         // `clock-mode`: a big clock over the panes that asked for one.
@@ -6297,6 +6762,7 @@ impl Server {
                 ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",
+                ChooserKind::History { .. } => "Enter open  + - fold",
                 _ => "Enter select",
             };
             let mut status = Vec::new();
@@ -6794,6 +7260,97 @@ fn copy_scroll(p: &mut Pane, delta: i64) {
     if let Some(c) = p.copy.as_mut() {
         c.offset = (c.offset as i64 + delta).clamp(0, max) as usize;
     }
+}
+
+/// What `pane-timestamps` writes at the end of a command's line: when it
+/// started (the date too when not today), how long it took and how it
+/// ended. `short` leaves only the time and the ending, for a narrow line.
+fn stamp_parts(m: &pane::Mark, now: chrono::DateTime<chrono::Local>, short: bool) -> Vec<(String, render::Style)> {
+    let gray = render::Style::colors(vt100::Color::Idx(8), vt100::Color::Default);
+    let Some(end) = m.end else { return Vec::new() };
+    let at = m.start.unwrap_or(end);
+    let when = if at.date_naive() == now.date_naive() { at.format("%H:%M:%S") } else { at.format("%m-%d %H:%M:%S") };
+    let mut parts = vec![(when.to_string(), gray)];
+    if !short && let Some(start) = m.start {
+        parts.push((format!(" {}", crate::format::command_duration((end - start).num_milliseconds())), gray));
+    }
+    match m.exit {
+        Some(0) => parts.push((" ✓".into(), render::Style::colors(vt100::Color::Idx(2), vt100::Color::Default))),
+        Some(code) => {
+            let tail = if code == 1 { String::new() } else { code.to_string() };
+            parts.push((format!(" ✗{tail}"), render::Style::colors(vt100::Color::Idx(1), vt100::Color::Default)));
+        }
+        None => {}
+    }
+    parts
+}
+
+/// A size as people read it: `812 B`, `14 KB`, `1.2 MB`.
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{} KB", bytes / 1024),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    }
+}
+
+/// The history picker's lines: each pane position with a log, and under
+/// an open one its days, newest first.
+fn history_lines(kept: &[crate::histlog::Kept], open: &HashSet<usize>) -> (Vec<ChooserItem>, Vec<String>) {
+    let today = chrono::Local::now().date_naive();
+    let (mut items, mut lines) = (Vec::new(), Vec::new());
+    for (i, k) in kept.iter().enumerate() {
+        let is_open = open.contains(&i);
+        let n = k.days.len();
+        items.push(ChooserItem::Log(i, None));
+        lines.push(format!(
+            "{} {}:{}  {n} day{}, newest {}",
+            if is_open { "-" } else { "+" },
+            k.session,
+            k.key,
+            if n == 1 { "" } else { "s" },
+            k.days.first().map(|d| d.0.to_string()).unwrap_or_default()
+        ));
+        if !is_open {
+            continue;
+        }
+        for (d, (day, _, size)) in k.days.iter().enumerate() {
+            let when = match (today - *day).num_days() {
+                0 => "  today",
+                1 => "  yesterday",
+                _ => "",
+            };
+            items.push(ChooserItem::Log(i, Some(d)));
+            lines.push(format!("    {day} {}  {:>8}{when}", day.format("%a"), human_size(*size)));
+        }
+    }
+    (items, lines)
+}
+
+/// `list-marks`: one line per finished command still readable, oldest
+/// first: its row counted from the top of the screen (negative in the
+/// scrollback, as `capture-pane -S` counts), start and end in Unix
+/// milliseconds, the exit code (`-` when the shell did not say) and the
+/// line's text as it reads now (cut short in a pane narrowed since).
+fn list_marks(p: &mut Pane) -> Vec<String> {
+    let top = p.screen().scrolled_total() as i64;
+    let marks: Vec<pane::Mark> = p.marks.iter().filter(|m| m.end.is_some()).cloned().collect();
+    let mut out = Vec::new();
+    for m in marks {
+        let Some(now) = p.text_at(m.line).filter(|now| pane::still_reads(now, &m.text, p.cols)) else { continue };
+        let ms = |t: Option<chrono::DateTime<chrono::Local>>| {
+            t.map(|t| t.timestamp_millis().to_string()).unwrap_or("-".into())
+        };
+        out.push(format!(
+            "{} {} {} {} {}",
+            m.line as i64 - top,
+            ms(m.start),
+            ms(m.end),
+            m.exit.map(|c| c.to_string()).unwrap_or("-".into()),
+            now
+        ));
+    }
+    out
 }
 
 /// Absolute line number under the copy-mode cursor. The scrollback can shrink

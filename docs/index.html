@@ -63,7 +63,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>228</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>244</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -154,6 +154,7 @@
           <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and <code>wmux resume</code> brings back the windows, the pane layout, and each pane's command and directory.</li>
           <li data-i18n="c3.p2">The file also keeps what each pane printed: <code>save-history</code> stores the last 500 lines by default, or the whole scrollback with <code>all</code>, colours included. A resumed pane shows its old output instead of an empty prompt.</li>
           <li data-i18n="c3.p3"><code>wmux list-saved</code> shows what can be restored, and <code>wmux resume work</code> restores just that session.</li>
+          <li data-i18n="c3.p4">Closed the wrong pane? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was. Windows too.</li>
         </ul>
       </section>
 
@@ -177,6 +178,8 @@
         <ul class="points">
           <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
           <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
+          <li data-i18n="c35.p4"><kbd>C-b C-t</kbd> shows, at the end of each command's line, when it started, how long it took and whether it failed. The pane keeps its width; on the phone the times get a column of their own.</li>
+          <li data-i18n="c35.p5">What panes print is kept on disk, a file per pane per day for 30 days. <kbd>C-b /</kbd> lists them, and Enter opens a day in a pager where <kbd>[</kbd> and <kbd>]</kbd> jump from command to command.</li>
           <li data-i18n="c35.p3">Scripts can wait on each other: <code>wmux wait-for ready</code> blocks until another client runs <code>wmux wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
         </ul>
       </section>

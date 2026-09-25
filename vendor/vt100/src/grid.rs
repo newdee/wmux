@@ -13,6 +13,10 @@ pub struct Grid {
     scrollback: std::collections::VecDeque<crate::row::Row>,
     scrollback_len: usize,
     scrollback_offset: usize,
+    /// (wmux) Rows that have left the top of the screen, ever, whether the
+    /// scrollback kept them or not: `scrolled + row` names a line for good,
+    /// however much has scrolled since.
+    scrolled: u64,
 }
 
 impl Grid {
@@ -29,7 +33,13 @@ impl Grid {
             scrollback: std::collections::VecDeque::new(),
             scrollback_len,
             scrollback_offset: 0,
+            scrolled: 0,
         }
+    }
+
+    /// (wmux) Rows that have left the top of the screen so far.
+    pub fn scrolled(&self) -> u64 {
+        self.scrolled
     }
 
     pub fn allocate_rows(&mut self) {
@@ -96,6 +106,7 @@ impl Grid {
             let push = need.saturating_sub(usize::from(size.rows));
             for _ in 0..push {
                 let removed = self.rows.remove(0);
+                self.scrolled += 1;
                 if self.scrollback_len > 0 {
                     self.scrollback.push_back(removed);
                     while self.scrollback.len() > self.scrollback_len {
@@ -592,6 +603,9 @@ impl Grid {
             self.rows
                 .insert(usize::from(self.scroll_bottom) + 1, self.new_row());
             let removed = self.rows.remove(usize::from(self.scroll_top));
+            if !self.scroll_region_active() {
+                self.scrolled += 1;
+            }
             if self.scrollback_len > 0 && !self.scroll_region_active() {
                 self.scrollback.push_back(removed);
                 while self.scrollback.len() > self.scrollback_len {

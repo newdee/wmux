@@ -17,6 +17,7 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 - 每个 session 的布局会自动存盘，重启电脑后 `wmux resume` 就能恢复，连每个 pane 屏幕上的输出一起（`save-history`，默认 500 行）。
 - 没在看的窗口有输出就在状态栏标 `#`，响铃标 `!`，太久没动静标 `~`（`monitor-activity`），`prefix M-n` 直接跳过去。程序退出后 pane 也可以留着，写明退出码（`remain-on-exit`）。
 - 和 tmux 一样能装插件：插件就是一个目录加几个脚本，用 `run-shell`、hook 和状态栏格式串往里挂东西。
+- 每条命令什么时候开始、跑了多久、成没成，可以显示在它那一行的末尾（`prefix C-t`）。pane 里输出过的东西按天存盘，每个 pane 一天一个文件，留 30 天，`prefix /` 打开任意一天来看。手滑关掉的 pane 或窗口，10 秒内按 `prefix u` 就回来了。
 - `wmux web` 在终端里打出一个二维码，同一个 Wi-Fi 下手机扫一下，浏览器里就能看到所有 pane，点进去看屏幕、往里输入，手机上不用装任何东西。
 
 <p align="center">
@@ -32,7 +33,7 @@ Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine
 wmux web
 ```
 
-终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：列出所有 pane、每个 pane 里正在跑的程序，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），一眼就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 wmux 就把新内容推过来，不用等刷新；底部的输入框可以往里打字，还有一排手机键盘上没有的键（Esc、Tab、Shift+Tab、方向键、Ctrl+C、y / n / 1 / 2 / 3）。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
+终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：列出所有 pane、每个 pane 里正在跑的程序，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），一眼就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 wmux 就把新内容推过来，不用等刷新；底部的输入框可以往里打字，还有一排手机键盘上没有的键（Esc、Tab、Shift+Tab、方向键、Ctrl+C、y / n / 1 / 2 / 3）。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane；⏱ 按钮在左边加一栏，显示每条命令开始的时间（点一下看日期、耗时和退出码，见下文）。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
 
 <p align="center">
   <img src="docs/img/phone-zh.png" width="620"
@@ -110,6 +111,9 @@ wmux kill-server
 | 移动、改大小、`n` / `p`、`{` / `}` 都能连按 | 按一次前缀之后半秒内（`repeat-time`）接着按同一个键就行，不用再按前缀 |
 | `z` | 当前 pane 放大到整个窗口，再按一次还原 |
 | `x` | 关掉当前 pane |
+| `u` | 把 10 秒内关掉的 pane 或窗口放回原处（`undo-kill`） |
+| `C-t` | 在每条命令那一行的末尾显示开始时间、耗时和成败（`pane-timestamps`） |
+| `/` | 按 pane 和日期翻看输出过的历史（`choose-history`） |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
 | `q` | 每块显示自己的编号，按数字直接跳过去 |
 | `Space` / `M-1`…`M-5` / `E` | 轮换布局 / 直接选一种（左右平分、上下平分、主窗在上、主窗在左、平铺）/ 把旁边这一排 pane 拉成等宽等高 |
@@ -135,6 +139,30 @@ wmux kill-server
 copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转，`PageUp` / `PageDown` 和 `C-b` / `C-f` 翻页，`C-u` / `C-d` 翻半页（`C-b` 是前缀键，按两下：`C-b C-b` 就是 copy mode 的上翻页），前面加数字就重复（`3j`），`Space` 或 `v` 开始选，`C-v` 切成矩形选择，`Enter` 或 `y` 复制（同时进粘贴缓冲区和 Windows 剪贴板），`/` 往新的方向搜、`?` 往回翻历史搜、`n` `N` 找下一个，`q` 退出。脚本想干同样的事就用 `send-keys -X <命令名>`，命令名和 tmux 一样。
 
 鼠标也管用：点一下选 pane，拖边框调大小，点状态栏上的窗口名切窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了；右键把剪贴板贴进 pane，和终端本身的右键一样。
+
+## 命令时间和历史
+
+PowerShell pane 会报告自己跑的每条命令（wmux 的 prompt hook 做这件事，就是报告目录的那个）。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
+
+```text
+PS C:\src> cargo build                                     14:03:22 41s ✓
+PS C:\src> cargo test                                      14:04:10 12s ✗
+```
+
+时间画在行尾的空白里。pane 宽度不变，程序输出的内容一个字不改（copy mode 和 `capture-pane` 看不到它），一行满到放不下就不画。脚本要用的话，`wmux list-marks` 打印同样的信息。手机上点 ⏱ 按钮，时间显示在左边一栏。
+
+别的 shell 用 Windows Terminal 和 VS Code 也认的那套序列（OSC 133）报告命令。WSL 里的 bash：
+
+```bash
+PS0='\e]133;C\e\\'
+PROMPT_COMMAND='printf "\e]133;D;%s\e\\\e]133;A\e\\" "$?"'
+```
+
+pane 里输出过的东西也会存到磁盘上（`log-history`，默认开）：每个 pane 位置每天一个纯文本文件，放在 `%LOCALAPPDATA%\wmux\history\<session>\<窗口>.<pane>\2026-09-25.log`，留 30 天（`log-history-days`），每个文件每天最多 20 MB。一行字从 pane 顶上滚出去的时候才写，所以进度条、正在编辑的提示符只留下最后的样子；vim 这类全屏程序什么都不留；pane 关掉时屏幕上还剩的内容，那时一起写进去。报告过的命令前面有一行它的时间（`── 14:03:22 · 41s · ✓ ──`）。
+
+`prefix /`（`choose-history`）列出有历史的 pane 位置和它们的日期。在某一天上按 Enter，就在弹出框里用查看器打开。查看器从末尾开始看，用法和 `less` 一样：`j` `k`、`Space` `b`、`g` `G`，`/` `?` 搜索，`n` `N` 找下一个，`[` `]` 在命令之间跳，`q` 退出。`wmux view 文件` 用它打开任何文件。`set -g log-history off` 就不记了。
+
+用 `kill-pane` 或 `kill-window` 关掉的 pane 或窗口（`prefix x`、`prefix &`）会保留 10 秒，里面的程序继续跑。这期间按 `prefix u`（`undo-kill`）就放回原处。过了 10 秒就和以前一样彻底没了。秒数用 `undo-kill-time` 改；设成 0 就立刻结束，关程序是为了释放端口或文件的时候就该这样。一个 session 的最后一个 pane 不保留，因为 session 会跟着它一起结束。
 
 ## 重启之后接着用
 
@@ -232,6 +260,11 @@ set -g monitor-activity on        # 后台窗口有输出就在状态栏标 `#`
 set -g monitor-bell on            # 响铃标 `!`；默认就是开的
 set -g monitor-silence 60         # 60 秒没动静标 `~`；0 是关掉
 set -g visual-bell on             # 用状态栏提示代替真的响铃
+
+set -g pane-timestamps on         # 每条命令的时间显示在行尾（prefix C-t 切换）
+set -g log-history on             # 输出存盘，每个 pane 每天一个文件（prefix / 翻看）
+set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir 改存放位置）
+set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 
 bind | split-window -h
 bind - split-window -v

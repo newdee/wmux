@@ -65,6 +65,10 @@
     margin: 0; padding: 8px; white-space: pre; font-family: "Maple Mono NF CN", "Maple Mono", ui-monospace, Menlo, Consolas, monospace;
     line-height: 1.2; min-height: 100%;
   }
+  /* Detailed mode: when each command ran, in a column left of its line. */
+  #detail.on { background: var(--accent); color: var(--bar); border-color: var(--accent); }
+  .stamp { color: var(--muted); cursor: pointer; }
+  .stamp.fail { color: var(--red); }
   footer { background: var(--bar); border-top: 1px solid var(--line); padding: 8px 8px calc(env(safe-area-inset-bottom) + 8px); }
   .keys { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
   .keys::-webkit-scrollbar { display: none; }
@@ -94,6 +98,7 @@
 <header>
   <button id="back" class="icon hidden" aria-label="Back">&#8249;</button>
   <h1 id="title">wmux</h1>
+  <button id="detail" class="icon hidden" aria-label="Times">&#9201;</button>
   <button id="plus" class="icon hidden" aria-label="More">+</button>
 </header>
 <main id="main">
@@ -198,9 +203,9 @@ function open(id, push) {
   const p = paneInfo(id);
   $("title").innerHTML = p ? `${esc(p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane}</span>` : esc(id);
   $("list").classList.add("hidden"); $("screen").classList.remove("hidden");
-  $("back").classList.remove("hidden");
+  $("back").classList.remove("hidden"); $("detail").classList.remove("hidden");
   $("plus").classList.toggle("hidden", readOnly); $("footer").classList.toggle("hidden", readOnly);
-  lastText = ""; $("screen").innerHTML = ""; stick = true;
+  lastText = ""; shown = { text: "", marks: [] }; $("screen").innerHTML = ""; stick = true;
   stopWatch(); fitFont(); tick();
 }
 
@@ -210,7 +215,7 @@ function showList(push) {
   if (push) history.pushState({}, "");
   $("title").textContent = "wmux";
   $("screen").classList.add("hidden"); $("list").classList.remove("hidden");
-  $("back").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
+  $("back").classList.add("hidden"); $("detail").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
   tick();
 }
 
@@ -227,7 +232,7 @@ let charRatio = 0.6;
   charRatio = probe.getBoundingClientRect().width / 2000 || 0.6; probe.remove();
 })();
 function fitFont() {
-  const p = paneInfo(current); const cols = p ? p.cols : 80;
+  const p = paneInfo(current); const cols = (p ? p.cols : 80) + (detail ? GUTTER : 0);
   const width = $("main").clientWidth - 16;
   $("screen").style.fontSize = Math.max(8, Math.min(15, width / (cols * charRatio))).toFixed(2) + "px";
 }
@@ -239,15 +244,69 @@ $("main").addEventListener("scroll", () => {
   const m = $("main"); stick = m.scrollHeight - m.scrollTop - m.clientHeight < 40;
 });
 
-function showScreen(text) {
-  if (text === lastText) return;
-  lastText = text;
+// Detailed mode: a column left of the screen with the time each command
+// started on its line (the date when not today); tapping it says more. The
+// pane keeps its size: the column is the page's, not the pane's.
+const GUTTER = 6;
+let detail = (() => { try { return localStorage.getItem("wmux-detail") === "1"; } catch (e) { return false; } })();
+let shown = { text: "", marks: [] };
+const pad2 = (n) => String(n).padStart(2, "0");
+function stampText(m) {
+  const d = new Date(m[1] ?? m[2]), now = new Date();
+  return d.toDateString() === now.toDateString() ? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+function took(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m${pad2(Math.floor(ms / 1000) % 60)}s`;
+  return `${Math.floor(ms / 3600000)}h${pad2(Math.floor(ms / 60000) % 60)}m`;
+}
+function stampDetail(m) {
+  const [, start, end, exit] = m, d = new Date(start ?? end);
+  let s = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  if (start != null && end != null) s += ` · ${took(end - start)}`;
+  if (exit === 0) s += " · ✓";
+  else if (exit != null) s += ` · ✗ ${t("exit", "退出码")} ${exit}`;
+  return s;
+}
+$("detail").classList.toggle("on", detail);
+$("detail").addEventListener("click", () => {
+  detail = !detail;
+  try { localStorage.setItem("wmux-detail", detail ? "1" : "0"); } catch (e) {}
+  $("detail").classList.toggle("on", detail);
+  fitFont(); lastText = null; showScreen(shown.text, shown.marks);
+});
+$("screen").addEventListener("click", (e) => {
+  const s = e.target.closest(".stamp");
+  const m = s && shown.marks.find((m) => m[0] === Number(s.dataset.i));
+  if (m) toast(stampDetail(m));
+});
+
+function showScreen(text, marks) {
+  marks = marks || [];
+  const key = text + "\u0000" + JSON.stringify(marks) + detail;
+  if (key === lastText) return;
+  lastText = key; shown = { text, marks };
   // The rows under the last line with something on it are empty: without
   // them, following the bottom shows the last output, not blank rows.
   const lines = text.split("\n");
   const blank = (l) => !l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim();
   while (lines.length && blank(lines[lines.length - 1])) lines.pop();
-  $("screen").innerHTML = ansiToHtml(lines.join("\n"));
+  if (detail) {
+    // capture-pane ends every coloured line with a reset, so each line can
+    // be turned into HTML on its own.
+    const at = new Map(marks.map((m) => [m[0], m]));
+    $("screen").innerHTML = lines.map((l, i) => {
+      const m = at.get(i);
+      const g = m ? `<span class="stamp${m[3] ? " fail" : ""}" data-i="${i}">${stampText(m)}</span> ` : " ".repeat(GUTTER);
+      return g + ansiToHtml(l);
+    }).join("\n");
+  } else {
+    $("screen").innerHTML = ansiToHtml(lines.join("\n"));
+  }
   if (stick) $("main").scrollTop = $("main").scrollHeight;
 }
 const showError = (msg) => ($("screen").innerHTML = `<span style="color:var(--red)">${esc(msg)}</span>`);
@@ -255,7 +314,8 @@ const showError = (msg) => ($("screen").innerHTML = `<span style="color:var(--re
 // Polling, for a browser that cannot read a response as it arrives.
 async function loadScreen() {
   try {
-    showScreen((await (await api(`/api/screen?pane=${encodeURIComponent(current)}&history=300`)).json()).text);
+    const s = await (await api(`/api/screen?pane=${encodeURIComponent(current)}&history=300`)).json();
+    showScreen(s.text, s.marks);
   } catch (e) { showError(e.message); }
 }
 
@@ -290,7 +350,7 @@ async function watchScreen() {
           const ev = buf.slice(0, end); buf = buf.slice(end + 2);
           if (ev.startsWith("event: gone")) { showError(t("This pane is gone.", "这个 pane 已经关了。")); ctl.abort(); return; }
           const data = ev.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
-          if (data) showScreen(JSON.parse(data).text);
+          if (data) { const s = JSON.parse(data); showScreen(s.text, s.marks); }
         }
       }
     } catch (e) {
@@ -416,6 +476,7 @@ if (window.visualViewport) {
 (async () => {
   $("text").placeholder = t("Type, then send", "输入后发送");
   $("send").textContent = t("Send", "发送");
+  $("detail").title = t("When each command ran", "每条命令的时间");
   const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
     "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消") };
   for (const b of document.querySelectorAll("#menu button")) b.textContent = labels[b.dataset.do];

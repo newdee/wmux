@@ -624,6 +624,34 @@ pub fn draw_popup(
 
 /// `display-panes`: a pane's number, centred in its rectangle, big enough to
 /// read at a glance (the active pane in the active colour).
+/// Write `parts` at the right end of row `row` of `rect`, but only over
+/// cells that are blank and uncoloured, with two more blank ones before it:
+/// what a line says is never covered. Returns whether it fit.
+pub fn draw_stamp(g: &mut Grid, rect: Rect, row: u16, parts: &[(String, Style)]) -> bool {
+    let width: u16 = parts.iter().map(|(s, _)| UnicodeWidthStr::width(s.as_str()) as u16).sum();
+    if row >= rect.h || rect.w < width + 2 {
+        return false;
+    }
+    let y = rect.y + row;
+    let end = (rect.x + rect.w).min(g.cols);
+    let Some(x0) = end.checked_sub(width) else { return false };
+    if y >= g.rows || x0 < rect.x + 2 {
+        return false;
+    }
+    let free = (x0 - 2..end).all(|x| {
+        let c = g.get(x, y);
+        c.text() == " " && !c.cont && c.style.bg == Color::Default && !c.style.inverse
+    });
+    if !free {
+        return false;
+    }
+    let mut x = x0;
+    for (s, style) in parts {
+        x += g.put_str(x, y, s, *style, end - x);
+    }
+    true
+}
+
 pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {
     let style = Style::colors(Color::Idx(0), if active { Color::Idx(2) } else { Color::Idx(4) });
     let text = number.to_string();
@@ -720,6 +748,30 @@ pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamp_goes_only_into_blank_cells_that_fit_it() {
+        let parts = vec![("12:00:00".to_string(), Style::default()), (" ✓".to_string(), Style::default())];
+        let row = |g: &Grid, y: u16| (0..g.cols).map(|x| g.get(x, y).text().to_string()).collect::<String>();
+        let mut g = Grid::new(30, 3);
+        g.put_str(0, 0, "PS> ls", Style::default(), 30);
+        let r = Rect { x: 0, y: 0, w: 30, h: 3 };
+        assert!(draw_stamp(&mut g, r, 0, &parts));
+        assert_eq!(row(&g, 0), "PS> ls              12:00:00 ✓");
+        // A line that reaches the end, a row past the rectangle, a
+        // rectangle narrower than the stamp: nothing drawn, no panic.
+        g.put_str(0, 1, &"x".repeat(25), Style::default(), 30);
+        assert!(!draw_stamp(&mut g, r, 1, &parts));
+        assert!(!draw_stamp(&mut g, r, 3, &parts));
+        for w in 0..12 {
+            assert!(!draw_stamp(&mut g, Rect { x: 0, y: 2, w, h: 1 }, 0, &parts), "width {w}");
+        }
+        assert_eq!(row(&g, 2).trim(), "");
+        // A coloured blank (a bar the program drew) is not blank enough.
+        let bar = Style::colors(Color::Default, Color::Idx(4));
+        g.fill(Rect { x: 20, y: 2, w: 10, h: 1 }, bar);
+        assert!(!draw_stamp(&mut g, Rect { x: 0, y: 2, w: 30, h: 1 }, 0, &parts));
+    }
 
     #[test]
     fn chooser_highlights_selection_and_scrolls() {

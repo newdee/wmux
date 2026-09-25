@@ -37,6 +37,94 @@ pub struct Callbacks {
     pub cwd: Option<String>,
     /// The `REPLAY_MARKER` arrived: a resumed pane's saved output is all in.
     pub replayed: bool,
+    /// What the shell said about its prompts and commands, in order.
+    pub marks: Vec<MarkEvent>,
+}
+
+/// A shell's word about its prompt and its commands: FTCS (OSC 133, and
+/// VS Code's OSC 633, which reads the same) from bash, zsh, fish and
+/// profiles that print it, stamped on arrival; and the PowerShell prompt
+/// hook's own report, whose times come from the shell's history.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkEvent {
+    /// A prompt is on the line `line` (`scrolled_total() + row`).
+    Prompt(u64),
+    /// The command typed at it started.
+    Start(chrono::DateTime<chrono::Local>),
+    /// It finished, with this exit code when the shell gave one.
+    End(chrono::DateTime<chrono::Local>, Option<i32>),
+    /// PowerShell: the last command ran from `start` to `end`, and did or
+    /// did not succeed.
+    Ran { start: chrono::DateTime<chrono::Local>, end: chrono::DateTime<chrono::Local>, ok: bool },
+}
+
+/// One command a shell ran, pinned to the line it was typed on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    /// The prompt's line, as `scrolled_total() + row`: it keeps naming the
+    /// same line however far it scrolls.
+    pub line: u64,
+    pub start: Option<chrono::DateTime<chrono::Local>>,
+    pub end: Option<chrono::DateTime<chrono::Local>>,
+    /// The exit code, when the shell said; PowerShell says only whether it
+    /// failed (1) or not (0).
+    pub exit: Option<i32>,
+    /// What the line read when the command finished. A line that no longer
+    /// reads so was cleared or written over, and the mark is no longer shown.
+    pub text: String,
+}
+
+/// Whether a line reading `now` is still the line a mark saw as `then`:
+/// the same text or, in a pane narrowed since, the part of it that fits in
+/// `cols` columns (both without trailing blanks).
+pub fn still_reads(now: &str, then: &str, cols: u16) -> bool {
+    if now == then {
+        return true;
+    }
+    let mut width = 0;
+    let end = then
+        .char_indices()
+        .find(|(_, c)| {
+            width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            width > usize::from(cols)
+        })
+        .map_or(then.len(), |(i, _)| i);
+    end < then.len() && !now.is_empty() && now == then[..end].trim_end()
+}
+
+/// Log text a pane gathers before handing it to the writer.
+const LOG_BATCH: usize = 32 * 1024;
+
+/// Most lines of a running command's output held back for its times, and
+/// for how long, before they go to the history log without them.
+const HOLD_LINES: usize = 5000;
+const HOLD_FOR: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The line the history log puts before a command: when it started (with
+/// the date when not today), how long it took, how it ended.
+fn log_header(m: &Mark, end: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
+    let at = m.start.unwrap_or(end);
+    let fmt = if at.date_naive() == now.date_naive() { "%H:%M:%S" } else { "%Y-%m-%d %H:%M:%S" };
+    let mut h = format!("── {}", at.format(fmt));
+    if let Some(start) = m.start {
+        h.push_str(&format!(" · {}", crate::format::command_duration((end - start).num_milliseconds())));
+    }
+    match m.exit {
+        Some(0) => h.push_str(" · ✓"),
+        Some(code) => h.push_str(&format!(" · ✗ {code}")),
+        None => {}
+    }
+    h.push_str(" ──\n");
+    h
+}
+
+/// Most marks a pane keeps; older ones have long scrolled out of reach.
+const MAX_MARKS: usize = 2000;
+
+fn local_ms(ms: &[u8]) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::TimeZone;
+    let ms: i64 = std::str::from_utf8(ms).ok()?.parse().ok()?;
+    chrono::Local.timestamp_millis_opt(ms).single()
 }
 
 /// Turn a shell-announced directory into a Windows path usable as a process
@@ -131,7 +219,11 @@ impl vt100::Callbacks for Callbacks {
             _ => {}
         }
     }
-    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+    fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
+        // A full-screen program's screen is not the shell's: nothing there
+        // is a prompt.
+        let shell = !screen.alternate_screen();
+        let now = chrono::Local::now;
         // OSC 7 ; file://host/path   (bash/zsh/fish shell integration)
         // OSC 9 ; 9 ; path           (ConEmu / Windows Terminal "current directory")
         let raw = match params {
@@ -139,6 +231,30 @@ impl vt100::Callbacks for Callbacks {
             [b"9", b"9", p] => Some(*p),
             [b"7777", b"wmux-replayed"] => {
                 self.replayed = true;
+                None
+            }
+            // OSC 7777 ; wmux-cmd ; start ; end ; ok   (the PowerShell hook,
+            // times in Unix milliseconds)
+            [b"7777", b"wmux-cmd", start, end, ok] if shell => {
+                if let (Some(start), Some(end)) = (local_ms(start), local_ms(end)) {
+                    self.marks.push(MarkEvent::Ran { start, end, ok: *ok != b"0" });
+                }
+                None
+            }
+            // OSC 133 ; A|B|C|D[;code]
+            [b"133" | b"633", kind, rest @ ..] if shell => {
+                match *kind {
+                    b"A" | b"B" => {
+                        let (row, _) = screen.cursor_position();
+                        self.marks.push(MarkEvent::Prompt(screen.scrolled_total() + u64::from(row)));
+                    }
+                    b"C" => self.marks.push(MarkEvent::Start(now())),
+                    b"D" => {
+                        let code = rest.first().and_then(|c| std::str::from_utf8(c).ok()?.trim().parse().ok());
+                        self.marks.push(MarkEvent::End(now(), code));
+                    }
+                    _ => {}
+                }
                 None
             }
             _ => None,
@@ -217,6 +333,22 @@ pub struct Pane {
     /// time, it changes with every output, so a watcher can tell whether
     /// the screen may have changed without reading it.
     pub output_count: u64,
+    /// The commands its shell ran, oldest first (`pane-timestamps`,
+    /// `list-marks`); empty for a shell that does not report them.
+    pub marks: std::collections::VecDeque<Mark>,
+    /// `log-history`: the file this pane writes to now (set by the server,
+    /// which knows where the pane is), and so where what is left on its
+    /// screen goes when it closes. None while logging is off.
+    pub log_to: Option<std::path::PathBuf>,
+    /// The first line (`scrolled_total() + row`) not yet taken for the log.
+    pub logged: u64,
+    /// Lines taken but not yet written: the command they follow is still
+    /// running, and its times go before it once it is done.
+    log_hold: std::collections::VecDeque<(u64, String)>,
+    log_hold_since: Option<std::time::Instant>,
+    /// Log text not yet handed to the writer: it goes in batches (a pane
+    /// prints a line or two at a time), at `LOG_BATCH` bytes or each second.
+    log_buf: String,
     /// When its program exited, while `remain-on-exit` keeps the pane
     /// (`#{pane_dead_time}`; `jobs` stops the clock there).
     pub died_at: Option<std::time::Instant>,
@@ -260,10 +392,10 @@ pub struct Pipe {
     pub output: bool,
 }
 
-/// The wmux.exe that runs `__replay`: this executable when it is wmux,
+/// The wmux.exe that runs `__replay` and `view`: this executable when it is wmux,
 /// `WMUX_EXE` when set (the tests, whose own binary is not wmux), else the
 /// wmux.exe two directories up from a test binary (cargo's layout).
-fn replay_helper_exe() -> Option<std::path::PathBuf> {
+pub fn helper_exe() -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("WMUX_EXE").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
@@ -278,7 +410,7 @@ fn replay_helper_exe() -> Option<std::path::PathBuf> {
 /// The command that prints `text` into the pane's console: `wmux __replay
 /// file`, which writes the file's text to the console and removes it.
 fn replay_argv(id: PaneId, text: &str) -> Result<(Vec<String>, std::path::PathBuf)> {
-    let exe = replay_helper_exe().context("no wmux.exe to print the saved output with")?;
+    let exe = helper_exe().context("no wmux.exe to print the saved output with")?;
     // Unique per file, not per pane: several servers in one process (the
     // tests) hand out the same pane ids.
     static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -486,6 +618,12 @@ impl Pane {
             spawned_at: std::time::Instant::now(),
             last_output: std::time::Instant::now(),
             output_count: 0,
+            marks: std::collections::VecDeque::new(),
+            log_to: None,
+            logged: 0,
+            log_hold: std::collections::VecDeque::new(),
+            log_hold_since: None,
+            log_buf: String::new(),
             died_at: None,
         })
     }
@@ -706,18 +844,270 @@ impl Pane {
             self.cwd = Some(d);
             self.announced = true;
         }
-        if cb.replayed {
-            cb.replayed = false;
-            self.replay_done = true;
-        }
+        let replayed = std::mem::take(&mut cb.replayed);
         if cb.bell {
             cb.bell = false;
             self.bell = true;
         }
+        let marks = std::mem::take(&mut cb.marks);
         if !cb.responses.is_empty() {
             let resp = std::mem::take(&mut cb.responses);
             let _ = self.writer.write_all(&resp);
         }
+        if !marks.is_empty() {
+            self.apply_marks(marks);
+        }
+        if replayed {
+            self.replay_done = true;
+            // What a resumed pane printed back is in the log already, from
+            // before: its log starts where the program does.
+            let s = self.parser.screen();
+            self.logged = self.logged.max(s.scrolled_total() + u64::from(s.cursor_position().0));
+        }
+    }
+
+    /// Fold what the shell said into the pane's marks.
+    pub fn apply_marks(&mut self, events: Vec<MarkEvent>) {
+        for e in events {
+            match e {
+                MarkEvent::Prompt(line) => {
+                    // A prompt with nothing run at it yet is the same prompt
+                    // again (133;A then B, an empty Enter): it moves rather
+                    // than piling up.
+                    let mut mark = match self.marks.back() {
+                        Some(m) if m.start.is_none() && m.end.is_none() => self.marks.pop_back().unwrap(),
+                        _ => Mark { line, start: None, end: None, exit: None, text: String::new() },
+                    };
+                    mark.line = line;
+                    // A mark at or below a new prompt's line was cleared or
+                    // written over (`cls`): lines only move on otherwise.
+                    self.marks.retain(|m| m.line < line);
+                    self.marks.push_back(mark);
+                }
+                MarkEvent::Start(t) => {
+                    if let Some(m) = self.marks.back_mut()
+                        && m.end.is_none()
+                    {
+                        m.start = Some(t);
+                    }
+                }
+                MarkEvent::End(t, code) => {
+                    // A D with no C before it is an empty Enter or a Ctrl+C
+                    // at the prompt: nothing ran.
+                    if self.marks.back().is_some_and(|m| m.start.is_some() && m.end.is_none()) {
+                        self.finish_mark(None, t, code);
+                    }
+                }
+                MarkEvent::Ran { start, end, ok } => {
+                    if self.marks.back().is_some_and(|m| m.end.is_none()) {
+                        self.finish_mark(Some(start), end, Some(if ok { 0 } else { 1 }));
+                    }
+                }
+            }
+        }
+        // Lines the scrollback no longer holds can never be shown again.
+        let s = self.parser.screen();
+        let oldest = s.scrolled_total().saturating_sub(s.scrollback_rows() as u64);
+        while self.marks.front().is_some_and(|m| m.line < oldest) || self.marks.len() > MAX_MARKS {
+            self.marks.pop_front();
+        }
+    }
+
+    /// Close the newest mark: its times, and its line as it reads now.
+    fn finish_mark(
+        &mut self,
+        start: Option<chrono::DateTime<chrono::Local>>,
+        end: chrono::DateTime<chrono::Local>,
+        exit: Option<i32>,
+    ) {
+        let Some(line) = self.marks.back().map(|m| m.line) else { return };
+        match self.text_at(line) {
+            Some(text) if !text.is_empty() => {
+                let m = self.marks.back_mut().unwrap();
+                if start.is_some() {
+                    m.start = start;
+                }
+                m.end = Some(end);
+                m.exit = exit;
+                m.text = text;
+            }
+            // Gone already (scrolled past the history, or cleared): the
+            // command cannot be shown against its line.
+            _ => {
+                self.marks.pop_back();
+            }
+        }
+    }
+
+    /// `take_log` into the batch for the history file; the batch goes
+    /// out when it is big, or at once when `closing`.
+    pub fn log_take(&mut self, closing: bool) {
+        let text = self.take_log(closing);
+        self.log_buf.push_str(&text);
+        if closing || self.log_buf.len() >= LOG_BATCH {
+            self.flush_log();
+        }
+    }
+
+    /// Hand the batch to the history file's writer (dropped when logging
+    /// is off).
+    pub fn flush_log(&mut self) {
+        if self.log_buf.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut self.log_buf);
+        if let Some(path) = &self.log_to {
+            crate::histlog::append(path.clone(), text);
+        }
+    }
+
+    /// Whether `take_log` has anything to do.
+    pub fn log_pending(&self) -> bool {
+        let s = self.parser.screen();
+        !self.log_hold.is_empty() || (!s.alternate_screen() && s.scrolled_total() > self.logged)
+    }
+
+    /// The text for the history log: the lines that left the screen since
+    /// the last call, each reported command after a line of its times.
+    /// Lines from a command still running wait for it, so its times can go
+    /// first (at most `HOLD_LINES` lines for `HOLD_FOR`). `closing` takes
+    /// everything, what is on the screen as well.
+    pub fn take_log(&mut self, closing: bool) -> String {
+        let rows = u64::from(self.rows);
+        let cols = self.cols;
+        let s = self.parser.screen_mut();
+        if !s.alternate_screen() {
+            let top = s.scrolled_total();
+            let oldest = top.saturating_sub(s.scrollback_rows() as u64);
+            if s.scrollback_rows() == 0 {
+                // `history-limit 0`: nothing that scrolls off can be read
+                // back (with any other limit, a scroll leaves at least one
+                // line behind). Only the screen, at the close, is kept.
+                self.logged = self.logged.max(top);
+            } else if self.logged < oldest {
+                let lost = oldest - self.logged;
+                self.log_hold.push_back((
+                    u64::MAX,
+                    format!("[wmux: {lost} lines scrolled past the history before they were kept]"),
+                ));
+                self.logged = oldest;
+            }
+            let end = if closing { top + rows } else { top };
+            let keep = s.scrollback();
+            // A row the terminal wrapped continues on the next one: one
+            // line in the log, as the program printed it. A wrapped row
+            // whose rest has not scrolled off yet waits for it.
+            let mut line = self.logged;
+            let mut first = line;
+            let mut joined = String::new();
+            // A screenful at a time: finding a row in the scrollback walks
+            // it from the top, so it is done once per view, not per line.
+            'read: while line < end {
+                let (offset, row0) = if line < top { ((top - line) as usize, 0) } else { (0, (line - top) as usize) };
+                s.set_scrollback(offset);
+                let n = (rows - row0 as u64).min(end - line) as usize;
+                let view: Vec<(String, bool)> = s.rows_wrapped(0, cols).skip(row0).take(n).collect();
+                if view.is_empty() {
+                    break;
+                }
+                for (text, wrapped) in view {
+                    joined.push_str(&text);
+                    line += 1;
+                    if wrapped && line < end {
+                        continue;
+                    }
+                    if wrapped && !closing {
+                        line = first;
+                        break 'read;
+                    }
+                    self.log_hold.push_back((first, joined.trim_end().to_string()));
+                    joined.clear();
+                    first = line;
+                }
+            }
+            s.set_scrollback(keep);
+            self.logged = self.logged.max(line);
+            if closing {
+                // The screen's blank bottom is not output.
+                while self.log_hold.back().is_some_and(|(l, t)| *l >= top && t.is_empty()) {
+                    self.log_hold.pop_back();
+                }
+            }
+        }
+        if self.log_hold.is_empty() {
+            self.log_hold_since = None;
+            return String::new();
+        }
+        let since = *self.log_hold_since.get_or_insert_with(std::time::Instant::now);
+        let give_up = closing || self.log_hold.len() > HOLD_LINES || since.elapsed() > HOLD_FOR;
+        let now = chrono::Local::now();
+        let mut out = String::new();
+        while let Some((line, _)) = self.log_hold.front() {
+            // Marks are in line order (a new prompt drops any at or below
+            // its line), so the one for a line is found by halving.
+            let at = self.marks.binary_search_by_key(line, |m| m.line).ok();
+            if let Some(m) = at.map(|i| &self.marks[i]) {
+                match m.end {
+                    Some(end) => out.push_str(&log_header(m, end, now)),
+                    None if !give_up => break, // still running
+                    None => {}
+                }
+            }
+            let (_, text) = self.log_hold.pop_front().unwrap();
+            out.push_str(&text);
+            out.push('\n');
+        }
+        if self.log_hold.is_empty() {
+            self.log_hold_since = None;
+        }
+        out
+    }
+
+    /// The text of line `line` (`scrolled_total() + row`), trailing blanks
+    /// dropped, while the screen or the scrollback still holds it.
+    pub fn text_at(&mut self, line: u64) -> Option<String> {
+        let (rows, cols) = (self.rows, self.cols);
+        let s = self.parser.screen_mut();
+        let top = s.scrolled_total();
+        let (offset, row) = if line >= top { (0, line - top) } else { (top - line, 0) };
+        if row >= u64::from(rows) || offset > s.scrollback_rows() as u64 {
+            return None;
+        }
+        let keep = s.scrollback();
+        s.set_scrollback(offset as usize);
+        let text = s.rows(0, cols).nth(row as usize);
+        s.set_scrollback(keep);
+        text.map(|t| t.trim_end().to_string())
+    }
+
+    /// The finished commands whose lines the view `offset` lines up into
+    /// the scrollback shows, still reading as they did: (row in the view,
+    /// the mark). The newest mark wins a line.
+    pub fn visible_marks(&mut self, offset: usize) -> Vec<(u16, Mark)> {
+        if self.parser.screen().alternate_screen() || self.marks.is_empty() {
+            return Vec::new();
+        }
+        let (rows, cols) = (self.rows, self.cols);
+        let s = self.parser.screen_mut();
+        let keep = s.scrollback();
+        s.set_scrollback(offset);
+        let top = s.scrolled_total().saturating_sub(s.scrollback() as u64);
+        let bottom = top + u64::from(rows);
+        let mut out: Vec<(u16, Mark)> = Vec::new();
+        let texts: Vec<String> = if self.marks.iter().any(|m| m.line >= top && m.line < bottom) {
+            s.rows(0, cols).collect()
+        } else {
+            Vec::new()
+        };
+        s.set_scrollback(keep);
+        for m in self.marks.iter().filter(|m| m.end.is_some() && m.line >= top && m.line < bottom) {
+            let row = (m.line - top) as u16;
+            if texts.get(row as usize).is_some_and(|t| still_reads(t.trim_end(), &m.text, cols)) {
+                out.retain(|(r, _)| *r != row);
+                out.push((row, m.clone()));
+            }
+        }
+        out
     }
 
     pub fn write_input(&mut self, bytes: &[u8]) {
@@ -891,6 +1281,11 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
+        // What it still shows goes to its history log, with anything held.
+        if self.log_to.is_some() {
+            self.log_take(true);
+            self.log_to = None;
+        }
         // Field drop order would close the ConPTY before the job; kill first so
         // ClosePseudoConsole never waits on a live process tree.
         self.job = None;
@@ -1013,7 +1408,7 @@ mod tests {
         let text = format!("before{REPLAY_MARKER}after\r\n");
         let path = std::env::temp_dir().join(format!("wmux-marker-test-{}.txt", std::process::id()));
         std::fs::write(&path, &text).unwrap();
-        let mut cmd = CommandBuilder::new(replay_helper_exe().expect("wmux.exe (WMUX_EXE or beside the tests)"));
+        let mut cmd = CommandBuilder::new(helper_exe().expect("wmux.exe (WMUX_EXE or beside the tests)"));
         cmd.arg("__replay");
         cmd.arg(&path);
         cmd.env("WMUX_REPLAY_NO_WAIT", "1");
@@ -1174,6 +1569,137 @@ mod tests {
         pane.resize(50, 5);
         pane.parser.process(b"\x1b[1;50H\x1b[K");
         assert_eq!(pane.screen().size(), (5, 50));
+    }
+
+    /// A pane fed by hand: its own program exits at once and its output is
+    /// never read, so only what the test writes reaches the screen.
+    fn quiet_pane(cols: u16, rows: u16, history: usize) -> Pane {
+        let (tx, _rx) = channel();
+        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        Pane::spawn(12, &argv, None, cols, rows, history, &[], tx).unwrap()
+    }
+
+    const B: &str = "\x1b]133;B\x1b\\";
+
+    fn ran(start: i64, end: i64, ok: bool) -> String {
+        format!("\x1b]7777;wmux-cmd;{start};{end};{}\x1b\\", ok as u8)
+    }
+
+    #[test]
+    fn a_command_is_marked_on_its_line_and_follows_it_up() {
+        let mut p = quiet_pane(40, 5, 100);
+        // Prompt, a command typed at it, its output, the next prompt with
+        // the report of the one before.
+        p.process_output(format!("PS> {B}").as_bytes());
+        p.process_output(b"echo hi\r\nhi\r\n");
+        p.process_output(format!("{}PS> {B}", ran(1_000, 4_200, true)).as_bytes());
+        assert_eq!(p.marks.len(), 2, "{:?}", p.marks);
+        let m = &p.marks[0];
+        assert_eq!((m.line, m.exit, m.text.as_str()), (0, Some(0), "PS> echo hi"));
+        assert_eq!(m.end.unwrap().timestamp_millis() - m.start.unwrap().timestamp_millis(), 3_200);
+        assert_eq!(p.marks[1].end, None, "the prompt now waiting has no command yet");
+        let rows: Vec<u16> = p.visible_marks(0).iter().map(|(r, _)| *r).collect();
+        assert_eq!(rows, [0]);
+        // Output pushes the line into the scrollback: off the live view,
+        // on the view scrolled back to it, still the same line.
+        p.process_output(b"\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6");
+        assert!(p.visible_marks(0).is_empty());
+        let top = p.screen().scrolled_total();
+        let back = p.visible_marks(top as usize);
+        assert_eq!(back.len(), 1, "{back:?}");
+        assert_eq!(back[0].0, 0);
+        assert_eq!(p.text_at(0).as_deref(), Some("PS> echo hi"));
+    }
+
+    #[test]
+    fn empty_enters_and_shells_saying_less_leave_no_marks() {
+        let mut p = quiet_pane(40, 10, 100);
+        // An empty Enter: a second prompt with nothing reported. The first
+        // prompt moves rather than a second one piling up.
+        p.process_output(format!("PS> {B}\r\nPS> {B}").as_bytes());
+        assert_eq!(p.marks.len(), 1);
+        assert_eq!(p.marks[0].line, 1);
+        // FTCS: a D with no C before it ran nothing; with C it did, and the
+        // exit code is kept.
+        p.process_output(b"\x1b]133;D;0\x1b\\");
+        assert_eq!(p.marks[0].end, None);
+        p.process_output(b"false\x1b]133;C\x1b\\\r\n\x1b]133;D;2\x1b\\\x1b]133;A\x1b\\$ ");
+        assert_eq!(p.marks[0].exit, Some(2));
+        assert_eq!(p.marks[0].text, "PS> false");
+        assert!(p.marks[0].start.is_some() && p.marks[0].end.is_some());
+        // A full-screen program's OSCs are not the shell's.
+        let n = p.marks.len();
+        p.process_output(format!("\x1b[?1049h{B}{}", ran(1, 2, true)).as_bytes());
+        assert_eq!(p.marks.len(), n);
+        assert!(p.visible_marks(0).is_empty(), "nothing is stamped over a full-screen program");
+        p.process_output(b"\x1b[?1049l");
+        assert_eq!(p.visible_marks(0).len(), 1);
+    }
+
+    #[test]
+    fn a_line_cleared_or_written_over_loses_its_mark() {
+        let mut p = quiet_pane(40, 10, 100);
+        p.process_output(format!("PS> {B}ls\r\n{}PS> {B}", ran(1, 2, false)).as_bytes());
+        assert_eq!(p.visible_marks(0).len(), 1);
+        assert_eq!(p.marks[0].exit, Some(1));
+        // Written over in place: still in the list, no longer shown.
+        p.process_output(b"\x1b[1;1Hsomething else\x1b[K\x1b[2;1H");
+        assert!(p.visible_marks(0).is_empty());
+        // `cls` and a prompt at the top again: the old mark goes.
+        p.process_output(format!("\x1b[2J\x1b[HPS> {B}").as_bytes());
+        assert_eq!(p.marks.len(), 1, "{:?}", p.marks);
+        assert_eq!(p.marks[0].end, None);
+        // Narrowed, a line shows only its start: still the line when the
+        // row is full; a shorter row that happens to begin it is not.
+        assert!(still_reads("PS> ec", "PS> echo hi", 6));
+        assert!(!still_reads("PS>", "PS> echo hi", 6));
+        assert!(!still_reads("PS> xx", "PS> echo hi", 6));
+        assert!(still_reads("PS> echo", "PS> echo hi", 9), "cut at a blank");
+        assert!(still_reads("PS> 中", "PS> 中文", 7), "cut by width, not chars");
+        // A line that scrolled past the whole scrollback cannot be marked.
+        let mut p = quiet_pane(40, 3, 2);
+        p.process_output(format!("PS> {B}x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n{}PS> {B}", ran(1, 2, true)).as_bytes());
+        assert!(p.marks.iter().all(|m| m.end.is_none()), "{:?}", p.marks);
+    }
+
+    #[test]
+    fn the_history_log_takes_what_scrolls_off_with_command_times() {
+        let mut p = quiet_pane(20, 4, 100);
+        assert!(!p.log_pending());
+        // Output of no command: written as it leaves the screen.
+        p.process_output(b"a\r\nb\r\nc\r\nd\r\ne");
+        assert_eq!(p.take_log(false), "a\n");
+        assert!(!p.log_pending());
+        // A command whose output scrolls its own line off: held until it
+        // is done, then written after a line of its times.
+        p.process_output(format!("\r\nPS> {B}run\r\n1\r\n2\r\n3\r\n4").as_bytes());
+        assert_eq!(p.take_log(false), "b\nc\nd\ne\n", "the command line waits");
+        p.process_output(format!("\r\n{}PS> {B}", ran(0, 1500, false)).as_bytes());
+        let text = p.take_log(false);
+        assert!(text.starts_with("── ") && text.ends_with(" · 1.5s · ✗ 1 ──\nPS> run\n1\n"), "{text:?}");
+        // A long line the terminal wrapped is one line again; a wrapped
+        // row whose rest is still on screen waits for it.
+        p.process_output(format!("{}\r\n0123456789012345678901234\r\nz\r\ny\r\nx", ran(2000, 2100, true)).as_bytes());
+        let text = p.take_log(false);
+        assert!(text.ends_with(" · 100ms · ✓ ──\nPS>\n"), "{text:?}");
+        p.process_output(b"\r\nw");
+        assert_eq!(p.take_log(false), "0123456789012345678901234\n");
+        // Closing takes the screen too, without its blank bottom.
+        p.process_output(b"\r\nlast\r\n\r\n");
+        let text = p.take_log(true);
+        assert_eq!(text, "z\ny\nx\nw\nlast\n");
+        assert_eq!(p.take_log(true), "", "nothing twice");
+        // A full-screen program's screen is not logged.
+        p.process_output(b"\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5\r\n6");
+        assert!(!p.log_pending());
+        // No scrollback at all: nothing can be read back once scrolled,
+        // and that is not reported line after line; the screen still is.
+        let mut p = quiet_pane(20, 3, 0);
+        for i in 0..10 {
+            p.process_output(format!("{i}\r\n").as_bytes());
+            assert_eq!(p.take_log(false), "");
+        }
+        assert_eq!(p.take_log(true), "8\n9\n");
     }
 
     #[test]

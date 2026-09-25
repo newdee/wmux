@@ -285,6 +285,88 @@ fn choose_tree_through_the_real_keyboard() {
     let _ = std::fs::remove_dir_all(sessions_dir());
 }
 
+/// `pane-timestamps` through the whole path: PowerShell with wmux's prompt
+/// hook reports each command, the server pins it to its line, and the
+/// client shows the time at the right end of that line, in cells that were
+/// blank, without the pane changing size. `prefix C-t` turns it off again.
+#[test]
+fn command_times_show_at_the_end_of_their_lines() {
+    let socket = format!("stamps-{}", std::process::id());
+    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "pwsh", "-NoLogo", "-NoProfile"], 100, 20);
+    t.wait_for("prompt", |s| s.contents().contains("PS "));
+    let out = wmux().args(["-L", &socket, "set", "-g", "pane-timestamps", "on"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    t.send("echo stamped\r");
+    let stamped =
+        |s: &vt100::Screen| s.rows(0, 100).any(|r| r.contains("> echo stamped") && r.trim_end().ends_with('✓'));
+    t.wait_for("a time on the command's line", stamped);
+    let row = (0..19).map(|y| t.row(y)).find(|r| r.contains("> echo stamped")).unwrap();
+    // HH:MM:SS, how long, how it went, ending in the pane's last column.
+    let tail: Vec<&str> = row.split_whitespace().rev().take(3).collect();
+    assert_eq!(tail[0], "✓", "{row:?}");
+    assert!(tail[1].ends_with('s'), "a duration: {row:?}");
+    assert!(tail[2].len() == 8 && tail[2].as_bytes()[2] == b':', "a time: {row:?}");
+    assert_eq!(row.chars().count(), 100, "{row:?}");
+    // The pane itself did not change: same size, and its text is what the
+    // shell printed, no time in it.
+    let size = wmux().args(["-L", &socket, "display", "-p", "-t", "t", "#{pane_width}"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&size.stdout).trim(), "100");
+    let text = wmux().args(["-L", &socket, "capture-pane", "-p", "-t", "t"]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&text.stdout).contains('✓'));
+    // A failing command is marked so.
+    t.send("cmd /c exit 3\r");
+    t.wait_for("a failure", |s| s.rows(0, 100).any(|r| r.contains("> cmd /c exit 3") && r.trim_end().ends_with('✗')));
+    // prefix C-t: off, and says so.
+    t.send("\x02\x14");
+    t.wait_for("off", |s| s.contents().contains("pane-timestamps off"));
+    t.wait_for("no times", |s| !s.contents().contains('✓'));
+    t.send("\x02d");
+    assert_eq!(t.wait_exit(), 0);
+}
+
+/// The history log, from the pane to the viewer: output that scrolls off
+/// is written to today's file, `prefix /` lists the pane's position with
+/// that day under it, and Enter opens it in `wmux view` in a popup, at the
+/// end, with the command's times before it; q closes it.
+#[test]
+fn history_is_kept_and_read_back_in_a_popup() {
+    let socket = format!("hist-{}", std::process::id());
+    // A directory of its own: other tests remove the shared one when they
+    // end, history and all.
+    let dir = own_dir("hist");
+    let mut t = Term::spawn_env(
+        &["-L", &socket, "new", "-s", "hist", "pwsh", "-NoLogo", "-NoProfile"],
+        100,
+        20,
+        &[("WMUX_SESSIONS_DIR", &dir)],
+    );
+    t.wait_for("prompt", |s| s.contents().contains("PS "));
+    t.send("1..60 | % { \"kept $_\" }\r");
+    t.wait_for("output", |s| s.contents().contains("kept 60"));
+    let file = std::path::Path::new(&dir)
+        .join("history")
+        .join("hist")
+        .join("0.0")
+        .join(format!("{}.log", chrono::Local::now().format("%Y-%m-%d")));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&file).is_ok_and(|s| s.contains("kept 40")) {
+        assert!(Instant::now() < deadline, "not logged: {}", file.display());
+        t.pump(Duration::from_millis(100));
+    }
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(" ✓ ──\nPS "), "the command's times before it:\n{text}");
+    t.send("\x02/");
+    t.wait_for("the picker", |s| s.contents().contains("- hist:0.0") && s.contents().contains("today"));
+    t.send("\r");
+    t.wait_for("the viewer", |s| s.contents().contains("q quit") && s.contents().contains("kept 40"));
+    t.send("q");
+    t.wait_for("closed", |s| !s.contents().contains("q quit"));
+    t.send("\x02d");
+    assert_eq!(t.wait_exit(), 0);
+    drop(t);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn nested_new_is_refused_and_detached_flag_allowed() {
     let socket = format!("nested-{}", std::process::id());

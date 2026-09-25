@@ -120,6 +120,14 @@ impl Screen {
         self.grid().scrollback_rows()
     }
 
+    /// (wmux) Rows that have left the top of the screen in view (the main
+    /// one or the alternate), ever: `scrolled_total() + row` is a stable
+    /// name for the line at `row`.
+    #[must_use]
+    pub fn scrolled_total(&self) -> u64 {
+        self.grid().scrolled()
+    }
+
     /// Returns the current position in the scrollback.
     ///
     /// This position indicates the offset from the top of the screen, and is
@@ -160,6 +168,21 @@ impl Screen {
             let mut contents = String::new();
             row.write_contents(&mut contents, start, width, false);
             contents
+        })
+    }
+
+    /// (wmux) `rows`, each with whether the terminal wrapped it onto the
+    /// next one: one walk through the rows where `rows` plus `row_wrapped`
+    /// for each would start over from the top of the scrollback every time.
+    pub fn rows_wrapped(
+        &self,
+        start: u16,
+        width: u16,
+    ) -> impl Iterator<Item = (String, bool)> + '_ {
+        self.grid().visible_rows().map(move |row| {
+            let mut contents = String::new();
+            row.write_contents(&mut contents, start, width, false);
+            (contents, row.wrapped())
         })
     }
 

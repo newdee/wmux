@@ -22,6 +22,15 @@ impl Drop for Harness {
     }
 }
 
+/// The history log of every server in this process goes to a directory of
+/// the test run's own, never the real one (`WMUX_HISTORY_DIR` is read when
+/// a pane first logs, long after this). One directory for every run, not
+/// one per run: the servers' own clearing out of old days keeps it small.
+fn keep_history_out() {
+    let dir = std::env::temp_dir().join("wmux-test-history");
+    unsafe { std::env::set_var("WMUX_HISTORY_DIR", dir) };
+}
+
 impl Harness {
     async fn start(name: &str) -> Harness {
         // No toasts from tests: a toast registers the running binary as the
@@ -29,6 +38,7 @@ impl Harness {
         unsafe { std::env::set_var("WMUX_NO_TOAST", "1") };
         // The replay helper is wmux.exe; this test binary is not it.
         unsafe { std::env::set_var("WMUX_EXE", env!("CARGO_BIN_EXE_wmux")) };
+        keep_history_out();
         let socket = format!("test-{name}-{}", std::process::id());
         let s = socket.clone();
         // An empty config, not the machine's `~/.wmux.conf`: a theme there
@@ -2272,6 +2282,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     .unwrap();
     // Started by hand with the config given directly: the other tests run
     // in this same process, so nothing may go through the environment.
+    keep_history_out();
     let socket = format!("test-tmuxconf-{}", std::process::id());
     let s = socket.clone();
     let options = wmux::server::RunOptions { force_restore: false, config: Some(conf.clone()) };
@@ -2735,6 +2746,85 @@ async fn a_resumed_session_keeps_its_saved_size() {
 /// `split-window -N count` makes that many panes at once and tiles them;
 /// `-d` keeps the focus; a window too small for all of them says how many
 /// it made and keeps them.
+/// `undo-kill`: a pane or window killed by a command is kept, its program
+/// running, for `undo-kill-time` seconds, and comes back where it was;
+/// after that, or when its program ends meanwhile, it is gone for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_killed_pane_or_window_comes_back_with_undo_kill() {
+    let h = Harness::start("undokill").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "u", "-x", "120", "-y", "40"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["split-window", "-h", "-d", "-t", "u"]).await;
+    h.cli(&["split-window", "-v", "-d", "-t", "u:0.1"]).await;
+    let panes = async || {
+        h.cli(&["list-panes", "-t", "u:0", "-F", "#{pane_id} #{pane_pid} #{pane_width}x#{pane_height}"]).await.1
+    };
+    let before = panes().await;
+    assert_eq!(before.lines().count(), 3, "{before}");
+    let middle = before.lines().nth(1).unwrap().to_string();
+    let id = middle.split(' ').next().unwrap().to_string();
+
+    // Killed, then back: same pane (id and process), same layout.
+    assert_eq!(h.cli(&["kill-pane", "-t", &id]).await.0, 0);
+    assert_eq!(panes().await.lines().count(), 2);
+    let (code, _, err) = h.cli(&["undo-kill"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(panes().await, before, "back as it was");
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "u", "#{pane_id}"]).await.1.trim(), id, "and active");
+    let (code, _, err) = h.cli(&["undo-kill"]).await;
+    assert!(code != 0 && err.contains("nothing to undo"), "{err}");
+
+    // A window: back at its place, with its name.
+    h.cli(&["new-window", "-d", "-t", "u", "-n", "second"]).await;
+    h.cli(&["new-window", "-d", "-t", "u", "-n", "third"]).await;
+    let windows = async || h.cli(&["list-windows", "-t", "u"]).await.1;
+    assert_eq!(h.cli(&["kill-window", "-t", "u:1"]).await.0, 0);
+    assert!(!windows().await.contains("second"));
+    assert_eq!(h.cli(&["undo-kill"]).await.0, 0);
+    let list = windows().await;
+    assert!(list.lines().nth(1).is_some_and(|l| l.starts_with("1: second")), "{list}");
+    assert!(list.lines().nth(2).is_some_and(|l| l.starts_with("2: third")), "{list}");
+
+    // A kept pane whose program ends is gone.
+    let ids =
+        async || -> Vec<String> { panes().await.lines().map(|l| l.split(' ').next().unwrap().to_string()).collect() };
+    let old = ids().await;
+    let (code, _, err) = h.cli(&["split-window", "-d", "-t", "u:0", "cmd.exe", "/c", "ping -n 2 127.0.0.1 >nul"]).await;
+    assert_eq!(code, 0, "{err}");
+    let short = ids().await.into_iter().find(|i| !old.contains(i)).unwrap();
+    assert_eq!(h.cli(&["kill-pane", "-t", &short]).await.0, 0);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let (code, _, err) = h.cli(&["undo-kill"]).await;
+    assert!(code != 0 && err.contains("nothing to undo"), "{err}");
+
+    // Past the time: gone. And 0 keeps nothing.
+    h.cli(&["set", "-g", "undo-kill-time", "1"]).await;
+    let line = panes().await.lines().nth(1).unwrap().to_string();
+    let (id, pid) =
+        line.split_once(' ').map(|(i, rest)| (i.to_string(), rest.split(' ').next().unwrap().to_string())).unwrap();
+    h.cli(&["kill-pane", "-t", &id]).await;
+    let running = |pid: &str| {
+        let out =
+            std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
+    };
+    assert!(running(&pid), "kept, the program still runs");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_ne!(h.cli(&["undo-kill"]).await.0, 0);
+    assert!(!running(&pid), "past the time, its program is ended");
+    h.cli(&["set", "-g", "undo-kill-time", "0"]).await;
+    let id = panes().await.lines().nth(1).unwrap().split(' ').next().unwrap().to_string();
+    h.cli(&["kill-pane", "-t", &id]).await;
+    assert_ne!(h.cli(&["undo-kill"]).await.0, 0);
+    // The last pane of a session takes the session with it: not kept.
+    h.cli(&["set", "-g", "undo-kill-time", "10"]).await;
+    h.cli(&["new", "-d", "-s", "solo"]).await;
+    h.cli(&["kill-pane", "-t", "solo"]).await;
+    assert_ne!(h.cli(&["has-session", "-t", "solo"]).await.0, 0);
+    assert_ne!(h.cli(&["undo-kill"]).await.0, 0);
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn split_window_makes_many_panes_at_once() {
     let h = Harness::start("splitmany").await;

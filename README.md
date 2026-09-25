@@ -29,6 +29,10 @@ run inside panes with full key fidelity.
   quiet (`monitor-activity`; `C-b M-n` jumps to it). A pane whose program
   dies can keep its output and exit code (`remain-on-exit`), and a resumed
   session comes back with what each pane had on screen (`save-history`).
+- Each command's start time, duration and result can be shown at the end
+  of its line (`C-b C-t`). What panes print is kept on disk, a file per
+  pane per day for 30 days, and `C-b /` opens any day in a viewer. A pane
+  or window closed by mistake comes back with `C-b u` within 10 seconds.
 - `wmux web` prints a QR code. Scan it on the same Wi-Fi and the phone's
   browser lists every pane, shows any of them as it appears on screen, and
   lets you type into it, with nothing to install on the phone.
@@ -54,7 +58,9 @@ you can see which job finished. Tap one to see its screen, colours and all;
 wmux sends it again whenever it changes, so there is no refresh to wait for;
 type into it from the box at the bottom, or with the row of keys the phone
 keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
-+ menu splits the pane, opens a window or closes the pane. Everything runs
++ menu splits the pane, opens a window or closes the pane; the ⏱ button adds
+a column with the time each command started (tap one for its date, how long
+it took and its exit code; see below). Everything runs
 on the computer; the phone only shows and types. "Add to Home Screen" makes
 it open like an app.
 
@@ -158,6 +164,9 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `C-s` / `C-r` | save the session / restore saved sessions (see Resume) |
 | `z` | zoom (toggle) the current pane |
 | `x` | kill the current pane |
+| `u` | bring back the pane or window killed in the last 10 seconds (`undo-kill`) |
+| `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
+| `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `{` / `}` | swap pane with previous / next |
 | `q` | show the pane numbers; press one to go there |
 | `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
@@ -195,6 +204,56 @@ screen, sends arrow keys to full-screen programs, and is passed through to
 programs that ask for mouse events). Drag to select text; the selection is
 copied to the Windows clipboard on release, and a right click pastes the
 clipboard into the pane, as the terminal itself would.
+
+## Command times and history
+
+A PowerShell pane reports each command it runs (wmux's prompt hook does
+this, the same hook that reports the directory). `C-b C-t` (or `set -g
+pane-timestamps on`) shows, at the right end of the line the command was
+typed on, when it started, how long it took and whether it failed:
+
+```text
+PS C:\src> cargo build                                     14:03:22 41s ✓
+PS C:\src> cargo test                                      14:04:10 12s ✗
+```
+
+The time goes in the blank end of the line. The pane keeps its width,
+nothing is added to what the program printed (copy mode and `capture-pane`
+do not see it), and a line too full to hold it goes without. `wmux
+list-marks` prints the same for a script. On the phone, the ⏱ button does
+the same in a column to the left.
+
+Other shells report their commands with the sequences Windows Terminal and
+VS Code read too (OSC 133). For bash under WSL:
+
+```bash
+PS0='\e]133;C\e\\'
+PROMPT_COMMAND='printf "\e]133;D;%s\e\\\e]133;A\e\\" "$?"'
+```
+
+What panes print is also kept on disk (`log-history`, on by default): one
+text file per pane position per day, at
+`%LOCALAPPDATA%\wmux\history\<session>\<window>.<pane>\2026-09-25.log`,
+for 30 days (`log-history-days`), at most 20 MB a day each. A line is
+written when it scrolls off the top of the pane, so a progress bar or a
+prompt being edited leaves its final text; full-screen programs such as vim
+leave nothing; what is still on screen when the pane closes is written
+then. Each reported command gets a line of its times before it
+(`── 14:03:22 · 41s · ✓ ──`).
+
+`C-b /` (`choose-history`) lists the pane positions that have history,
+with their days. Enter on a day opens it in a viewer in a popup. The viewer
+starts at the end and moves like `less`: `j` `k`, `Space` `b`, `g` `G`,
+`/` `?` to search, `n` `N` to repeat, `[` `]` to jump from command to
+command, `q` to quit. `wmux view FILE` opens any file in it. `set -g
+log-history off` stops the logging.
+
+A pane or window closed with `kill-pane` or `kill-window` (`C-b x`,
+`C-b &`) is kept for 10 seconds with its programs still running. `C-b u`
+(`undo-kill`) puts it back where it was. After that it is gone as before.
+`undo-kill-time` sets the seconds; 0 ends it at once, which is what you
+want when you kill something to free a port or a file. The last pane of a
+session is not kept, because the session ends with it.
 
 ## Resume after a reboot
 
@@ -353,6 +412,11 @@ set -g monitor-activity on        # flag a background window that prints (`#` on
 set -g monitor-bell on            # and one that rings the bell (`!`); on by default
 set -g monitor-silence 60         # flag one that has said nothing for 60s (`~`); 0 disables
 set -g visual-bell on             # say it on the status line instead of ringing
+
+set -g pane-timestamps on         # each command's time at the end of its line (prefix C-t flips it)
+set -g log-history on             # keep what panes print, a file per pane per day (prefix / to read)
+set -g log-history-days 30        # for how long; 0 keeps everything (log-history-dir moves the files)
+set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D

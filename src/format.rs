@@ -128,6 +128,19 @@ pub fn human_duration(secs: i64) -> String {
     }
 }
 
+/// How long a command took, as precisely as is worth reading: `85ms`,
+/// `3.2s`, `42s`, `4m05s`, `2h13m`.
+pub fn command_duration(ms: i64) -> String {
+    let ms = ms.max(0);
+    match ms {
+        0..=999 => format!("{ms}ms"),
+        1000..=9999 => format!("{:.1}s", ms as f64 / 1000.0),
+        10_000..=59_999 => format!("{}s", ms / 1000),
+        60_000..=3_599_999 => format!("{}m{:02}s", ms / 60_000, (ms / 1000) % 60),
+        _ => human_duration(ms / 1000),
+    }
+}
+
 /// `#{=10:var}` (first 10), `#{=-10:var}` (last 10), `#{b:var}` (basename),
 /// `#{d:var}` (dirname), `#{t:var}` (a time as a clock), `#{s/a/b/:var}`
 /// (substitution). Anything else before a colon is not a modifier.

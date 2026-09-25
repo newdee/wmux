@@ -81,6 +81,20 @@ pub struct Options {
     /// `window-size`): "latest" (the one used last), "smallest", "largest"
     /// or "manual" (only `resize-window` changes it).
     pub window_size: String,
+    /// Show when each command ran, and how it went, at the right end of
+    /// its line (tmux has no such thing): needs a shell that reports its
+    /// commands, which wmux's PowerShell hook does.
+    pub pane_timestamps: bool,
+    /// Keep what panes print on disk, a file per pane position per day,
+    /// for choose-history (see histlog.rs).
+    pub log_history: bool,
+    /// Days the history log keeps; 0 keeps everything.
+    pub log_history_days: u32,
+    /// Where it goes; empty is `histlog::default_dir()`.
+    pub log_history_dir: String,
+    /// Seconds a pane or window killed by a command is kept, running, for
+    /// `undo-kill`; 0 ends it at once.
+    pub undo_kill_time: u64,
 }
 
 /// Options `show-options` can print, in display order.
@@ -123,6 +137,11 @@ pub const SHOWABLE: &[&str] = &[
     "restore-on-start",
     "sessions-dir",
     "window-size",
+    "pane-timestamps",
+    "log-history",
+    "log-history-days",
+    "log-history-dir",
+    "undo-kill-time",
 ];
 
 impl Default for Options {
@@ -172,6 +191,11 @@ impl Default for Options {
             restore_on_start: false,
             sessions_dir: String::new(),
             window_size: "latest".into(),
+            pane_timestamps: false,
+            log_history: true,
+            log_history_days: 30,
+            log_history_dir: String::new(),
+            undo_kill_time: 10,
         }
     }
 }
@@ -262,6 +286,9 @@ pub const KNOWN: &[&str] = &[
     "default-shell",
     "display-time",
     "history-limit",
+    "log-history",
+    "log-history-days",
+    "log-history-dir",
     "monitor-activity",
     "monitor-bell",
     "monitor-silence",
@@ -272,6 +299,7 @@ pub const KNOWN: &[&str] = &[
     "pane-border-format",
     "pane-border-status",
     "pane-border-style",
+    "pane-timestamps",
     "plugin-path",
     "prefix",
     "remain-on-exit",
@@ -291,6 +319,7 @@ pub const KNOWN: &[&str] = &[
     "status-right-length",
     "status-style",
     "synchronize-panes",
+    "undo-kill-time",
     "visual-activity",
     "visual-bell",
     "window-size",
@@ -324,8 +353,10 @@ pub const ACCEPTED: &[&str] = &[
 /// Options that are on or off, so `set -g mouse` with no value flips them.
 const BOOLEAN: &[&str] = &[
     "autosave",
+    "log-history",
     "notify",
     "monitor-activity",
+    "pane-timestamps",
     "monitor-bell",
     "mouse",
     "remain-on-exit",
@@ -509,6 +540,11 @@ impl Options {
             "autosave" => self.autosave = parse_bool(value)?,
             "restore-on-start" => self.restore_on_start = parse_bool(value)?,
             "sessions-dir" => self.sessions_dir = value.to_string(),
+            "pane-timestamps" => self.pane_timestamps = parse_bool(value)?,
+            "log-history" => self.log_history = parse_bool(value)?,
+            "log-history-days" => self.log_history_days = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "log-history-dir" => self.log_history_dir = value.to_string(),
+            "undo-kill-time" => self.undo_kill_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "window-size" => {
                 self.window_size = match value.trim() {
                     v @ ("latest" | "smallest" | "largest" | "manual") => v.to_string(),
@@ -601,6 +637,17 @@ impl Options {
                 }
             }
             "window-size" => self.window_size.clone(),
+            "pane-timestamps" => onoff(self.pane_timestamps),
+            "log-history" => onoff(self.log_history),
+            "log-history-days" => self.log_history_days.to_string(),
+            "undo-kill-time" => self.undo_kill_time.to_string(),
+            "log-history-dir" => {
+                if self.log_history_dir.is_empty() {
+                    crate::histlog::default_dir().to_string_lossy().into_owned()
+                } else {
+                    self.log_history_dir.clone()
+                }
+            }
             "status-style" => format!("fg={},bg={}", color_name(self.status_fg), color_name(self.status_bg)),
             "status-fg" => color_name(self.status_fg),
             "status-bg" => color_name(self.status_bg),
@@ -672,10 +719,22 @@ pub fn resolve_shell(opts: &Options) -> Vec<String> {
 /// current_path}`, `split-window -c '#{pane_current_path}'` and the saved
 /// session follow `cd` without anyone editing a profile. `Set-Location`
 /// does not move the process's directory, so nothing else can know it.
+///
+/// It also says when the last command ran and whether it failed (`OSC
+/// 7777;wmux-cmd;start;end;ok`, the times from the shell's own history,
+/// once per history entry), before the prompt, and where the prompt ends
+/// (`OSC 133;B`), after it: `pane-timestamps` and `list-marks` read them.
+/// `$global:?` is read first, before anything else can change it.
 pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__wmux_prompt = $function:prompt; \
+     $global:__wmux_hid = (Get-History -Count 1).Id; \
      function global:prompt { \
+     $__ok = $global:?; \
+     $__h = Get-History -Count 1; $__c = ''; \
+     if ($__h -and $__h.Id -ne $global:__wmux_hid) { $global:__wmux_hid = $__h.Id; \
+     $__c = [char]27 + ']7777;wmux-cmd;' + ([DateTimeOffset]$__h.StartExecutionTime).ToUnixTimeMilliseconds() + ';' \
+     + ([DateTimeOffset]$__h.EndExecutionTime).ToUnixTimeMilliseconds() + ';' + [int]$__ok + [char]27 + '\\' }; \
      $__p = if ($global:__wmux_prompt) { & $global:__wmux_prompt } else { 'PS ' + $PWD.Path + '> ' }; \
-     \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' }";
+     $__c + \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' + [char]27 + ']133;B' + [char]27 + '\\' }";
 
 /// `argv` with wmux's shell integration added where it applies: an
 /// interactive PowerShell (pwsh or Windows PowerShell) gets the prompt hook

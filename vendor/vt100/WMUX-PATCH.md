@@ -14,4 +14,18 @@ character and then erasing near the right edge panics with
 `index out of bounds: the len is N but the index is N` (`row.rs:89`).
 Regression test: `server::pane::tests::shrink_through_wide_char_then_erase_does_not_panic`.
 
-Drop this directory and the `[patch]` entry once the fix is released upstream.
+wmux also adds, beside that fix (each marked `(wmux)` in the source):
+
+- `Grid::scrollback_rows` / `Screen::scrollback_rows`: the scrollback's
+  length without moving through it.
+- `Grid::set_size` scrolls rows a shrink can no longer show into the
+  scrollback instead of dropping them.
+- `Grid::scrolled` / `Screen::scrolled_total`: how many rows have ever left
+  the top of the screen, so `scrolled_total() + row` names a line for good.
+  The command marks of `pane-timestamps` and `list-marks` hang on it.
+- `Screen::rows_wrapped`: `rows` with each row's wrapped flag, in one walk;
+  `rows` plus `row_wrapped` per row starts from the top of the scrollback
+  every time, which the history log (a screenful at a time) cannot afford.
+
+Drop this directory and the `[patch]` entry once upstream has all of it,
+which, for the last four, it will not: they are wmux's own.

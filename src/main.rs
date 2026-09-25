@@ -41,6 +41,9 @@ Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
   windows-terminal install|remove|status   (a wmux profile in the Windows Terminal dropdown)
 Upgrading:  version (this wmux and the server's)   update [--check]   restart-server (sessions move to this version)
 On a phone:  web [--port N] [--bind IP] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
+History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
+  list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
+  undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as wmux reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
@@ -158,6 +161,10 @@ fn main() {
             Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
         }
         "show-keys" => Some(wmux::console::show_keys()),
+        "view" => match args.get(1..) {
+            Some([file]) => Some(wmux::pager::run(file)),
+            _ => Some(Err(anyhow::anyhow!("usage: wmux view FILE"))),
+        },
         // These talk to the server, but as a client of their own: the
         // version of this program next to the server's, and moving the
         // sessions to a server of this version.

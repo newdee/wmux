@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as wmux reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **wmux only** | | `find-text` (search what every pane printed), `choose-history` (what panes printed, kept a file per pane position per day: pick one, read it in `view`), `view FILE` (a less-like pager), `list-marks` (the commands a pane's shell reported, with their times), `undo-kill` (bring back the pane or window killed in the last `undo-kill-time` seconds, programs still running), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as wmux reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
@@ -108,7 +108,7 @@ tmux's table, with what wmux does today.
 | `,` | rename-window prompt | yes |
 | `-` | delete-buffer | yes |
 | `.` | move-window prompt | yes |
-| `/` | describe key | no (`?` lists them all) |
+| `/` | describe key | wmux: choose-history (`?` lists the keys) |
 | `0`-`9` | select-window | yes |
 | `:` | command-prompt | yes |
 | `;` | last-pane | yes |
@@ -145,7 +145,7 @@ tmux's table, with what wmux does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 wmux adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save / restore) and `S` (synchronize-panes) on top of that table.
+(save / restore), `S` (synchronize-panes), `u` (undo-kill) and `C-t` (pane-timestamps) on top of that table.
 
 ## Copy mode
 
@@ -236,7 +236,9 @@ Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
 `mode-keys`, `aggressive-resize`, `set-titles`, `set-titles-string`,
 `history-file`. wmux only: `save-history` (lines of each pane written into
 the session file, colours kept; `all` for the whole scrollback), `autosave`, `restore-on-start`, `sessions-dir`,
-`plugin-path`, and `@user` options.
+`plugin-path`, `pane-timestamps` (each reported command's time at the end of its
+line), `log-history`, `log-history-days`, `log-history-dir` (the history
+log), `undo-kill-time`, and `@user` options.
 
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`
 and `set -p` are accepted and set the option for the server.

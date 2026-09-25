@@ -92,6 +92,11 @@ pub enum Cmd {
     ListWindows {
         target: Option<Target>,
     },
+    /// `list-marks [-t pane]`: the commands the pane's shell ran that are
+    /// still on screen or in its scrollback.
+    ListMarks {
+        target: Option<Target>,
+    },
     ListPanes {
         target: Option<Target>,
         /// `-a`: every pane on the server; `-s`: every pane in the session.
@@ -335,6 +340,12 @@ pub enum Cmd {
     /// `choose-jobs`: the task board as a picker (prefix `B`): Enter goes
     /// to the pane, `x` kills it, `r` restarts it.
     ChooseJobs,
+    /// `choose-history`: what panes printed, kept a file a day (prefix `/`):
+    /// a pane position, then a day, opened in `wmux view` in a popup.
+    ChooseHistory,
+    /// `undo-kill`: the pane or window killed last comes back where it
+    /// was, programs still running, within `undo-kill-time` seconds.
+    UndoKill,
     /// `focus-pane %N`: every attached client switches to that pane and
     /// its terminal window is brought forward (a notification's button).
     FocusPane {
@@ -633,6 +644,10 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::ListSessions => f.write_str("list-sessions"),
+            Cmd::ListMarks { target } => {
+                f.write_str("list-marks")?;
+                fmt_target(f, target)
+            }
             Cmd::ListWindows { target } => {
                 f.write_str("list-windows")?;
                 fmt_target(f, target)
@@ -997,6 +1012,8 @@ impl fmt::Display for Cmd {
             Cmd::ChooseBuffer => f.write_str("choose-buffer"),
             Cmd::ChooseClient => f.write_str("choose-client"),
             Cmd::ChooseJobs => f.write_str("choose-jobs"),
+            Cmd::ChooseHistory => f.write_str("choose-history"),
+            Cmd::UndoKill => f.write_str("undo-kill"),
             Cmd::FocusPane { pane } => write!(f, "focus-pane %{pane}"),
             Cmd::DisplayMenu { title, items } => {
                 f.write_str("display-menu")?;
@@ -1455,6 +1472,7 @@ pub const COMMANDS: &[&str] = &[
     "capture-pane",
     "choose-buffer",
     "choose-client",
+    "choose-history",
     "choose-jobs",
     "choose-session",
     "clock-mode",
@@ -1488,6 +1506,7 @@ pub const COMMANDS: &[&str] = &[
     "list-clients",
     "list-commands",
     "list-keys",
+    "list-marks",
     "list-panes",
     "list-plugins",
     "list-saved",
@@ -1544,6 +1563,7 @@ pub const COMMANDS: &[&str] = &[
     "swap-window",
     "switch-client",
     "unbind-key",
+    "undo-kill",
     "version",
     "wait-for",
 ];
@@ -1559,6 +1579,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("capture-pane", &["-p", "-e", "-J", "-S", "-t"]),
     ("choose-buffer", &[]),
     ("choose-client", &[]),
+    ("choose-history", &[]),
     ("choose-jobs", &[]),
     ("choose-session", &["-s", "-w", "-Z"]),
     ("clock-mode", &["-t"]),
@@ -1592,6 +1613,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-clients", &[]),
     ("list-commands", &[]),
     ("list-keys", &[]),
+    ("list-marks", &["-t"]),
     ("list-panes", &["-a", "-s", "-t", "-F"]),
     ("list-plugins", &[]),
     ("list-saved", &[]),
@@ -1648,6 +1670,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("swap-window", &["-d", "-s", "-t"]),
     ("switch-client", &["-n", "-p", "-l", "-t"]),
     ("unbind-key", &["-n", "-T"]),
+    ("undo-kill", &[]),
     ("version", &[]),
     ("wait-for", &["-L", "-U", "-S"]),
 ];
@@ -1945,6 +1968,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "list-sessions" => {
             a.none_left(n)?;
             Cmd::ListSessions
+        }
+        "list-marks" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ListMarks { target }
         }
         "list-windows" | "list-panes" | "kill-session" | "kill-window" | "kill-pane" => {
             let (mut target, mut all_but) = (None, false);
@@ -2511,6 +2545,14 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "choose-jobs" => {
             a.none_left(n)?;
             Cmd::ChooseJobs
+        }
+        "choose-history" => {
+            a.none_left(n)?;
+            Cmd::ChooseHistory
+        }
+        "undo-kill" => {
+            a.none_left(n)?;
+            Cmd::UndoKill
         }
         "focus-pane" => {
             let id = a.next().ok_or("focus-pane: pane id required (%N, as list-panes shows it)")?;
