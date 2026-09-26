@@ -5,36 +5,37 @@
 
 [中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)**
 
-A terminal multiplexer whose panes keep running after you detach, and can
-pass messages to each other. tmux's keys, commands and config work as they
-are.
+keepane is a terminal multiplexer for Windows. The programs in its panes
+keep running after the terminal connection closes, and panes can pass
+messages to each other through inboxes. The usual tmux keys, commands and
+config file keep working.
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"
        alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows every pane and an agent's inbox, a message put first in manage mode">
 </p>
 
-- Detach and the panes keep running. After a reboot `keepane resume` puts
-  the layout back, and a pane closed by mistake comes back with `C-b u`.
-- Name a pane and send it a message. The message waits until the pane is
-  ready: a shell runs it at its next prompt, a program reads it when it
-  asks, and nothing is typed into a command that is still running.
-- Every message carries the same one-line envelope (who sent it, to
-  whom, as part of which task), and an event log keeps what became of it
-  for 30 days. `C-b v` shows all of it.
-- Scripts, people and AI agents send the same messages; an agent can also
-  use them through a built-in MCP server.
-- The rest is tmux's: the `C-b` prefix, splits, copy mode, the command
-  line, `.tmux.conf`, format strings, hooks and plugins.
+- After you detach, the programs in the panes keep running. After a reboot,
+  `keepane resume` brings the layout back; a pane closed by mistake comes
+  back with `C-b u` within 10 seconds.
+- Name a pane and you can send it messages. A message goes into the inbox
+  first and is delivered when the pane is ready: a shell runs it when it
+  is back at its prompt, other programs read it themselves.
+- Every message carries an envelope of a fixed format, with the sender,
+  the recipient and the task. The event log keeps 30 days; `C-b v` shows
+  the panes, messages and tasks.
+- People, scripts and AI agents use the same messages; an agent can also
+  work through the built-in MCP server.
+- tmux's `C-b` prefix, splits, copy mode, command line, `.tmux.conf`,
+  format strings, hooks and plugins are there.
 
-keepane runs on Windows today, on ConPTY, with PowerShell, WSL and cmd in
-its panes. The messaging does not depend on the platform; Linux and macOS
-are planned.
+Windows is supported today (ConPTY), with PowerShell, WSL and cmd in the
+panes. Linux and macOS versions are planned.
 
 ## Send work between panes
 
-Each pane can have a name and an inbox. A message waits in the inbox until
-the pane is ready, then arrives the way the pane's work mode says.
+Every pane has an inbox and can be given a name. Messages queue up and are
+delivered according to the receiving pane's work mode.
 
 ```powershell
 keepane rename-pane -t %3 builder          # -t %builder finds it from now on
@@ -44,104 +45,104 @@ keepane send-message -t %builder -w 30 "cargo test"
 keepane trace-message 12 -w 600            # waits until it is done: output, success
 ```
 
-A pane is found by `%7` (its id), `%builder` (its name), or its full
-address `$1:@2.%7` (session, window and pane ids, which `whoami` prints).
-An address says where the pane is expected to be: if it has moved to
-another window since, the message is refused rather than sent where it went.
+A target can be `%7` (a pane id), `%builder` (a name), or `$1:@2.%7`
+(session, window and pane; `whoami` shows it). A full address also pins
+where the pane is: if the pane has been moved to another window, the
+delivery fails.
 
-What a pane does with a message depends on its work mode:
+A pane handles messages according to its work mode:
 
 | Mode | Ready when | Delivery |
 |---|---|---|
-| `normal` (default) | never on its own | waits for `read-message` (the window gets `@` in its flags) |
-| `shell` | keepane's own prompt hook says the shell is at its prompt | typed in and run |
-| `ai` | the agent says `pane-ready` (a hook at the end of each turn) | typed in as a prompt |
+| `normal` (default) | never on its own | read with `read-message`; the window's flags show `@` |
+| `shell` | keepane's prompt hook sees the shell back at its prompt | typed in and run |
+| `ai` | the agent's end-of-turn hook runs `pane-ready` | typed in as a prompt |
 
-Keys typed into a pane make it busy until its next signal, so a message
-does not land in a line being typed; keys typed while a command keepane gave
-it runs (an answer to it, or typing ahead, which the shell shows at its next
-prompt) keep it busy past that prompt too. Typing ahead during a command of
-your own is not caught. An `ai` pane that shows a shell
-prompt again (its agent exited) takes nothing. A message is delivered only
-in the mode it was sent for: text written for an agent is never run as a
-command because the pane was switched to `shell` meanwhile.
+After someone types into a pane, keepane treats it as busy until the next
+ready signal, so a message never lands in the middle of what is being
+typed. If someone presses keys while a command keepane delivered is
+running, the prompt that ends that command does not trigger a new message
+either; what a user types ahead during a command of their own is beyond
+keepane's reach.
 
-Every message carries its source in a fixed one-line envelope, the same
-wherever it is shown:
+In `ai` mode, if the agent has exited and a shell prompt shows again,
+nothing is delivered. A message is delivered the way the recipient's mode
+was when it was sent: text sent to an agent is never run as a shell
+command, even if the mode changes in between.
+
+Messages use one single-line envelope, with their source and route:
 
 ```text
 {"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
 ```
 
-A shell gets it as a PowerShell comment before the command (`<# … #>
-cargo test`), so it stays in the history (a command of several lines is sent
-as one line that runs them together, so it is one command with one result); an agent gets it, the text, and an
-end line `{"keepane":1,"end":12}`. `task` groups a chain (an order, the work
-it caused, the answers); `hop` counts the links, and a chain longer than
-`message-hop-limit` (8) is refused, so two agents cannot answer each other
-for ever.
+Delivered to a shell, the envelope is a PowerShell comment before the
+command (such as `<# … #> cargo test`) and stays in the history. Several
+lines are joined into one command that runs them together, with one
+result. Delivered to an agent, it is the envelope, the text and the end
+line `{"keepane":1,"end":12}`. `task` ties together the order, the work and
+the replies; `hop` counts how many times a message was passed on, and past
+`message-hop-limit` (8 by default) it is refused, so agents cannot answer
+each other in a loop.
 
-A pane's work mode is changed in that pane. From one pane,
-`set-work-mode` changes only that pane, so nothing running in a pane turns
-another into a shell that runs what it is sent; from a terminal outside
-keepane, a key or the `C-b :` prompt, any pane's mode can be changed. That
-is the only restriction: names, inboxes and closing panes are open to
-everyone, and a closed pane can be brought back with `C-b u` for 10
-seconds. It guards against mistakes: any program running as you can still
-reach the server.
+Run inside a pane, `set-work-mode` changes only that pane; run from a
+terminal outside keepane, a key or the `C-b :` prompt, it can change any
+pane. So a program in a pane cannot switch another pane into `shell` mode,
+which runs its messages by itself. Renaming, managing inboxes and closing
+panes are not limited by this; a close can be undone with `C-b u` within
+10 seconds. The rule is there to cut down on mistakes, not to isolate
+processes of the same user from each other.
 
 ## The dashboard
 
-`C-b v` (or `keepane dashboard` in any terminal) shows every pane: its
-mode, whether it is free, its inbox, what it says it is doing. Below, for
-the chosen pane: its events (Enter), messages (`m`), every task (`t`), its
-screen live (`v`) or with its scrollback (`h`). It only watches; in manage
-mode (`E`, red, ends after 30 s without a key) queued messages can be
-deleted (`d`, `u` undoes), moved (`K` `J`) or put first (`g`).
+`C-b v` or `keepane dashboard` shows every pane's mode, whether it is idle,
+its inbox and its status. For the chosen pane you can see its events
+(Enter), messages (`m`), tasks (`t`), its screen live (`v`) and its screen
+with the scrollback (`h`). It is read-only by default. `E` enters manage
+mode, where queued messages can be deleted (`d`, `u` undoes), moved (`K`,
+`J`) or put first (`g`). In manage mode the top bar turns red, and it ends
+by itself after 30 seconds without a key.
 
-Everything that happens to messages and panes is kept in an event log,
-`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, for 30 days
+Messages and changes to panes are written to an event log,
+`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, kept for 30 days
 (`event-log`, `event-log-days`, `event-log-max`). `list-tasks`,
-`show-task`, `trace-message` and `list-events` read it. Messages still
-queued when the server stops are not kept: they are dropped, and the log
-says so. Names and work modes are saved with the session. The design and
-why each rule is so: [docs/design/mailbox.md](docs/design/mailbox.md).
+`show-task`, `trace-message` and `list-events` read it. When the server
+stops, messages not yet delivered are dropped, and the log says so. Pane
+names and work modes are saved with the session. The design in detail:
+[docs/design/mailbox.md](docs/design/mailbox.md).
 
 ## Install
 
-keepane needs Windows 10 1809 or newer (ConPTY). From the
+keepane needs Windows 10 1809 or newer (for ConPTY). From the
 [releases page](https://github.com/newdee/keepane/releases):
 
 - `keepane-v<version>-windows-x86_64.zip` holds one folder,
-  `keepane-v<version>-windows-x86_64`, with `keepane.exe` in it: unzip it
-  anywhere and put that folder on your `PATH`. No administrator rights
-  needed.
+  `keepane-v<version>-windows-x86_64`, with `keepane.exe` in it. Unzip it
+  and put that folder on your `PATH`. No administrator rights needed.
 - `keepane-<version>-windows-x86_64.msi` installs into `Program Files` for
-  every user, puts `keepane` on the system `PATH` and uninstalls from "Apps &
-  features". It needs administrator rights
-  (`msiexec /i keepane-<version>-windows-x86_64.msi /qn` for an unattended
-  install).
+  every user and puts `keepane` on the system `PATH`; it uninstalls from
+  "Apps & features". It needs administrator rights (unattended:
+  `msiexec /i keepane-<version>-windows-x86_64.msi /qn`).
 
-With Scoop, the manifest in this repository installs the zip, with no
-administrator rights either, and keeps it current:
+Scoop installs the zip straight from the manifest in this repository, with
+no administrator rights:
 
 ```powershell
 scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json
 ```
 
-Over SSH, Windows 11 does not follow a junction made without administrator
-rights, and Scoop's `current` folder is one: the shim fails with "The path
-cannot be traversed because it contains an untrusted mount point". Point
-Scoop's shims at the version folder instead:
+Over SSH, Windows 11 does not let the session go through a junction made
+without administrator rights, and Scoop's `current` folder is one: the shim
+fails with "The path cannot be traversed because it contains an untrusted
+mount point". Point Scoop's shims at the version folder instead:
 
 ```powershell
 scoop config no_junction true
 scoop reset keepane
 ```
 
-Also over SSH, `keepane update` cannot install an MSI: Windows Installer asks
-for permission on the desktop, where nobody is there to answer. Use the zip
-or Scoop on a machine you reach that way.
+Over SSH, `keepane update` cannot get through the MSI's interactive
+permission prompt; use the zip or Scoop there.
 
 WinGet manifests for the MSI are in `packaging/winget/` (validated with
 `winget validate`); `winget install newdee.keepane` works once they are
@@ -149,15 +150,15 @@ merged into winget-pkgs, and until then
 `winget install --manifest packaging/winget/manifests/n/newdee/keepane/<version>`
 from a clone does the same. See `packaging/README.md`.
 
-Or build from source, which needs Rust 1.88+:
+Building from source needs Rust 1.88 or newer:
 
 ```powershell
 cargo install --git https://github.com/newdee/keepane --locked   # latest master
 cargo install --path .                                         # a local clone
 ```
 
-Building the installer yourself needs nothing but the repository; WiX is
-downloaded on demand if it is not already installed:
+To build the MSI, the script downloads WiX for the occasion if it is not
+installed:
 
 ```powershell
 cargo build --release
@@ -176,11 +177,10 @@ pwsh -File installer/build-msi.ps1        # target\keepane-<version>-windows-x86
        alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
 </p>
 
-Keystrokes reach panes as raw Windows key events (the win32-input-mode
-protocol Windows Terminal uses), so PSReadLine chords, `Ctrl+Space`,
-`Shift+Enter`, arrows with modifiers, IME input and WSL/Linux TUIs behave as
-they do outside keepane. It runs in Windows Terminal, the classic console
-host, VS Code's terminal, and anything else that hosts a Windows console.
+keepane passes keys on in Windows' own win32-input-mode, so PSReadLine
+chords, `Ctrl+Space`, `Shift+Enter`, arrows with modifiers, IME input, and
+vim and htop under WSL all work. It runs in Windows Terminal, the classic
+console, VS Code's terminal and other Windows console hosts.
 
 ```powershell
 keepane                      # new session, attached
@@ -193,17 +193,17 @@ keepane capture-pane -p -t work   # print what the pane shows (-S -200 adds scro
 keepane kill-server
 ```
 
-Any unambiguous prefix of a command name works, as in tmux: `keepane att`,
-`keepane lsp`, `keepane splitw -h`. `keepane kill` is refused, because four commands
-start that way. `keepane list-commands` prints them all, and
-[docs/tmux-parity.md](docs/tmux-parity.md) tracks them against tmux's own
-list, command by command and key by key.
+As in tmux, a command name can be any unambiguous prefix: `keepane att`,
+`keepane lsp`, `keepane splitw -h`. `keepane kill` is refused, because four
+commands start that way. `keepane list-commands` prints them all, and
+[docs/tmux-parity.md](docs/tmux-parity.md) sets them against tmux's, command
+by command and key by key.
 
 Several panes at once: `keepane split-window -N 3` makes three more and tiles
 the window (`-d` keeps the focus where it is). A window too small for all of
 them keeps the ones that fit and says how many it made.
 
-Inside a session, press the prefix (`Ctrl+b`) and then:
+In a session, press the prefix `Ctrl+b`, then a key from this table:
 
 | Key | Action |
 | --- | --- |
@@ -241,31 +241,31 @@ Inside a session, press the prefix (`Ctrl+b`) and then:
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
 | `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
-Zooming is animated: the pane itself grows to fill the window, each of its
-corners heading for the window's corner (an edge already on the window's
-edge stays where it is), and shrinks back the same way. Moving between the
-panes of a zoomed window does the same with the pane moved to. When the keys
-move anywhere else (another pane selected with a key or the mouse, another
-window or session), a frame flies there from where they were. It all takes
-160 ms, and programs are resized once, to the size they end up at, so
-nothing waits for it. `set -g animation off` turns it off, and
+Zooming, unzooming and moving the focus are animated, for 160 ms by
+default. Programs are resized once, to the size they end up at, so nothing
+waits for the animation. `set -g animation off` turns it off, and
 `animation-time` sets the milliseconds.
 
-In copy mode: `h` `j` `k` `l` and the arrows move, `w` `b` `e` walk words,
-`0` `^` `$` and `H` `M` `L` and `{` `}` and `g` `G` jump, `PageUp` /
-`PageDown` and `C-b` / `C-f` page, `C-u` / `C-d` half-page (with `C-b` as
-the prefix, press it twice: `C-b C-b` is copy mode's page-up), a count
-repeats (`3j`), `Space` or `v` starts a selection, `C-v` makes it a
-rectangle,
-`Enter` or `y` copies (to a paste buffer and the Windows clipboard), `/`
-searches forward and `?` back through the scrollback with `n` / `N` to
-repeat, `q` leaves. A script can drive all of it with
-`send-keys -X <command>`, the same command names tmux uses.
+Copy mode, the keys used most:
 
-Mouse: click selects a pane, drag a border to resize, click a window name on
-the status line to select it, wheel scrolls (enters copy mode on the normal
-screen, sends arrow keys to full-screen programs, and is passed through to
-programs that ask for mouse events). Drag to select text; the selection is
+- Moving: `h` `j` `k` `l` or the arrows; `w` `b` `e` by word; `0` `^` `$`,
+  `H` `M` `L`, `{` `}`, `g` `G` jump.
+- Paging: `PageUp` / `PageDown` or `C-b` / `C-f`; `C-u` / `C-d` by half a
+  page. Since `C-b` is also the prefix, `C-b C-b` pages up in copy mode. A
+  number repeats a key, such as `3j`.
+- Selecting and copying: `Space` or `v` starts a selection, `C-v` makes it
+  a rectangle, `Enter` or `y` copies to a paste buffer and the Windows
+  clipboard.
+- Searching: `/` searches, `?` searches backwards, `n` / `N` go to the next
+  hit; `q` leaves.
+
+A script does the same with `send-keys -X <command>`, with tmux's command
+names.
+
+The mouse selects a pane, drags a border to resize, and switches windows
+from the status line. The wheel enters copy mode and scrolls back on the
+normal screen, sends arrow keys to full-screen programs, and is passed
+through to programs that ask for mouse events. Drag to select text; it is
 copied to the Windows clipboard on release, and a right click pastes the
 clipboard into the pane, as the terminal itself would.
 
@@ -276,21 +276,21 @@ clipboard into the pane, as the terminal itself would.
        alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
 </p>
 
-A PowerShell pane reports each command it runs (keepane's prompt hook does
-this, the same hook that reports the directory). `C-b C-t` (or `set -g
-pane-timestamps on`) shows, at the right end of the line the command was
-typed on, when it started, how long it took and whether it failed:
+A PowerShell pane reports each command it runs through its prompt hook.
+`C-b C-t` (or `set -g pane-timestamps on`) shows, at the right end of the
+line the command was typed on, when it started, how long it took and
+whether it failed:
 
 ```text
 PS C:\src> cargo build                                     14:03:22 41s ✓
 PS C:\src> cargo test                                      14:04:10 12s ✗
 ```
 
-The time goes in the blank end of the line. The pane keeps its width,
-nothing is added to what the program printed (copy mode and `capture-pane`
-do not see it), and a line too full to hold it goes without. `keepane
-list-marks` prints the same for a script. On the phone, the ⏱ button does
-the same in a column to the left.
+The time goes in the blank end of the line and changes neither the pane's
+width nor what the program printed; copy mode and `capture-pane` do not
+include it. A line without room for it goes without. `keepane list-marks`
+prints the same for a script. On the phone, the ⏱ button shows the times
+in a column to the left.
 
 A PowerShell started with a script of its own (`-File`, `-Command`) is left
 as it is, hook and all; that script can install the hook itself with
@@ -304,7 +304,7 @@ PS0='\e]133;C\e\\'
 PROMPT_COMMAND='printf "\e]133;D;%s\e\\\e]133;A\e\\" "$?"'
 ```
 
-What panes print is also kept on disk (`log-history`, on by default): one
+The panes' output can also be saved to disk (`log-history`, on by default): one
 text file per pane position per day, at
 `%LOCALAPPDATA%\keepane\history\<session>\<window>.<pane>\2026-09-25.log`,
 for 30 days (`log-history-days`), at most 20 MB a day each. A line is
@@ -627,39 +627,35 @@ left|centre|right|absolute-centre` places the window list, and
 `window-status-separator` is what goes between the labels (a space by
 default).
 
-Variables: `session_name` `session_id` `session_windows` `session_attached`
-`session_created`, `window_name` `window_id` `window_index` `window_panes`
-`window_active` `window_last_flag` `window_zoomed_flag` `window_width`
-`window_height` `window_bell_flag` `window_activity_flag`
-`window_silence_flag` `window_flags`, `pane_index` `pane_id` `pane_title`
-`pane_current_command` `pane_start_command` `pane_current_path` `pane_width`
-`pane_height` `pane_active` `pane_dead` `pane_dead_status`
-`pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time`
-`pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top`
-`pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom`
-`pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size`
-`history_limit`, `client_width` `client_height` `client_name`
-`client_session` `client_created` `client_activity` `client_prefix`, `host`
-`host_short` `socket_path` `version` `pid`; also `session_activity`
-`session_last_attached` `window_activity` `window_start_flag`
-`window_end_flag` `window_layout`. The machine, read in-process (no
-`#(command)` needed): `cpu_percentage` `ram_percentage` `ram_used`
-`battery_percentage` (empty without a battery) `battery_charging` `uptime`,
-plus `git_branch` (the branch of the pane's directory, read from `.git`,
-empty outside a repository), `pane_current_path_short` (`~` for home) and
-`pane_pid_command` (the program the pane is running right now, `cargo`
-during a build), and `pane_output_count` (how many times the pane has
-printed; a script can compare two readings to tell whether anything
-changed, which `pane_activity`, in whole seconds, cannot). The default
-`status-right` uses them:
+The variables, by kind:
+
+- session: `session_name` `session_id` `session_windows` `session_attached` `session_created`
+- window: `window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`
+- pane: `pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
+- client: `client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
+- server: `host` `host_short` `socket_path` `version` `pid`. Also `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`.
+
+The machine, read in-process with no `#(command)` needed: `cpu_percentage`
+`ram_percentage` `ram_used` `battery_percentage` (empty without a battery)
+`battery_charging` `uptime`. Other variables used often: `git_branch` (the
+branch of the pane's directory, read from `.git`, empty outside a
+repository), `pane_current_path_short` (`~` for home), `pane_pid_command`
+(the program the pane is running right now, `cargo` during a build) and
+`pane_output_count` (how many times the pane has printed; a script can
+compare two readings to tell whether anything changed, which
+`pane_activity`, in whole seconds, cannot).
+
+The default `status-right` uses them:
 `#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU
 #{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT
 #{battery_percentage},} | %H:%M`; `set -g status-right ...` replaces it,
-`set -g status off` hides the line. Comparisons as in tmux: `#{==:a,b}`
-`#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}`
-`#{||:a,b}` and `#{m:pattern,text}` (a glob; `m/i:` ignores case) answer
-`1` or `0`, and can be the condition of `#{?…}` or of a `%if` in the config
-file.
+and `set -g status off` hides the line.
+
+Comparisons, as in tmux: `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}`
+`#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and `#{m:pattern,text}` (a
+glob; `m/i:` ignores case) answer `1` or `0`, and can be the condition of
+`#{?…}` or of a `%if` in the config file.
+
 Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
 `#{=-10:…}` (last 10), `#{b:pane_current_path}` (basename), `#{d:…}`
 (dirname), `#{t:session_created}` (a time as a clock), `#{s/foo/bar/:…}`
@@ -835,18 +831,21 @@ covered without a human at the keyboard.
 ## Not (yet) implemented
 
 keepane runs only on Windows so far. The panes, the messages and the event
-log are platform-neutral code; the terminal, the pipe and the shell hook
-are what a Linux or macOS port has to supply.
+log do not depend on the platform; a Linux or macOS port still needs the
+terminal, the inter-process pipe and the shell hook.
 
-Relative to tmux: multiple clients on the same session share one window
-size (`window-size latest|smallest|largest|manual` picks which client sets
-it: the one used last, the smallest, the largest, or none but
-`resize-window`; a client smaller than that sees its own view of the
-window, panned with `Shift`+arrows or `refresh-client -U/-D/-L/-R`, and
-following the cursor when a key goes to the pane), only the hooks listed
-above, the `choose-tree` filter is a substring rather than a format, and
-`display-popup` keeps the prefix key for keepane (`prefix prefix` sends it to
-the program in the box).
+Compared with tmux, these differ for now:
+
+- Clients attached to the same session share one window size.
+  `window-size latest|smallest|largest|manual` takes the size of the client
+  used last, the smallest or the largest, or only what `resize-window`
+  sets. A smaller client shows its own view of the window, panned with
+  `Shift`+arrows (`refresh-client -U/-D/-L/-R`); the view follows the
+  cursor while you type.
+- Hooks are only the events listed above; `choose-tree` filters by a
+  substring, not by a tmux format.
+- In `display-popup`, the prefix key still belongs to keepane; pressing it
+  twice sends it to the program in the box.
 
 Pane messages: `shell` work mode needs keepane's PowerShell prompt hook, so
 cmd and WSL shells do not take messages on their own yet (they can
@@ -857,10 +856,9 @@ must be restarted for it. The dashboard is not on the phone page yet.
 
 ## Formerly wmux
 
-Up to 0.13.1 this project was called wmux. That name turned out to be taken
-several times over: other terminal multiplexers on GitHub, on winget and on
-crates.io go by it, some of them older and better known. From 0.14.0 it is
-keepane, after what it does: the panes keep running when the terminal is
+Up to 0.13.1 the project was called wmux. Projects of that name already
+exist on GitHub, winget and crates.io, so from 0.14.0 it is keepane, from
+keep + pane: the programs in the panes keep running when the terminal is
 gone.
 
 Coming from wmux:

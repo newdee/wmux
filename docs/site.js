@@ -6,7 +6,7 @@ const ZH = {
   "hero.eyebrow": "开源 · 原生 Windows",
   "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相传消息。</span>",
   "hero.lede":
-    "关掉窗口，pane 照样在跑；之后重新接上，或者在手机上看一眼。给 pane 起个名字就能给它发消息：消息等到它准备好，shell 在提示符下执行，程序在自己来取时读到。脚本、人和 AI agent 发的是同一种消息。tmux 的按键和命令照用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
+    "keepane 是 Windows 上的终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
   "hero.download": "下载 Windows 版",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe · 原名 wmux",

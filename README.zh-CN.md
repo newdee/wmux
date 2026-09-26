@@ -5,24 +5,24 @@
 
 [English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)**
 
-keepane 是一个终端多路复用器：脱离之后 pane 照样在跑，pane 之间还能互相传消息。tmux 的按键、命令和配置文件照用。
+keepane 是 Windows 上的终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"
        alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；dashboard 显示所有 pane 和一个 agent 的收件箱，在管理模式下把一条消息置顶">
 </p>
 
-- 脱离之后 pane 照样在跑。重启电脑后 `keepane resume` 把布局放回来，手滑关掉的 pane 按 `C-b u` 找回。
-- 给 pane 起个名字，就能给它发消息。消息会等到对方准备好：shell 在下一个提示符执行它，程序在自己来取的时候读到它，不会打进一条还在跑的命令里。
-- 每条消息都带同样的一行信封（谁发的、发给谁、属于哪个任务），事件日志记下它后来怎样了，保留 30 天。`C-b v` 全都能看到。
-- 脚本、人和 AI agent 发的是同一种消息；agent 还可以通过内置的 MCP 服务端来用。
-- 其余都是 tmux 的：`C-b` 前缀、分屏、copy mode、命令行、`.tmux.conf`、格式串、hook 和插件。
+- 脱离后，pane 里的程序继续运行。重启电脑后用 `keepane resume` 恢复布局；误关的 pane 可在 10 秒内按 `C-b u` 找回。
+- 给 pane 命名后，就能向它发消息。消息先进入收件箱，等 pane 准备好再投递：shell 回到提示符时执行命令，其他程序主动读取。
+- 每条消息都有固定格式的信封，记录发送方、接收方和任务。事件日志保留 30 天；按 `C-b v` 可查看 pane、消息和任务。
+- 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。
+- 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、`.tmux.conf`、格式串、hook 和插件。
 
-keepane 目前运行在 Windows 上（ConPTY），pane 里跑 PowerShell、WSL、cmd。消息这一层不依赖平台，Linux 和 macOS 在计划中。
+目前支持 Windows（ConPTY），pane 可运行 PowerShell、WSL 和 cmd。Linux 与 macOS 版本仍在计划中。
 
 ## 在 pane 之间派活
 
-每个 pane 可以有名字和收件箱。消息在收件箱里等到 pane 准备好，再按这个 pane 的工作模式送进去。
+每个 pane 都有收件箱，也可以设置名字。消息会排队等待，并按接收方的工作模式投递。
 
 ```powershell
 keepane rename-pane -t %3 builder          # 之后用 -t %builder 就能找到它
@@ -32,42 +32,44 @@ keepane send-message -t %builder -w 30 "cargo test"
 keepane trace-message 12 -w 600            # 等它做完：输出、成败
 ```
 
-定位一个 pane 可以用 `%7`（编号）、`%builder`（名字）或完整地址 `$1:@2.%7`（session、窗口、pane 的编号，`whoami` 会打印出来）。完整地址代表"它应该在哪"：如果 pane 已经挪到别的窗口，消息会被拒绝，而不是跟着发过去。
+目标可以写成 `%7`（pane 编号）、`%builder`（名字），或 `$1:@2.%7`（session、窗口、pane；`whoami` 可查看）。完整地址同时限定了 pane 所在的位置；如果它被移到别的窗口，投递会失败。
 
-pane 怎么处理消息取决于它的工作模式：
+pane 根据工作模式处理消息：
 
 | 模式 | 什么时候算准备好 | 投递方式 |
 |---|---|---|
-| `normal`（默认） | 从不自己取 | 等 `read-message` 来取（窗口标记里出现 `@`） |
-| `shell` | keepane 自己的提示符钩子说 shell 回到了提示符 | 打进去并执行 |
-| `ai` | agent 说 `pane-ready`（每轮结束时的 hook） | 作为提示词打进去 |
+| `normal`（默认） | 不自动接收 | 用 `read-message` 读取；窗口标记显示 `@` |
+| `shell` | keepane 的提示符钩子检测到 shell 回到提示符 | 输入并执行命令 |
+| `ai` | agent 的轮次结束 hook 调用 `pane-ready` | 作为提示词输入 |
 
-往 pane 里打过字，它就算忙，直到下一个信号，所以消息不会插进正在输入的那一行；keepane 投递的命令运行期间有人按键（在回答那个命令，或者提前打字——shell 会把提前打的字显示在下一个提示符后面），结束这条命令的那个提示符也不算空闲。你自己的命令运行期间提前打字，这一点拦不住。`ai` 模式的 pane 如果重新出现 shell 提示符（agent 已经退出），就什么也不投。消息只按发送时对方的模式投递：写给 agent 的文字，不会因为 pane 中途被切成 `shell` 模式而被当成命令执行。
+用户在 pane 中输入后，keepane 会把它视为忙碌，直到收到下一次就绪信号，避免消息插入正在输入的内容。keepane 投递的命令运行期间如果有人按键，结束该命令的提示符也不会触发新消息；用户自己运行命令时提前输入的内容则无法由 keepane 阻止。
 
-每条消息都用一个固定的单行信封写明来源，在任何地方显示都一模一样：
+`ai` 模式下，如果 agent 已退出并重新出现 shell 提示符，消息不会投递。投递方式以发送时接收方的模式为准：发给 agent 的文本即使遇到模式切换，也不会作为 shell 命令执行。
+
+消息使用统一的单行信封，包含来源和路由信息：
 
 ```text
 {"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
 ```
 
-shell 收到时它是命令前面的一段 PowerShell 注释（`<# … #> cargo test`），会留在历史里（多行命令会改写成一行、整段一起执行，所以它是一条命令、一个结果）；agent 收到的是信封、正文和结尾行 `{"keepane":1,"end":12}`。`task` 把一串消息归为一个任务（派活、由此引起的工作、回信）；`hop` 数经过了几手，超过 `message-hop-limit`（8）就拒收，两个 agent 不会无休止地互相回信。
+投给 shell 时，信封作为 PowerShell 注释放在命令前（如 `<# … #> cargo test`），并保留在历史中。多行内容会合为一条命令执行，对应一个结果。投给 agent 时，内容由信封、正文和结束行 `{"keepane":1,"end":12}` 组成。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
 
-pane 的工作模式只能在那个 pane 里切换。在某个 pane 里运行 `set-work-mode`，只能改它自己，所以任何 pane 里的程序都不能把别的 pane 变成"收到什么就执行什么"的 shell；在 keepane 外面的终端、快捷键或 `C-b :` 命令行里可以改任何 pane。只有这一条限制：改名、收件箱、关 pane 对谁都开放，关掉的 pane 10 秒内可以用 `C-b u` 找回。这条规矩防的是失误：以你身份运行的任何程序照样能连上服务端。
+在 pane 内运行 `set-work-mode`，只能修改当前 pane；从外部终端、快捷键或 `C-b :` 命令行运行时，可以修改任意 pane。这样，pane 内的程序不能直接把别的 pane 切成自动执行消息的 `shell` 模式。改名、管理收件箱和关闭 pane 不受这条限制；关闭操作可在 10 秒内用 `C-b u` 撤销。此规则用于减少误操作，并非针对同一用户进程的安全隔离。
 
 ## dashboard
 
-`C-b v`（或在任意终端里运行 `keepane dashboard`）列出所有 pane：模式、是否空闲、收件箱、它说自己在做什么。下面显示选中 pane 的事件（Enter）、消息（`m`）、全部任务（`t`）、实时屏幕（`v`）或带滚动历史的屏幕（`h`）。它只看不改；进入管理模式（`E`，顶栏变红，30 秒不按键自动退出）后，可以删除排队的消息（`d`，`u` 撤销）、移动（`K` `J`）或置顶（`g`）。
+按 `C-b v` 或运行 `keepane dashboard` 可查看所有 pane 的模式、空闲状态、收件箱和当前状态。选中 pane 后，可查看事件（Enter）、消息（`m`）、任务（`t`）、实时屏幕（`v`）及带滚动历史的屏幕（`h`）。默认是只读视图。按 `E` 进入管理模式后，可删除排队消息（`d`，`u` 撤销）、调整顺序（`K`、`J`）或置顶（`g`）。管理模式下顶栏变红，30 秒无操作会自动退出。
 
-消息和 pane 发生的一切都记在事件日志里：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停下时还在排队的消息不保留：会被丢弃，日志里写明。名字和工作模式随 session 一起保存。完整设计和每条规则的理由见 [docs/design/mailbox.md](docs/design/mailbox.md)。
+消息及 pane 状态变化会写入事件日志：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停止时，未投递的消息会被丢弃，并留下日志记录。pane 名字和工作模式随 session 保存。设计细节见 [docs/design/mailbox.md](docs/design/mailbox.md)。
 
 ## 安装
 
-需要 Windows 10 1809 或更新（ConPTY 是那时候加的）。到 [Releases](https://github.com/newdee/keepane/releases) 下载：
+需要 Windows 10 1809 或更新版本（支持 ConPTY）。从 [Releases](https://github.com/newdee/keepane/releases) 下载：
 
-- `keepane-v<版本>-windows-x86_64.zip`：里面是一个目录 `keepane-v<版本>-windows-x86_64`，`keepane.exe` 在这个目录里。解压到哪都行，把这个目录加进 `PATH`。不需要管理员权限。
-- `keepane-<版本>-windows-x86_64.msi`：装到 `Program Files`，所有用户都能用，自动加进系统 `PATH`，以后在"应用和功能"里卸载。需要管理员权限（静默安装：`msiexec /i keepane-<版本>-windows-x86_64.msi /qn`）。
+- `keepane-v<版本>-windows-x86_64.zip`：里面是一个目录 `keepane-v<版本>-windows-x86_64`，`keepane.exe` 在这个目录里。解压后将该目录加入 `PATH`。不需要管理员权限。
+- `keepane-<版本>-windows-x86_64.msi`：安装到 `Program Files`，供所有用户使用，并加入系统 `PATH`；可在“应用和功能”中卸载。需要管理员权限（静默安装：`msiexec /i keepane-<版本>-windows-x86_64.msi /qn`）。
 
-用 Scoop 的话，仓库里的清单直接装 zip，同样不需要管理员权限，以后也跟着更新：
+Scoop 可直接使用仓库中的清单安装 zip，无需管理员权限：
 
 ```powershell
 scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json
@@ -80,18 +82,18 @@ scoop config no_junction true
 scoop reset keepane
 ```
 
-同样在 SSH 里，`keepane update` 装不了 MSI：Windows Installer 会在桌面上弹窗要权限，SSH 那头没人能点。这样连上的机器请用 zip 或 Scoop。
+通过 SSH 时，`keepane update` 无法完成 MSI 的交互式权限确认；这种场景请使用 zip 或 Scoop。
 
 WinGet 的清单（装 MSI）在 `packaging/winget/`，`winget validate` 通过；合进 winget-pkgs 之后 `winget install newdee.keepane` 就行，在那之前可以在克隆里 `winget install --manifest packaging/winget/manifests/n/newdee/keepane/<版本>`。细节见 `packaging/README.md`。
 
-想自己编译的话（需要 Rust 1.88 以上）：
+从源码编译需要 Rust 1.88 或更新版本：
 
 ```powershell
 cargo install --git https://github.com/newdee/keepane --locked   # 直接装最新的 master
 cargo install --path .                                         # 本地克隆
 ```
 
-自己打 MSI 也不用先装什么，脚本发现本机没有 WiX 会自己下一份临时用：
+构建 MSI 时，如果本机没有 WiX，脚本会临时下载：
 
 ```powershell
 cargo build --release
@@ -110,7 +112,7 @@ pwsh -File installer/build-msi.ps1        # 产物在 target\keepane-<版本>-wi
        alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
 </p>
 
-keepane 把键盘事件按 Windows 原生的格式（Windows Terminal 用的那套 win32-input-mode）转给每个 pane，所以 PSReadLine 的组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法、WSL 里的 vim 和 htop，表现和不用 keepane 时一样。它能跑在 Windows Terminal、传统控制台、VS Code 的终端，以及任何托管 Windows 控制台的程序里。
+keepane 以 Windows 原生的 win32-input-mode 转发键盘事件，支持 PSReadLine 组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法，以及 WSL 中的 vim 和 htop。可在 Windows Terminal、传统控制台、VS Code 终端和其他 Windows 控制台宿主中运行。
 
 ```powershell
 keepane                      # 新开一个 session 并进入
@@ -123,11 +125,11 @@ keepane capture-pane -p -t work   # 把 pane 上的文字打印出来（-S -200 
 keepane kill-server
 ```
 
-命令名可以只写不产生歧义的前缀，和 tmux 一样：`keepane att`、`keepane lsp`、`keepane splitw -h`。`keepane kill` 会被拒绝，因为有四个命令以它开头。`keepane list-commands` 列出全部；和 tmux 的逐条对照在 [docs/tmux-parity.md](docs/tmux-parity.md)，命令和按键都有。
+和 tmux 一样，命令名可以使用无歧义的前缀：`keepane att`、`keepane lsp`、`keepane splitw -h`。`keepane kill` 会被拒绝，因为有四个命令以它开头。`keepane list-commands` 列出全部；和 tmux 的逐条对照在 [docs/tmux-parity.md](docs/tmux-parity.md)，命令和按键都有。
 
-一次开多个 pane：`keepane split-window -N 3` 会再开三个并把窗口平铺（加 `-d` 焦点留在原处）。窗口太小放不下时，放得下的那些会留着，并告诉你开了几个。
+批量创建 pane：`keepane split-window -N 3` 会再开三个并把窗口平铺（加 `-d` 焦点留在原处）。窗口太小放不下时，放得下的那些会留着，并告诉你开了几个。
 
-进了 session 之后，先按前缀键 `Ctrl+b`，再按：
+进入 session 后，先按前缀键 `Ctrl+b`，再按下表中的键：
 
 | 按键 | 作用 |
 | --- | --- |
@@ -165,11 +167,18 @@ keepane kill-server
 | `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
 | `M-n` / `M-p` | 跳到下一个 / 上一个有提醒的窗口（见 `monitor-activity`） |
 
-放大有动画：pane 本身逐渐长大到铺满窗口，它的四个顶点各自朝窗口的四个顶点靠拢（已经贴着窗口边的那条边不动），还原时反过来缩回去。放大状态下切 pane，新 pane 也这样长出来。焦点换到别处时（用键盘或鼠标选别的 pane、切窗口或 session），会有一个框从原来的位置飞过去。都是 160 毫秒，程序只按最终大小调整一次，不用等动画。`set -g animation off` 关掉，`animation-time` 设毫秒数。
+pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程序仅按动画结束后的尺寸调整，不必等待动画完成。用 `set -g animation off` 关闭动画，或通过 `animation-time` 调整时长（毫秒）。
 
-copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转，`PageUp` / `PageDown` 和 `C-b` / `C-f` 翻页，`C-u` / `C-d` 翻半页（`C-b` 是前缀键，按两下：`C-b C-b` 就是 copy mode 的上翻页），前面加数字就重复（`3j`），`Space` 或 `v` 开始选，`C-v` 切成矩形选择，`Enter` 或 `y` 复制（同时进粘贴缓冲区和 Windows 剪贴板），`/` 往新的方向搜、`?` 往回翻历史搜、`n` `N` 找下一个，`q` 退出。脚本想干同样的事就用 `send-keys -X <命令名>`，命令名和 tmux 一样。
+copy mode 的常用操作：
 
-鼠标也管用：点一下选 pane，拖边框调大小，点状态栏上的窗口名切窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了；右键把剪贴板贴进 pane，和终端本身的右键一样。
+- 移动：`h` `j` `k` `l` 或方向键；`w` `b` `e` 按词移动；`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转。
+- 翻页：`PageUp` / `PageDown` 或 `C-b` / `C-f`；`C-u` / `C-d` 翻半页。由于 `C-b` 也是前缀键，在 copy mode 中按 `C-b C-b` 可上翻一页。数字可指定重复次数，例如 `3j`。
+- 选择与复制：`Space` 或 `v` 开始选择，`C-v` 切换矩形选择，`Enter` 或 `y` 复制到粘贴缓冲区和 Windows 剪贴板。
+- 搜索：`/` 开始搜索、`?` 反向搜索，`n` / `N` 跳到下一个结果；`q` 退出。
+
+脚本可用 `send-keys -X <命令名>` 执行对应操作，命令名与 tmux 相同。
+
+鼠标可用于选择 pane、拖动边框调整大小，以及点击状态栏切换窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了；右键把剪贴板贴进 pane，和终端本身的右键一样。
 
 ## 命令时间和历史
 
@@ -178,14 +187,14 @@ copy mode 里：`h` `j` `k` `l` 和方向键移动，`w` `b` `e` 按词走，`0`
        alt="每条命令行尾显示时间，其中一条失败；历史面板按 pane 位置和日期列出；在查看器里打开某一天；手滑关掉的 pane 按 C-b u 找回">
 </p>
 
-PowerShell pane 会报告自己跑的每条命令（keepane 的 prompt hook 做这件事，就是报告目录的那个）。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
+PowerShell pane 会通过提示符钩子报告每条命令的运行情况。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
 
 ```text
 PS C:\src> cargo build                                     14:03:22 41s ✓
 PS C:\src> cargo test                                      14:04:10 12s ✗
 ```
 
-时间画在行尾的空白里。pane 宽度不变，程序输出的内容一个字不改（copy mode 和 `capture-pane` 看不到它），一行满到放不下就不画。脚本要用的话，`keepane list-marks` 打印同样的信息。手机上点 ⏱ 按钮，时间显示在左边一栏。
+时间信息显示在行尾空白处，不改变 pane 宽度或程序输出；copy mode 和 `capture-pane` 不会包含这段信息。如果行尾空间不足，就不显示。脚本要用的话，`keepane list-marks` 打印同样的信息。手机上点 ⏱ 按钮，时间显示在左边一栏。
 
 带脚本启动的 PowerShell（`-File`、`-Command`）keepane 不去动它，也就没有 hook；可以在那个脚本里加一行 `Invoke-Expression (keepane __shell-hook | Out-String)` 自己装上。
 
@@ -195,8 +204,7 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 PS0='\e]133;C\e\\'
 PROMPT_COMMAND='printf "\e]133;D;%s\e\\\e]133;A\e\\" "$?"'
 ```
-
-pane 里输出过的东西也会存到磁盘上（`log-history`，默认开）：每个 pane 位置每天一个纯文本文件，放在 `%LOCALAPPDATA%\keepane\history\<session>\<窗口>.<pane>\2026-09-25.log`，留 30 天（`log-history-days`），每个文件每天最多 20 MB。一行字从 pane 顶上滚出去的时候才写，所以进度条、正在编辑的提示符只留下最后的样子；vim 这类全屏程序什么都不留；pane 关掉时屏幕上还剩的内容，那时一起写进去。报告过的命令前面有一行它的时间（`── 14:03:22 · 41s · ✓ ──`）。
+pane 的输出也可保存到磁盘（`log-history`，默认开）：每个 pane 位置每天一个纯文本文件，放在 `%LOCALAPPDATA%\keepane\history\<session>\<窗口>.<pane>\2026-09-25.log`，留 30 天（`log-history-days`），每个文件每天最多 20 MB。一行字从 pane 顶上滚出去的时候才写，所以进度条、正在编辑的提示符只留下最后的样子；vim 这类全屏程序什么都不留；pane 关掉时屏幕上还剩的内容，那时一起写进去。报告过的命令前面有一行它的时间（`── 14:03:22 · 41s · ✓ ──`）。
 
 `prefix /`（`choose-history`）列出有历史的 pane 位置和它们的日期。在某一天上按 Enter，就在弹出框里用查看器打开。查看器从末尾开始看，用法和 `less` 一样：`j` `k`、`Space` `b`、`g` `G`，`/` `?` 搜索，`n` `N` 找下一个，`[` `]` 在命令之间跳，`q` 退出。`keepane view 文件` 用它打开任何文件。`set -g log-history off` 就不记了。
 
@@ -383,11 +391,25 @@ source-file ~/.keepane/themes/nord.conf
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
 ```
 
-能用的变量：`session_name` `session_id` `session_windows` `session_attached` `session_created`、`window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`、`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`、`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`、`host` `host_short` `socket_path` `version` `pid`，另有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。机器本身的信息，进程内直接读、不用 `#(命令)`：`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`（没电池就是空）`battery_charging` `uptime`；还有 `git_branch`（pane 所在目录的分支，读 `.git` 得来，不在仓库里就是空）、`pane_current_path_short`（家目录写成 `~`）、`pane_pid_command`（pane 里此刻在跑的程序，编译时是 `cargo`）、`pane_output_count`（pane 输出过多少次；脚本比较前后两次的值就知道有没有新输出，只精确到秒的 `pane_activity` 做不到）。默认的 `status-right` 就用它们：`#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU #{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT #{battery_percentage},} | %H:%M`；`set -g status-right ...` 整条换掉，`set -g status off` 整行关掉。比较写法和 tmux 一样：`#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}`、`#{m:通配符,文本}`（`m/i:` 忽略大小写）得到 `1` 或 `0`，可以做 `#{?…}` 的条件，也可以做配置文件里 `%if` 的条件。修饰符和 tmux 一样：`#{=10:pane_title}` 取前 10 个字符，`#{=-10:…}` 取后 10 个，`#{b:pane_current_path}` 取文件名部分，`#{d:…}` 取目录部分，`#{t:session_created}` 把时间戳显示成时间，`#{s/foo/bar/:…}` 替换，可以套着用（`#{=8:b:pane_current_path}`）。
+可用变量按类别列出：
+
+- session：`session_name` `session_id` `session_windows` `session_attached` `session_created`
+- window：`window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`
+- pane：`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
+- client：`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
+- server：`host` `host_short` `socket_path` `version` `pid`。另外还有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。
+
+系统信息直接从进程读取，无需 `#(命令)`：`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`（没电池就是空）`battery_charging` `uptime`。其他常用变量：`git_branch`（pane 所在目录的分支，读 `.git` 得来，不在仓库里就是空）、`pane_current_path_short`（家目录写成 `~`）、`pane_pid_command`（pane 里此刻在跑的程序，编译时是 `cargo`）、`pane_output_count`（pane 输出过多少次；脚本比较前后两次的值就知道有没有新输出，只精确到秒的 `pane_activity` 做不到）。
+
+默认的 `status-right` 就用它们：`#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU #{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT #{battery_percentage},} | %H:%M`；`set -g status-right ...` 整条换掉，`set -g status off` 整行关掉。
+
+比较运算与 tmux 一样：`#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}`、`#{m:通配符,文本}`（`m/i:` 忽略大小写）得到 `1` 或 `0`，可以做 `#{?…}` 的条件，也可以做配置文件里 `%if` 的条件。
+
+修饰符也与 tmux 一样：`#{=10:pane_title}` 取前 10 个字符，`#{=-10:…}` 取后 10 个，`#{b:pane_current_path}` 取文件名部分，`#{d:…}` 取目录部分，`#{t:session_created}` 把时间戳显示成时间，`#{s/foo/bar/:…}` 替换，可以套着用（`#{=8:b:pane_current_path}`）。
 
 ## 插件
 
-插件的玩法和 tmux 一样：一个目录，里面放一个 `<名字>.keepane`（或 `plugin.keepane`）写 keepane 命令，再放上它需要的脚本，什么语言都行。脚本要和 keepane 说话就调命令行：环境变量 `KEEPANE` 是 socket 名，`KEEPANE_PANE` 是所在 pane，所以脚本里写 `keepane -L $env:KEEPANE display-message ...` 就能找到对的 server。
+插件结构与 tmux 类似：一个目录，里面放一个 `<名字>.keepane`（或 `plugin.keepane`）写 keepane 命令，再放上它需要的脚本，什么语言都行。脚本要和 keepane 说话就调命令行：环境变量 `KEEPANE` 是 socket 名，`KEEPANE_PANE` 是所在 pane，所以脚本里写 `keepane -L $env:KEEPANE display-message ...` 就能找到对的 server。
 
 ```tmux
 # ~/.keepane.conf
@@ -404,7 +426,7 @@ set -g @plugin C:\src\my-plugin           # 也可以直接给路径（目录或
 - 状态栏里的 `#(命令)`，见上面。
 - 运行时 `load-plugin 名字或路径`、`list-plugins`。
 
-举个例子，一个把 agent 任务进度显示在状态栏、按 `prefix A` 弹出完整日志的小插件：
+以下插件在状态栏显示 agent 任务进度，并用 `prefix A` 打开日志：
 
 ```tmux
 # ~/.keepane/plugins/agent-status/agent-status.keepane
@@ -413,7 +435,7 @@ set -g status-interval 5
 bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
 ```
 
-脚本和按键绑定里常用、但不那么显眼的几个命令（`keepane list-commands` 会全部列出来，命令名写前缀就行）：
+脚本和按键绑定中还可使用这些命令（`keepane list-commands` 会全部列出来，命令名写前缀就行）：
 
 - `pipe-pane [-o] [-I] [-O] [-t 目标] [命令]`：把 pane 打印的所有东西灌进一个命令的标准输入（`-O`，默认）；不给命令就是停。`keepane pipe-pane "$input | Add-Content build.log"` 就能一边编译一边留日志（PowerShell 会先把输入读完再跑，所以这个文件是管道停下时才写；想逐行落盘用 `cmd.exe /c findstr ... > 文件` 这种命令）。`-I` 反过来：命令打印什么就往 pane 里敲什么，命令输出完管道就结束（`-IO` 两个方向都要）。
 - `wait-for [-L|-U|-S] 通道`：挂在那儿等别人发信号（或者解锁），两个脚本可以互相等：一边 `keepane wait-for ready`，另一边 `keepane wait-for -S ready` 放行。
@@ -437,11 +459,13 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 ## 它是怎么工作的
 
-`keepane` 这个命令本身是个客户端。第一次运行时它会拉起一个后台 server（`keepane __server`），所有 session 都归 server 管；客户端和 server 之间走一条按用户隔离的命名管道（`\\.\pipe\keepane-<用户名>-<socket>`，`-L` 可以换 socket）。每个 pane 是一个 ConPTY，server 这边用 `vt100` 维护一份终端画面；server 把可见的 pane、边框、状态栏拼成一帧，只把变化的格子发给接上来的客户端，客户端用 VT 序列写到控制台。最后一个 session 结束，server 就退出。server 启动时会脱离启动它的那个 job（只要那个 job 允许）：OpenSSH 把每个会话放在一个关闭即结束的 job 里，不脱离的话，从 SSH 里启动的 server 会随着连接断开一起结束。
+`keepane` 命令本身是客户端。首次运行会启动后台 server（`keepane __server`），由 server 管理所有 session。两者通过按用户隔离的命名管道通信（`\\.\pipe\keepane-<用户名>-<socket>`；用 `-L` 指定 socket）。
 
-pane 里能看到两个环境变量：`KEEPANE`（socket 名）和 `KEEPANE_PANE`（pane 编号）。在 pane 里敲 `keepane` 命令会自动连到管着这个 pane 的 server（和 tmux 用 `$TMUX` 一个道理），所以 `keepane ls` 之类不用再写 `-L`。server 的日志在 `%LOCALAPPDATA%\keepane\server.log`，`KEEPANE_LOG=debug` 会记得更详细。超过 5 MB 会改名为 `server.log.1` 再开新文件，跑几个月的 server 日志也最多占 10 MB 左右。
+每个 pane 使用一个 ConPTY。server 用 `vt100` 维护终端画面，将可见 pane、边框和状态栏合成一帧，只向客户端发送变化的格子；客户端再用 VT 序列写入控制台。最后一个 session 结束后，server 退出。启动时 server 会尽可能脱离创建它的 job，避免从 SSH 启动时随连接断开而退出。
 
-某个键按了没反应（比如前缀键），就在同一个终端里运行 `keepane show-keys` 再按它：每按一个键，会打印控制台交过来的是什么、keepane 把它认成哪个键，按 `q` 退出。什么都没打印，说明是外面托管终端的程序自己把键吃掉了（比如 VS Code 自己绑了 `Ctrl+B`）。有些宿主把输入当字节转交而不是键盘事件（SSH、一些远程工具），`Ctrl+B` 到这里只是字符 0x02、不带 Ctrl 标志；keepane 按 tmux 的读法解读控制字符，所以它照样是 `C-b`。
+pane 里能看到两个环境变量：`KEEPANE`（socket 名）和 `KEEPANE_PANE`（pane 编号）。在 pane 里敲 `keepane` 命令会自动连到管着这个 pane 的 server（和 tmux 用 `$TMUX` 一个道理），所以 `keepane ls` 之类不用再写 `-L`。server 日志位于 `%LOCALAPPDATA%\keepane\server.log`，`KEEPANE_LOG=debug` 会记得更详细。超过 5 MB 会改名为 `server.log.1` 再开新文件，跑几个月的 server 日志也最多占 10 MB 左右。
+
+如果按键没有响应（例如前缀键），可在同一终端运行 `keepane show-keys` 再按它：每按一个键，会打印控制台交过来的是什么、keepane 把它认成哪个键，按 `q` 退出。什么都没打印，说明是外面托管终端的程序自己把键吃掉了（比如 VS Code 自己绑了 `Ctrl+B`）。有些宿主把输入当字节转交而不是键盘事件（SSH、一些远程工具），`Ctrl+B` 到这里只是字符 0x02、不带 Ctrl 标志；keepane 按 tmux 的读法解读控制字符，所以它照样是 `C-b`。
 
 命名管道带了只允许当前用户（和 SYSTEM）访问的 DACL，相当于 tmux 那个 0700 的 socket 目录。每个 pane 都跑在一个 kill-on-close 的 job object 里，所以 `kill-pane`、`kill-session`、server 退出都会把整棵进程树带走，不留孤儿。客户端写控制台慢的时候，server 不会无限缓冲帧，而是直接改成全量重绘。
 
@@ -458,9 +482,13 @@ cargo clippy --all-targets
 
 ## 还没做的
 
-目前只有 Windows 版。pane、消息和事件日志的代码不依赖平台；移植到 Linux 或 macOS，要补的是终端、进程间通信的管道和 shell 钩子这几块。
+目前只有 Windows 版。pane、消息和事件日志的实现不依赖平台。移植到 Linux 或 macOS 还需实现终端、进程间通信和 shell 钩子。
 
-和 tmux 比：多个客户端接同一个 session 时窗口尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`）；比窗口小的客户端看到的是自己的一块视口，`Shift`+方向键（`refresh-client -U/-D/-L/-R`）平移，敲键时跟着光标走；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`display-popup` 里前缀键还是 keepane 的（连按两次前缀可以把它送给弹窗里的程序）。
+与 tmux 相比，目前有这些差异：
+
+- 多个客户端连接同一 session 时，共享窗口尺寸。`window-size latest|smallest|largest|manual` 决定采用最近使用、最小、最大客户端的尺寸，或只接受 `resize-window` 手动设置。较小的客户端显示自己的视口，可用 `Shift`+方向键（`refresh-client -U/-D/-L/-R`）平移；输入时视口跟随光标。
+- hook 仅支持前文列出的事件；`choose-tree` 按子串过滤，不支持 tmux 格式串过滤。
+- `display-popup` 中，前缀键仍归 keepane 处理；连按两次可将前缀键发送给弹窗中的程序。
 
 pane 消息：`shell` 工作模式依赖 keepane 的 PowerShell 提示符钩子，所以 cmd 和 WSL 里的 shell 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。dashboard 还没有上手机页面。
 
@@ -468,7 +496,7 @@ pane 消息：`shell` 工作模式依赖 keepane 的 PowerShell 提示符钩子�
 
 ## 原名 wmux
 
-0.13.1 及以前，这个项目叫 wmux。后来发现这个名字早就被占了好几次：GitHub、winget、crates.io 上都有别的终端多路复用器叫这个名字，有的比我们早、也更有名。从 0.14.0 起改名 keepane，取的是它最核心的用处：终端关了，pane 里的东西还在跑（keep + pane）。
+0.13.1 及以前的版本名为 wmux。由于 GitHub、winget 和 crates.io 上已有同名项目，0.14.0 起更名为 keepane。名字取自 keep + pane：终端断开后，pane 中的程序继续运行。
 
 从 wmux 过来：
 
