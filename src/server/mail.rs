@@ -35,7 +35,7 @@ pub(super) struct Dropped {
 }
 
 impl Server {
-    fn pane_ref(&self, id: PaneId) -> Option<&super::pane::Pane> {
+    pub(super) fn pane_ref(&self, id: PaneId) -> Option<&super::pane::Pane> {
         self.sessions.iter().flat_map(|s| s.windows.iter()).find_map(|w| w.pane(id))
     }
 

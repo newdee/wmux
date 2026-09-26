@@ -4910,3 +4910,107 @@ async fn a_pane_made_for_an_agent_is_the_one_it_asked_for_whatever_hooks_do() {
     assert_eq!(ask_pane(&h, pane_id(&h, "hk:0.1").await, "[#{pane_name}] #{pane_work_mode}").await, "[] normal");
     h.cli(&["kill-server"]).await;
 }
+
+/// The last line of a pane's text that is not blank.
+fn last_line(screen: &str) -> String {
+    screen.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().trim_end().to_string()
+}
+
+/// Every PowerShell pane keeps its own command history, in a file under the
+/// sessions directory: a pane split off starts from the one it came from,
+/// the two go their own ways, a resumed pane has what it had, and
+/// PowerShell's shared file is not written.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_powershell_pane_keeps_its_own_command_history() {
+    let h = Harness::start("shell-history").await;
+    // Marks of this run's own: a run that failed half way leaves its marks
+    // behind, and those must not fail the next one.
+    let (one, two) = (format!("kp-hist-one-{}", std::process::id()), format!("kp-hist-two-{}", std::process::id()));
+    h.cli(&["new", "-d", "-s", "keeper"]).await;
+    let (code, _, err) =
+        h.cli(&["new", "-d", "-s", "hist", "-x", "100", "-y", "30", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("hist:0.0", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    h.cli(&["send-keys", "-t", "hist:0.0", &format!("echo {one}"), "Enter"]).await;
+    h.wait_capture("hist:0.0", "the command", |t| t.matches(one.as_str()).count() >= 2).await;
+    // Its file, under the sessions directory.
+    let dir = h.sessions_dir.join("psreadline");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let written =
+            std::fs::read_dir(&dir).into_iter().flatten().flatten().any(|e| {
+                std::fs::read_to_string(e.path()).is_ok_and(|t| t.lines().any(|l| l == format!("echo {one}")))
+            });
+        if written {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no history file in {} has the command", dir.display());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // A pane split off has it too.
+    let (code, _, err) = h.cli(&["split-window", "-t", "hist:0.0", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("hist:0.1", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    h.cli(&["send-keys", "-t", "hist:0.1", "Up"]).await;
+    h.wait_capture("hist:0.1", "the first pane's command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+    // From here on, each its own.
+    h.cli(&["send-keys", "-t", "hist:0.1", "C-c"]).await;
+    h.cli(&["send-keys", "-t", "hist:0.1", &format!("echo {two}"), "Enter"]).await;
+    h.wait_capture("hist:0.1", "the command", |t| t.matches(two.as_str()).count() >= 2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
+    let first =
+        h.wait_capture("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+    assert!(!first.contains(two.as_str()), "the other pane's command is not in this one's:\n{first}");
+
+    // Started again in place, a pane keeps its file.
+    h.cli(&["send-keys", "-t", "hist:0.0", "C-c"]).await;
+    let (code, _, err) = h.cli(&["respawn-pane", "-k", "-t", "hist:0.0"]).await;
+    assert_eq!(code, 0, "{err}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    h.wait_capture("hist:0.0", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
+    h.wait_capture("hist:0.0", "its command after respawn", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+    h.cli(&["send-keys", "-t", "hist:0.0", "C-c"]).await;
+
+    // Saved, killed and resumed: each pane has its own history back.
+    let (code, _, err) = h.cli(&["save-session", "-t", "hist"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["kill-session", "-t", "hist"]).await;
+    let mut c = h.connect().await;
+    assert_eq!(c.attach(&["resume", "hist"]).await, "hist");
+    h.wait_capture("hist:0.1", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    h.cli(&["send-keys", "-t", "hist:0.1", "Up"]).await;
+    h.wait_capture("hist:0.1", "its own last command", |t| last_line(t).ends_with(&format!("echo {two}"))).await;
+    h.wait_capture("hist:0.0", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
+    h.wait_capture("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+
+    // A saved pane whose file is gone starts over from PowerShell's shared
+    // file, under the same name, rather than from nothing.
+    let names: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+    assert_eq!(names.len(), 2, "one file per pane: {names:?}");
+    let (code, _, err) = h.cli(&["save-session", "-t", "hist"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["kill-session", "-t", "hist"]).await;
+    for p in &names {
+        std::fs::remove_file(p).unwrap();
+    }
+    let mut c = h.connect().await;
+    assert_eq!(c.attach(&["resume", "hist"]).await, "hist");
+    h.wait_capture("hist:0.1", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    let shared_exists = std::env::var_os("APPDATA").is_some_and(|a| {
+        std::path::Path::new(&a).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt").is_file()
+    });
+    if shared_exists {
+        assert!(names.iter().all(|p| p.is_file()), "both files are back: {names:?}");
+    }
+    // PowerShell's shared history has none of it.
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let shared =
+            std::path::Path::new(&appdata).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt");
+        let text = std::fs::read_to_string(shared).unwrap_or_default();
+        assert!(!text.contains(one.as_str()) && !text.contains(two.as_str()), "the shared history file was written");
+    }
+}

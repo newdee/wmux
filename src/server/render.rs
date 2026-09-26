@@ -696,8 +696,9 @@ pub fn draw_frame(g: &mut Grid, r: Rect, style: Style) {
     put(x1, y1, "╯");
 }
 
-pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, active: bool) {
-    let style = Style::colors(Color::Idx(0), if active { Color::Idx(2) } else { Color::Idx(4) });
+pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, colour: Color) {
+    // The digits are drawn with `█`, so the colour is the foreground.
+    let style = Style::colors(colour, Color::Default);
     let text = number.to_string();
     if !draw_big_text(g, rect, &text, style) && rect.w > 0 && rect.h > 0 {
         // Too small for the block digits: plain text in the corner.
@@ -792,6 +793,21 @@ pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_number_is_drawn_in_its_colour() {
+        // `█` shows its foreground: a black foreground made the digits
+        // invisible on a dark background.
+        let mut g = Grid::new(20, 7);
+        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 20, h: 7 }, 1, Color::Idx(1));
+        let blocks: Vec<&Cell> = (0..7)
+            .flat_map(|y| (0..20).map(move |x| (x, y)))
+            .map(|(x, y)| g.get(x, y))
+            .filter(|c| c.text() == "█")
+            .collect();
+        assert!(!blocks.is_empty(), "the digit is drawn");
+        assert!(blocks.iter().all(|c| c.style.fg == Color::Idx(1)), "every block in the colour");
+    }
 
     #[test]
     fn the_focus_frame_moves_and_stays_whole() {

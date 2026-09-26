@@ -28,6 +28,10 @@ pub struct SavedPane {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_mode: Option<String>,
+    /// Its PowerShell history file (`Pane::shell_history`), so a resumed
+    /// pane takes up the history it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_history: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

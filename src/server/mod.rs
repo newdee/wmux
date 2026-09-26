@@ -20,9 +20,40 @@ use pane::{CopyMode, Pane, PaneEvent};
 use render::{CopyView, Frame, Grid, PaneView, StatusLine};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::mpsc;
+
+/// Where a new pane's PowerShell keeps its command history.
+enum ShellHistory {
+    /// PowerShell's own shared file: a popup, gone in a moment.
+    Shared,
+    /// A resumed pane's own file, by name.
+    Keep(String),
+    /// A file of its own, starting as a copy of this pane's (or of the shared
+    /// file).
+    From(Option<PaneId>),
+}
+
+/// Remove the `.txt` history files in `dir` last written before `cutoff` whose
+/// name is not in `keep`. Nothing else in `dir` is touched.
+fn prune_shell_history_files(dir: &std::path::Path, keep: &HashSet<String>, cutoff: SystemTime) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        let stale = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff);
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if stale && path.extension().is_some_and(|x| x == "txt") && !keep.contains(&name) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// PSReadLine's default history file, shared by every PowerShell of the user.
+fn shared_shell_history() -> Option<PathBuf> {
+    let p = PathBuf::from(std::env::var_os("APPDATA")?)
+        .join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt");
+    p.is_file().then_some(p)
+}
 
 pub type ClientId = u32;
 pub type SessionId = u32;
@@ -1152,9 +1183,12 @@ impl Server {
                 p.flush_log();
             }
         }
-        if self.opts.log_history && self.history_pruned.is_none_or(|t| t.elapsed() >= Duration::from_secs(86_400)) {
+        if self.history_pruned.is_none_or(|t| t.elapsed() >= Duration::from_secs(86_400)) {
             self.history_pruned = Some(Instant::now());
-            crate::histlog::prune(self.history_dir(), self.opts.log_history_days);
+            if self.opts.log_history {
+                crate::histlog::prune(self.history_dir(), self.opts.log_history_days);
+            }
+            self.prune_shell_histories();
         }
     }
 
@@ -1207,6 +1241,7 @@ impl Server {
                             name: p.actor.name.clone(),
                             work_mode: (p.actor.mode != actor::WorkMode::Normal)
                                 .then(|| p.actor.mode.as_str().to_string()),
+                            shell_history: p.shell_history.clone(),
                         })
                     };
                     let order = w.layout.panes();
@@ -1401,7 +1436,8 @@ impl Server {
                 text
             });
             // Sizes are refitted by relayout; spawn at the window size.
-            let mut pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay)?;
+            let hist = saved.shell_history.clone().map_or(ShellHistory::From(None), ShellHistory::Keep);
+            let mut pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay, hist)?;
             // Its name and work mode come back; a name another pane has
             // taken meanwhile does not.
             pane.actor.mode = saved.work_mode.as_deref().and_then(actor::WorkMode::parse).unwrap_or_default();
@@ -2504,7 +2540,7 @@ impl Server {
             return Err("pane too small to split".into());
         }
         let (nw, nh) = if horizontal { ((rect.w - 1) / 2, rect.h) } else { (rect.w, (rect.h - 1) / 2) };
-        let pane = self.spawn_pane(argv, cwd, nw.max(1), nh.max(1))?;
+        let pane = self.spawn_pane(argv, cwd, nw.max(1), nh.max(1), ShellHistory::From(Some(pid)))?;
         let w = &mut self.session_mut(sid).unwrap().windows[widx];
         let nid = pane.id;
         if full {
@@ -2517,8 +2553,15 @@ impl Server {
         Ok(nid)
     }
 
-    fn spawn_pane(&mut self, argv: &[String], cwd: Option<&str>, cols: u16, rows: u16) -> Result<Pane, String> {
-        self.spawn_pane_replaying(argv, cwd, cols, rows, None)
+    fn spawn_pane(
+        &mut self,
+        argv: &[String],
+        cwd: Option<&str>,
+        cols: u16,
+        rows: u16,
+        hist: ShellHistory,
+    ) -> Result<Pane, String> {
+        self.spawn_pane_replaying(argv, cwd, cols, rows, None, hist)
     }
 
     /// As `spawn_pane`, with a resumed pane's saved output printed into its
@@ -2530,12 +2573,100 @@ impl Server {
         cols: u16,
         rows: u16,
         replay: Option<String>,
+        hist: ShellHistory,
     ) -> Result<Pane, String> {
         let id = self.alloc_id();
         let argv = if argv.is_empty() { resolve_shell(&self.opts) } else { argv.to_vec() };
-        let env = self.pane_env(id);
-        Pane::spawn_replaying(id, &argv, cwd, cols, rows, self.opts.history_limit, &env, self.pane_tx.clone(), replay)
-            .map_err(|e| format!("{e:#}"))
+        let mut env = self.pane_env(id);
+        // Only an interactive PowerShell, the one that gets keepane's hook,
+        // has a history file of its own.
+        let hooked = crate::config::with_shell_integration(&argv) != argv;
+        let name = match hist {
+            _ if !hooked => None,
+            ShellHistory::Shared => None,
+            // A resumed pane whose file is gone starts over as a new one would.
+            ShellHistory::Keep(name) => {
+                self.seed_shell_history(&name, None);
+                Some(name)
+            }
+            ShellHistory::From(from) => {
+                let name = format!("{:x}-{id}", chrono::Utc::now().timestamp_millis());
+                self.seed_shell_history(&name, from);
+                Some(name)
+            }
+        };
+        if let Some(n) = &name {
+            env.push(("KEEPANE_SHELL_HISTORY".into(), self.shell_history_path(n).to_string_lossy().into_owned()));
+        }
+        let mut pane = Pane::spawn_replaying(
+            id,
+            &argv,
+            cwd,
+            cols,
+            rows,
+            self.opts.history_limit,
+            &env,
+            self.pane_tx.clone(),
+            replay,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        pane.shell_history = name;
+        Ok(pane)
+    }
+
+    /// A pane's PowerShell history file, by name.
+    fn shell_history_path(&self, name: &str) -> PathBuf {
+        self.sessions_dir().join("psreadline").join(format!("{name}.txt"))
+    }
+
+    /// Give history file `name` a start when it does not exist yet: a copy of
+    /// pane `from`'s, or of PowerShell's shared file. A new shell has what the
+    /// one it came from had.
+    fn seed_shell_history(&self, name: &str, from: Option<PaneId>) {
+        let path = self.shell_history_path(name);
+        if path.is_file() {
+            return;
+        }
+        let source = from
+            .and_then(|p| self.pane_ref(p))
+            .and_then(|p| p.shell_history.as_deref())
+            .map(|n| self.shell_history_path(n))
+            .filter(|p| p.is_file())
+            .or_else(shared_shell_history);
+        if let Some(src) = source
+            && let Some(dir) = path.parent()
+        {
+            let _ = std::fs::create_dir_all(dir);
+            if let Err(e) = std::fs::copy(&src, &path) {
+                log::warn!("shell history {}: {e}", path.display());
+            }
+        }
+    }
+
+    /// Remove the history files no pane and no saved session refers to that
+    /// have not been written for `log-history-days` days (0 keeps them).
+    fn prune_shell_histories(&self) {
+        let days = self.opts.log_history_days;
+        if days == 0 {
+            return;
+        }
+        let mut keep: HashSet<String> = self
+            .sessions
+            .iter()
+            .flat_map(|s| s.windows.iter())
+            .flat_map(|w| w.panes.iter())
+            .filter_map(|p| p.shell_history.clone())
+            .collect();
+        for (_, _, path) in crate::resurrect::list(&self.sessions_dir()) {
+            if let Ok(f) = crate::resurrect::SavedFile::load(&path) {
+                for w in &f.session.windows {
+                    keep.extend(w.layout.panes().into_iter().filter_map(|p| p.shell_history.clone()));
+                }
+            }
+        }
+        if let Some(cutoff) = SystemTime::now().checked_sub(Duration::from_secs(u64::from(days) * 86_400)) {
+            prune_shell_history_files(&self.sessions_dir().join("psreadline"), &keep, cutoff);
+        }
     }
 
     /// (session, window index) holding a pane.
@@ -2796,7 +2927,9 @@ impl Server {
     ) -> Result<usize, String> {
         let (cols, rows) = self.session(sid).map(|s| (s.cols, s.rows)).ok_or("no such session")?;
         let area = self.window_area(cols, rows);
-        let pane = self.spawn_pane(argv, cwd, area.w, area.h)?;
+        // A new window's shell starts from the history of the pane in use.
+        let from = self.session(sid).and_then(|s| s.window()).map(|w| w.active);
+        let pane = self.spawn_pane(argv, cwd, area.w, area.h, ShellHistory::From(from))?;
         Ok(self.add_window(sid, pane, name))
     }
 
@@ -3054,7 +3187,13 @@ impl Server {
                 for id in ids {
                     // The same environment a new pane gets: KEEPANE, KEEPANE_PANE
                     // and PATH, not just the set-environment entries.
-                    let env = self.pane_env(id);
+                    let mut env = self.pane_env(id);
+                    if let Some(n) = self.pane_ref(id).and_then(|p| p.shell_history.clone()) {
+                        env.push((
+                            "KEEPANE_SHELL_HISTORY".into(),
+                            self.shell_history_path(&n).to_string_lossy().into_owned(),
+                        ));
+                    }
                     let Some(p) = self.find_pane_mut(id) else { continue };
                     if p.exit_code.is_none() && !kill {
                         continue; // tmux refuses a live pane without -k
@@ -4874,7 +5013,7 @@ impl Server {
                     return Outcome::Error("display-popup: no room for a popup".into());
                 }
                 let cwd = self.pane_cwd(cwd.as_deref(), sid, Some(cid));
-                let pane = match self.spawn_pane(&argv, cwd.as_deref(), rect.w - 2, rect.h - 2) {
+                let pane = match self.spawn_pane(&argv, cwd.as_deref(), rect.w - 2, rect.h - 2, ShellHistory::Shared) {
                     Ok(p) => p,
                     Err(e) => return Outcome::Error(e),
                 };
@@ -7135,7 +7274,12 @@ impl Server {
             }
             for (id, rect) in if w.zoomed { &real } else { &w.rects } {
                 let n = order.iter().position(|p| p == id).unwrap_or(0) + pane_base_index;
-                render::draw_pane_number(&mut grid, *rect, n, *id == w.active);
+                let colour = if *id == w.active {
+                    self.opts.display_panes_active_colour
+                } else {
+                    self.opts.display_panes_colour
+                };
+                render::draw_pane_number(&mut grid, *rect, n, colour);
             }
             cursor = None;
         }
@@ -7902,6 +8046,30 @@ fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), Strin
 mod tests {
     use super::*;
 
+    #[test]
+    fn old_shell_history_files_go_unless_something_refers_to_them() {
+        let dir = std::env::temp_dir().join(format!("keepane-prune-shell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["old", "kept", "new", "notes"] {
+            std::fs::write(dir.join(format!("{name}.txt")), "x").unwrap();
+        }
+        std::fs::write(dir.join("old.log"), "x").unwrap();
+        let keep: HashSet<String> = ["kept".to_string()].into_iter().collect();
+        // A cutoff in the past: nothing is that old, nothing goes.
+        prune_shell_history_files(&dir, &keep, SystemTime::now() - Duration::from_secs(3600));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 5);
+        // Everything is older than a cutoff in the future: what is not kept goes,
+        // and only .txt files.
+        prune_shell_history_files(&dir, &keep, SystemTime::now() + Duration::from_secs(3600));
+        let mut left: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["kept.txt", "old.log"]);
+        // No directory at all: nothing happens.
+        prune_shell_history_files(&dir.join("missing"), &keep, SystemTime::now());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     fn client(cap: usize) -> (Client, mpsc::Receiver<ServerMsg>) {
         let (tx, rx) = mpsc::channel(cap);
         let c = Client {

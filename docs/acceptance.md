@@ -2570,3 +2570,21 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 3 | 保真与可复现 | 用户粘贴的 228 行非空内容按序全部在中文 README 里（缺 0）；渲染两次哈希相同（EN 6525CB5F1B22，ZH 1D1B6ED0F7A2） | 干净（3/3） |
 
 遗留：README 第一句现在写明 Windows，而 Cargo、scoop、winget、MSI、GitHub About 的描述是上一版（未写 Windows），待用户决定是否统一。
+
+## 61. display-panes 数字看不见；每个 PowerShell pane 各有命令历史
+
+一、`C-b q` 的数字用 `█` 画，而 `█` 显示前景色，代码把前景色写死成黑色（颜色只放在背景上），深色主题上几乎看不见。改为颜色放前景，并加 tmux 的 `display-panes-colour`（默认蓝）/`display-panes-active-colour`（默认红）。
+
+二、恢复/重启后按 ↑ 历史"不对"：所有 pane 共用 PSReadLine 的一个全局文件，新起的 pwsh 读到的是所有 pane 混在一起的命令。另外测试的 shell pane 一直写进开发者真实的全局历史（661 行信封命令，全是测试与验证）。改为每个交互式 PowerShell pane 有自己的历史文件（`<sessions-dir>\psreadline\<名>.txt`，环境变量 `KEEPANE_SHELL_HISTORY`，钩子在首个提示符前 `Set-PSReadLineOption -HistorySavePath`；实测该时机切换对 ↑ 与写入都生效）。文件名随 session 存档，恢复与 respawn 沿用；新 pane 复制来源 pane（分屏的原 pane / 新窗口时在用的 pane）的历史，没有就复制全局文件；存档里记着但文件已不在的，照新 pane 重建。无 pane、无存档引用且超过 `log-history-days` 未写的文件每日清理（0 不清）。弹窗仍用全局文件。测试的 sessions-dir 本就在临时目录，污染随之消失。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 前提实验 | 临时 socket 上 `-Command` 里改 HistorySavePath：↑ 出该文件末行，新命令写入该文件，全局文件未写 | 方案可行 |
+| 1 | 变异 | M1 钩子不切换、M2 不存档、M3 不复制来源 均被抓；但 M1 把标记写进了真实全局历史，此后未变异的代码 3/3 失败（断言依赖全局状态）；M4 respawn 丢文件未覆盖；清理函数无测试 | **有问题**：标记加进程号；测试加 respawn 步骤（M4 转为被抓）；清理规则抽成函数加单元测试 |
+| 2 | 机制通路 | fmt/clippy 0；全量 203/10/84；通读 diff：README 未说明此行为 | **有问题**，Resume 一节补说明（中英） |
+| 3 | 边界 | 存档记着的文件已被删：恢复后从空历史开始 | **有问题**，照新 pane 重建同名文件；测试删文件再恢复，文件回来（M5 去掉重建即失败） |
+| 4 | 静态一致性 | README 7 条说法逐条在代码里找到；fmt/clippy 0；全量 203/10/84 | 干净（1/3） |
+| 5 | 目标验证 | 全局历史信封行 661 → 661；最后写入 22:39（M1 那次），此后两次全量未写 | 干净（2/3） |
+| 6 | 可复现性 | 新测试 5/5（各 3 s），原 shell 测试 3/3，全局历史文件哈希不变 | 干净（3/3） |
+
+遗留：全局历史里 661 行测试命令与 M1 留下的 1 行，待用户确认后清理（多行命令的续行一并删）。

@@ -354,6 +354,13 @@ off (the server holds the shutdown up for the moment that takes). `set -g
 restore-on-start on` makes a fresh server restore everything by itself;
 `set -g autosave off` turns saving off; `sessions-dir` moves the files.
 
+Each PowerShell pane keeps its own command history (what Up brings back),
+in a file under the sessions directory, so a resumed pane has what it ran
+and not what every other pane ran. A new pane starts with a copy of the
+history of the pane it came from (the one split, or the one in use for a
+new window), else of PowerShell's own history file. Files no pane or saved
+session refers to go after `log-history-days`.
+
 To have all of that happen by itself when you log on:
 
 ```powershell

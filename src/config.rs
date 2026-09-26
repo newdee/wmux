@@ -49,6 +49,9 @@ pub struct Options {
     /// (tmux `repeat-time`); 0 turns repeating off.
     pub repeat_time_ms: u64,
     pub pane_border_active_fg: Color,
+    /// `display-panes`: the other panes' numbers, and the active pane's.
+    pub display_panes_colour: Color,
+    pub display_panes_active_colour: Color,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -187,6 +190,8 @@ pub const SHOWABLE: &[&str] = &[
     "window-status-current-format",
     "pane-border-style",
     "pane-active-border-style",
+    "display-panes-colour",
+    "display-panes-active-colour",
     "base-index",
     "remain-on-exit",
     "save-history",
@@ -252,6 +257,9 @@ impl Default for Options {
             display_time_ms: 1500,
             repeat_time_ms: 500,
             pane_border_active_fg: Color::Idx(2),
+            // tmux's defaults.
+            display_panes_colour: Color::Idx(4),
+            display_panes_active_colour: Color::Idx(1),
             pane_border_fg: Color::Idx(8),
             status_left: "[#S] ".into(),
             // What is useful at a glance and costs nothing to read: the
@@ -381,6 +389,8 @@ pub const KNOWN: &[&str] = &[
     "base-index",
     "default-command",
     "default-shell",
+    "display-panes-active-colour",
+    "display-panes-colour",
     "display-time",
     "event-log",
     "event-log-days",
@@ -589,6 +599,8 @@ impl Options {
             }
             "status-fg" => self.status_fg = parse_color(value)?,
             "status-bg" => self.status_bg = parse_color(value)?,
+            "display-panes-colour" => self.display_panes_colour = parse_color(value)?,
+            "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
                     self.pane_border_active_fg = c;
@@ -793,6 +805,8 @@ impl Options {
             "status-bg" => color_name(self.status_bg),
             "pane-border-style" => format!("fg={}", color_name(self.pane_border_fg)),
             "pane-active-border-style" => format!("fg={}", color_name(self.pane_border_active_fg)),
+            "display-panes-colour" => color_name(self.display_panes_colour),
+            "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
     }
@@ -873,7 +887,9 @@ pub fn resolve_shell(opts: &Options) -> Vec<String> {
 /// (`OSC 7777;keepane-prompt`): what a pane in `shell` work mode waits for
 /// before the next message goes in, and which a remote shell never sends.
 /// `$global:?` is read first, before anything else can change it.
-pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__keepane_prompt = $function:prompt; \
+pub const POWERSHELL_PROMPT_HOOK: &str = "if ($env:KEEPANE_SHELL_HISTORY -and (Get-Command Set-PSReadLineOption -ErrorAction Ignore)) { \
+     Set-PSReadLineOption -HistorySavePath $env:KEEPANE_SHELL_HISTORY }; \
+     $global:__keepane_prompt = $function:prompt; \
      $global:__keepane_hid = (Get-History -Count 1).Id; \
      function global:prompt { \
      $__ok = $global:?; \

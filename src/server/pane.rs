@@ -373,6 +373,11 @@ pub struct Pane {
     /// keepane's prompt came and the server waits a moment before taking
     /// the command as done (`PROMPT_SETTLE`); nothing is typed in meanwhile.
     pub settle: bool,
+    /// The file its PowerShell keeps command history in (`KEEPANE_SHELL_HISTORY`),
+    /// by name under the sessions directory: its own, so Up in a resumed pane
+    /// gives what that pane ran. None for a pane that is not an interactive
+    /// PowerShell.
+    pub shell_history: Option<String>,
     /// The pty's slave side, kept only while a program is still to be
     /// started in it (a resumed pane printing its saved output first).
     slave: Option<Box<dyn portable_pty::SlavePty + Send>>,
@@ -650,6 +655,7 @@ impl Pane {
             prompted: false,
             delivered_line: None,
             settle: false,
+            shell_history: None,
         })
     }
 
@@ -851,6 +857,8 @@ impl Pane {
         // Putting the new pane in place drops the old one, whose Drop closes
         // the job object and takes the old process tree with it.
         let old = std::mem::replace(self, fresh);
+        // The same shell history file: it is the same pane.
+        self.shell_history = old.shell_history.clone();
         drop(old);
         Ok(())
     }
