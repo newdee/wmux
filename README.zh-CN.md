@@ -185,6 +185,50 @@ pane 里输出过的东西也会存到磁盘上（`log-history`，默认开）�
 
 用 `kill-pane` 或 `kill-window` 关掉的 pane 或窗口（`prefix x`、`prefix &`）会保留 10 秒，里面的程序继续跑。这期间按 `prefix u`（`undo-kill`）就放回原处。过了 10 秒就和以前一样彻底没了。秒数用 `undo-kill-time` 改；设成 0 就立刻结束，关程序是为了释放端口或文件的时候就该这样。一个 session 的最后一个 pane 不保留，因为 session 会跟着它一起结束。
 
+## pane 之间互相发消息
+
+每个 pane 可以有名字、工作模式和收件箱。一个 pane（脚本、人、Claude Code 这样的 agent）给另一个发消息，keepane 把它排进队列，等对方空闲时打进去，并记下它后来怎么样了。不同窗口里的 agent 可以这样互相派活，agent 也可以自己开 pane 来干活。
+
+```powershell
+keepane rename-pane -t %3 builder          # 之后用 -t %builder 就能找到它
+keepane set-work-mode -t %builder shell    # 它在提示符下执行收到的内容
+keepane send-message -t %builder -w 30 "cargo test"
+#12 delivered to $1:@2.%3 (shell)
+keepane trace-message 12 -w 600            # 等它做完：输出、成败
+```
+
+定位一个 pane 可以用 `%7`（编号）、`%builder`（名字）或完整地址 `$1:@2.%7`（session、窗口、pane 的编号，`whoami` 会打印出来）。完整地址代表"它应该在哪"：如果 pane 已经挪到别的窗口，消息会被拒绝，而不是跟着发过去。
+
+pane 怎么处理消息取决于它的工作模式：
+
+| 模式 | 什么时候算空闲 | 投递方式 |
+|---|---|---|
+| `normal`（默认） | 从不自己取 | 等 `read-message` 来取（窗口标记里出现 `@`） |
+| `shell` | keepane 自己的提示符钩子说 shell 回到了提示符 | 打进去并执行 |
+| `ai` | agent 说 `pane-ready`（每轮结束时的 hook） | 作为提示词打进去 |
+
+往 pane 里打过字，它就算忙，直到下一个信号，所以消息不会插进正在输入的那一行；keepane 投递的命令运行期间有人按键（在回答那个命令，或者提前打字——shell 会把提前打的字显示在下一个提示符后面），结束这条命令的那个提示符也不算空闲。你自己的命令运行期间提前打字，这一点拦不住。`ai` 模式的 pane 如果重新出现 shell 提示符（agent 已经退出），就什么也不投。消息只按发送时对方的模式投递：写给 agent 的文字，不会因为 pane 中途被切成 `shell` 模式而被当成命令执行。
+
+每条消息都用一个固定的单行信封写明来源，在任何地方显示都一模一样：
+
+```text
+{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
+```
+
+shell 收到时它是命令前面的一段 PowerShell 注释（`<# … #> cargo test`），会留在历史里（多行命令会改写成一行、整段一起执行，所以它是一条命令、一个结果）；agent 收到的是信封、正文和结尾行 `{"keepane":1,"end":12}`。`task` 把一串消息归为一个任务（派活、由此引起的工作、回信）；`hop` 数经过了几手，超过 `message-hop-limit`（8）就拒收，两个 agent 不会无休止地互相回信。
+
+### agent
+
+`keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。
+
+通过 MCP，agent 可以发消息和 `reply`、在一轮之内 `wait_message` 等回信、`trace_message`、报告自己在做什么（`set_status`），开 session、窗口和 pane（`create_session`、`create_window`、`split_pane`，可以带名字、模式和第一条任务），并关掉自己开的那些。它能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。在 pane 里面，只能改名、切换模式、关闭自己和自己创建的 pane；`shell` 模式只能由人或创建者打开。这些规则防的是失误：以你身份运行的任何程序照样能连上服务端。
+
+### dashboard
+
+`C-b v`（或在任意终端里运行 `keepane dashboard`）列出所有 pane：模式、是否空闲、收件箱、它说自己在做什么。下面显示选中 pane 的事件（Enter）、消息（`m`）、全部任务（`t`）、实时屏幕（`v`）或带滚动历史的屏幕（`h`）。它只看不改；进入管理模式（`E`，顶栏变红，30 秒不按键自动退出）后，可以删除排队的消息（`d`，`u` 撤销）、移动（`K` `J`）或置顶（`g`）。
+
+消息和 pane 发生的一切都记在事件日志里：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停下时还在排队的消息不保留：会被丢弃，日志里写明。名字和工作模式随 session 一起保存。完整设计和每条规则的理由见 [docs/design/mailbox.md](docs/design/mailbox.md)。
+
 ## 重启之后接着用
 
 每个 session 的结构（有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录）都会存成一个文件，放在 `%LOCALAPPDATA%\keepane\sessions` 下面。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启、崩溃还是手滑 `kill-session`，文件都还在：
@@ -398,5 +442,7 @@ cargo clippy --all-targets
 ## 还没做的
 
 和 tmux 比：多个客户端接同一个 session 时窗口尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`）；比窗口小的客户端看到的是自己的一块视口，`Shift`+方向键（`refresh-client -U/-D/-L/-R`）平移，敲键时跟着光标走；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`display-popup` 里前缀键还是 keepane 的（连按两次前缀可以把它送给弹窗里的程序）。
+
+pane 消息：`shell` 工作模式依赖 keepane 的 PowerShell 提示符钩子，所以 cmd 和 WSL 里的 shell 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。dashboard 还没有上手机页面。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。

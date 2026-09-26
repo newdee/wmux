@@ -158,12 +158,23 @@ pub fn server_running(pipe: &str) -> bool {
 /// its exit code, what it printed, what it complained about. Never starts
 /// a server.
 pub async fn query(socket: &str, argv: &[&str]) -> Result<(i32, String, String)> {
-    query_pipe(&pipe_name(socket), socket, argv).await
+    query_pipe(&pipe_name(socket), socket, argv, None).await
+}
+
+/// As `query`, as a program in pane `pane` asks (its `KEEPANE_PANE`), so
+/// the server knows who is sending and whose inbox is meant.
+pub async fn query_as(socket: &str, argv: &[&str], pane: Option<u32>) -> Result<(i32, String, String)> {
+    query_pipe(&pipe_name(socket), socket, argv, pane).await
 }
 
 /// As `query`, to the server listening on `pipe` (an old wmux one, for
 /// `migrate`); `socket` names it in errors.
-pub async fn query_pipe(pipe: &str, socket: &str, argv: &[&str]) -> Result<(i32, String, String)> {
+pub async fn query_pipe(
+    pipe: &str,
+    socket: &str,
+    argv: &[&str],
+    pane_env: Option<u32>,
+) -> Result<(i32, String, String)> {
     let conn = connect(pipe, false, socket).await?;
     let (mut rd, mut wr) = tokio::io::split(conn);
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -176,7 +187,7 @@ pub async fn query_pipe(pipe: &str, socket: &str, argv: &[&str]) -> Result<(i32,
             cols: 80,
             rows: 24,
             interactive: false,
-            pane_env: None,
+            pane_env,
         },
     )
     .await?;
@@ -287,21 +298,21 @@ pub async fn migrate(socket: &str) -> Result<i32> {
     // Where the old server saves (its config may have moved it).
     let mut old_saves: Option<std::path::PathBuf> = None;
     if server_running(&old_pipe) {
-        let (code, dir, _) = query_pipe(&old_pipe, socket, &["show-options", "-gv", "sessions-dir"]).await?;
+        let (code, dir, _) = query_pipe(&old_pipe, socket, &["show-options", "-gv", "sessions-dir"], None).await?;
         if code == 0 && !dir.trim().is_empty() {
             old_saves = Some(std::path::PathBuf::from(dir.trim()));
         }
-        let (_, list, _) = query_pipe(&old_pipe, socket, &["list-sessions"]).await?;
+        let (_, list, _) = query_pipe(&old_pipe, socket, &["list-sessions"], None).await?;
         sessions = list
             .lines()
             .filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string()))
             .filter(|n| !n.is_empty())
             .collect();
-        let (code, _, err) = query_pipe(&old_pipe, socket, &["save-session", "-a"]).await?;
+        let (code, _, err) = query_pipe(&old_pipe, socket, &["save-session", "-a"], None).await?;
         if code != 0 && !sessions.is_empty() {
             bail!("the wmux server could not save its sessions, and is left running: {}", err.trim());
         }
-        let (code, _, err) = query_pipe(&old_pipe, socket, &["kill-server"]).await?;
+        let (code, _, err) = query_pipe(&old_pipe, socket, &["kill-server"], None).await?;
         if code != 0 {
             bail!("the wmux server would not stop: {}", err.trim());
         }

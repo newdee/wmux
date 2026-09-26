@@ -86,7 +86,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **keepane only** | | `find-text` (search what every pane printed), `choose-history` (what panes printed, kept a file per pane position per day: pick one, read it in `view`), `view FILE` (a less-like pager), `list-marks` (the commands a pane's shell reported, with their times), `undo-kill` (bring back the pane or window killed in the last `undo-kill-time` seconds, programs still running), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a keepane profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `migrate` (from wmux, keepane's name up to 0.13.1: sessions, saved data, logon start, Windows Terminal profile), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as keepane reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **keepane only** | | `find-text` (search what every pane printed), `choose-history` (what panes printed, kept a file per pane position per day: pick one, read it in `view`), `view FILE` (a less-like pager), `list-marks` (the commands a pane's shell reported, with their times), `undo-kill` (bring back the pane or window killed in the last `undo-kill-time` seconds, programs still running), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a keepane profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `migrate` (from wmux, keepane's name up to 0.13.1: sessions, saved data, logon start, Windows Terminal profile), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as keepane reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s`. Panes that talk (docs/design/mailbox.md): `rename-pane` (a name `-t %name` finds; a full address `$1:@3.%7` is refused once the pane has moved), `whoami`, `set-work-mode normal/shell/ai`, `send-message`, `read-message`, `list-messages`, `trace-message`, `drop-message`, `move-message`, `pane-ready`, `pane-status`, `create-pane` / `close-pane` (what an agent uses: `agent-commands`, `agent-pane-limit`, only its own panes), `list-tasks`, `show-task`, `list-events` (the event log), `dashboard` (every pane at a glance), `mcp` (an MCP server for an agent in a pane) and `setup claude [--install]` |
 
 ## Default prefix keys
 
@@ -145,7 +145,7 @@ tmux's table, with what keepane does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save / restore), `S` (synchronize-panes), `u` (undo-kill) and `C-t` (pane-timestamps) on top of that table.
+(save / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps) and `v` (dashboard) on top of that table.
 
 ## Copy mode
 
@@ -223,7 +223,8 @@ times and flags (`session_activity` `session_last_attached` `window_activity` `w
 `battery_charging` `uptime` `git_branch` `pane_current_path_short`
 `pane_pid_command` (tmux users get these from plugins such as tmux-cpu
 and tmux-battery), and `pane_output_count` (how many times the pane has
-printed, which `keepane web` watches). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
+printed, which `keepane web` watches), and for pane messages `pane_name` `pane_address` `pane_work_mode`
+`pane_idle` `pane_inbox` `pane_status` `pane_message`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
 `s/a/b/:`, nestable. Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`,
 `#{?name!=value,…}`; comparisons `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}`
 `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and
@@ -239,7 +240,9 @@ the session file, colours kept; `all` for the whole scrollback), `autosave`, `re
 `plugin-path`, `pane-timestamps` (each reported command's time at the end of its
 line), `log-history`, `log-history-days`, `log-history-dir` (the history
 log), `undo-kill-time`, `keep-zoom`, `animation`, `animation-time` (a zoom grows the pane to the window, and a
-frame flies to where the keys go otherwise), and `@user` options.
+frame flies to where the keys go otherwise), `message-hop-limit`, `message-inbox-limit`, `message-max-size`,
+`message-wait-max`, `agent-pane-limit`, `agent-commands`, `event-log`, `event-log-days`, `event-log-max`
+(pane messages), and `@user` options.
 
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`
 and `set -p` are accepted and set the option for the server.
@@ -260,7 +263,7 @@ command names, and requires a value.
 
 `monitor-activity`, `monitor-bell` (on by default) and `monitor-silence`
 flag a window nobody is looking at: `#` for output, `!` for a bell, `~` for
-silence, shown by `#F` in the status line and by `list-windows`. Looking at
+silence (and, keepane only, `@` for a message waiting in a pane in `normal` work mode), shown by `#F` in the status line and by `list-windows`. Looking at
 the window clears its flags; `prefix M-n` / `M-p` walk to the next window
 that has one. `visual-bell` / `visual-activity` put the alert on the status
 line instead of ringing the terminal. Not there: `bell-action`,

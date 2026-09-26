@@ -103,8 +103,13 @@ impl Harness {
 
     /// Run a CLI-style command; returns (code, stdout text, stderr text).
     async fn cli(&self, argv: &[&str]) -> (i32, String, String) {
+        self.cli_in(None, argv).await
+    }
+
+    /// `cli`, as run by a program inside pane `pane` (`KEEPANE_PANE`).
+    async fn cli_in(&self, pane: Option<u32>, argv: &[&str]) -> (i32, String, String) {
         let mut c = self.connect().await;
-        c.command(argv, false).await;
+        c.command_from(argv, false, pane).await;
         let mut out = String::new();
         let mut err = String::new();
         loop {
@@ -130,6 +135,11 @@ impl Conn {
     }
 
     async fn command(&mut self, argv: &[&str], interactive: bool) {
+        self.command_from(argv, interactive, None).await;
+    }
+
+    /// A command as a program in pane `pane_env` runs it (`KEEPANE_PANE`).
+    async fn command_from(&mut self, argv: &[&str], interactive: bool, pane_env: Option<u32>) {
         self.send(ClientMsg::Command {
             version: PROTOCOL_VERSION,
             argv: argv.iter().map(|s| s.to_string()).collect(),
@@ -137,7 +147,7 @@ impl Conn {
             cols: COLS,
             rows: ROWS,
             interactive,
-            pane_env: None,
+            pane_env,
         })
         .await;
     }
@@ -2466,7 +2476,9 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
         "the continued line was joined: {keys}"
     );
     // ...the copy-mode-vi lines are in the copy-mode table, not the prefix one...
-    assert!(!keys.lines().any(|l| l.contains("-T prefix v ")), "{keys}");
+    // (prefix v is keepane's own dashboard; what matters is that the
+    // copy-mode commands did not land there.)
+    assert!(!keys.lines().any(|l| l.contains("-T prefix v ") && l.contains("selection")), "{keys}");
     assert!(!keys.lines().any(|l| l.contains("-T prefix y ")), "{keys}");
     assert!(
         keys.lines().any(|l| l.starts_with("bind-key -T copy-mode-vi v") && l.contains("begin-selection")),
@@ -3588,7 +3600,7 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     // Edges: nothing typed yet lists the first options; an unknown or
     // ambiguous name, a user @option, and a third word have nothing to offer.
     for (typed, want) in [
-        ("set ", "(animation animation-time autosave base-index default-command default-shell +"),
+        ("set ", "(agent-commands agent-pane-limit animation animation-time autosave base-index +"),
         ("set zzz o", "(no completion) set zzz o"),
         ("set mo o", "(no completion) set mo o"),
         ("set @my", "(no completion) set @my"),
@@ -4396,5 +4408,500 @@ async fn the_newer_variables_come_from_the_live_tree() {
     // A script's client has a name and no session; client_prefix is 0.
     let (_, out, _) = h.cli(&["display-message", "-p", "#{client_name}|[#{client_session}]|#{client_prefix}"]).await;
     assert!(out.trim().starts_with("client-") && out.trim().ends_with("|[]|0"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+// ------------------------------------------------------------ pane messages
+// docs/design/mailbox.md: names and addresses, work modes, the envelope,
+// hops, permissions, the inbox and the event log.
+
+async fn pane_id(h: &Harness, target: &str) -> u32 {
+    let (_, out, err) = h.cli(&["display-message", "-p", "-t", target, "#{pane_id}"]).await;
+    out.trim().trim_start_matches('%').parse().unwrap_or_else(|_| panic!("pane id of {target}: {out:?} {err}"))
+}
+
+async fn ask_pane(h: &Harness, pane: u32, format: &str) -> String {
+    let (_, out, _) = h.cli(&["display-message", "-p", "-t", &format!("%{pane}"), format]).await;
+    out.trim().to_string()
+}
+
+/// The id `send-message` reported (`#12 ...`).
+fn msg_id(out: &str) -> String {
+    out.split_whitespace().next().unwrap_or_default().trim_start_matches('#').to_string()
+}
+
+/// Poll a format until it reads `want`.
+async fn wait_format(h: &Harness, pane: u32, format: &str, want: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let got = ask_pane(h, pane, format).await;
+        if got == want {
+            return;
+        }
+        assert!(Instant::now() < deadline, "%{pane} {format}: {got:?}, waiting for {want:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_finds_its_pane_by_name_or_address_and_waits_to_be_read() {
+    let h = Harness::start("mail-basic").await;
+    h.cli(&["new", "-d", "-s", "m"]).await;
+    h.cli(&["split-window", "-t", "m:0"]).await;
+    let (a, b) = (pane_id(&h, "m:0.0").await, pane_id(&h, "m:0.1").await);
+    let (code, _, err) = h.cli(&["rename-pane", "-t", &format!("%{a}"), "lead"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["rename-pane", "-t", &format!("%{b}"), "builder"]).await;
+    // A name is unique, and never one a target would read as an id.
+    let (code, _, err) = h.cli(&["rename-pane", "-t", "%lead", "builder"]).await;
+    assert!(code != 0 && err.contains("taken"), "{err}");
+    let (code, _, err) = h.cli(&["rename-pane", "-t", "%lead", "12"]).await;
+    assert!(code != 0 && err.contains("pane id"), "{err}");
+    // whoami, from inside the pane: its full address, place, name, mode.
+    let (_, who, _) = h.cli_in(Some(b), &["whoami"]).await;
+    let words: Vec<&str> = who.split_whitespace().collect();
+    assert_eq!(words[1..], ["m:0.1", "builder", "normal"], "{who}");
+    let addr_b = words[0].to_string();
+    assert!(addr_b.starts_with('$') && addr_b.ends_with(&format!(".%{b}")), "{addr_b}");
+    let addr_a = ask_pane(&h, a, "#{pane_address}").await;
+
+    // By name, from the other pane: a normal pane keeps it for read-message.
+    let (code, out, err) = h.cli_in(Some(a), &["send-message", "-t", "%builder", "hello there"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("queued for") && out.contains("waits for read-message"), "{out}");
+    let id = msg_id(&out);
+    // By full address, from outside every pane.
+    let (code, _, err) = h.cli(&["send-message", "-t", &addr_b, "second"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(ask_pane(&h, b, "#{pane_name} #{pane_inbox} #{pane_work_mode}").await, "builder 2 normal");
+    let (_, list, _) = h.cli(&["list-messages", "-t", "%builder"]).await;
+    assert!(list.contains(&format!("#{id}  from {addr_a} lead (normal)")) && list.contains("hello there"), "{list}");
+    assert!(list.contains("from user"), "{list}");
+
+    // A pane that takes nothing on its own flags its window (`@`) while
+    // that window is not the one in view.
+    h.cli(&["new-window", "-d", "-t", "m", "-n", "aside"]).await;
+    let aside = pane_id(&h, "m:aside").await;
+    h.cli(&["send-message", "-t", &format!("%{aside}"), "for later"]).await;
+    let (_, flags, _) = h.cli(&["display-message", "-p", "-t", "m:aside", "#{window_flags}"]).await;
+    assert!(flags.contains('@'), "{flags:?}");
+    // Taken by the pane itself: the envelope line, then the text.
+    let (code, out, err) = h.cli_in(Some(b), &["read-message"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (env, text) = out.split_once('\n').unwrap();
+    assert_eq!(
+        env,
+        format!(
+            r#"{{"keepane":1,"id":{id},"task":{id},"from":"{addr_a}","name":"lead","mode":"normal","to":"{addr_b}","via":"normal","hop":0}}"#
+        )
+    );
+    assert_eq!(text.trim(), "hello there");
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.starts_with(&format!("#{id} read")), "{trace}");
+    let (_, out, _) = h.cli_in(Some(b), &["read-message"]).await;
+    assert!(out.contains(r#""from":"user""#) && out.ends_with("second"), "{out}");
+    let (code, _, err) = h.cli_in(Some(b), &["read-message"]).await;
+    assert!(code != 0 && err.contains("no message"), "{err}");
+
+    // read-message -w waits for the next one to arrive.
+    let ((code, out, err), _) = tokio::join!(h.cli_in(Some(b), &["read-message", "-w", "15"]), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        h.cli(&["send-message", "-t", "%builder", "third"]).await
+    });
+    assert_eq!(code, 0, "{err}");
+    assert!(out.ends_with("third"), "{out}");
+
+    // Waiting on a pane that closes meanwhile ends then, not at the timeout.
+    h.cli(&["split-window", "-t", "m"]).await;
+    let gone = pane_id(&h, "m:0.2").await;
+    let started = Instant::now();
+    let ((code, _, err), _) = tokio::join!(h.cli_in(Some(gone), &["read-message", "-w", "30"]), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        h.cli(&["kill-pane", "-t", &format!("%{gone}")]).await
+    });
+    assert!(code != 0 && err.contains("gone"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(5), "answered when the pane went: {:?}", started.elapsed());
+    // An address is where the pane was: once it has moved, it is refused.
+    h.cli(&["break-pane", "-t", "%builder"]).await;
+    let (code, _, err) = h.cli(&["send-message", "-t", &addr_b, "lost?"]).await;
+    assert!(code != 0 && err.contains("has moved"), "{err}");
+    let (code, _, err) = h.cli(&["send-message", "-t", "%builder", "found"]).await;
+    assert_eq!(code, 0, "the name still finds it: {err}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
+    let h = Harness::start("mail-shell").await;
+    h.cli(&["new", "-d", "-s", "sh", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    let p = pane_id(&h, "sh:0.0").await;
+    let (code, _, err) = h.cli(&["set-work-mode", "-t", &format!("%{p}"), "shell"]).await;
+    assert_eq!(code, 0, "{err}");
+    // keepane's own prompt hook says when it is free.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (code, out, err) =
+        h.cli(&["send-message", "-t", &format!("%{p}"), "-w", "30", "Write-Output ('ab' + 'cd')"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("delivered"), "{out}");
+    let id = msg_id(&out);
+    let (code, trace, err) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
+    assert!(trace.contains("output:\nabcd"), "{trace}");
+    // The command ran with its envelope in front, as a comment.
+    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains("<# {\"keepane\":1")).await;
+    assert!(screen.contains("abcd"), "{screen}");
+    // A command that fails is on record as failed.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Get-Item C:\\keepane-not-here-xyz"]).await;
+    let id = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id} failed")), "{trace}");
+    // Several lines run as one command: one prompt, all the output, and a
+    // failure inside it is the command's.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let multi = "$kp_a = 20\n$kp_b = 22\nWrite-Output ($kp_a + $kp_b)\nGet-Item C:\\keepane-not-here-xyz";
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "--", multi]).await;
+    let id = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id} failed")), "{trace}");
+    assert!(trace.contains("output:\n42\n"), "{trace}");
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Write-Output $kp_b"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("output:\n22"), "its variables stay in the shell: {trace}");
+    // ConPTY may pass the prompt marker ahead of the text before it: the
+    // command is taken as done a moment after the marker, with its output.
+    // (Here the command itself sends a marker before its last line.)
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let early = "[Console]::Write([char]27 + ']7777;keepane-prompt' + [char]27 + '\\'); Start-Sleep -Milliseconds 10; Write-Output late-output";
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "--", early]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("output:\nlate-output"), "{trace}");
+    // Typed while its command runs: that text is on the next prompt's line,
+    // so the pane is not free and the next message does not join it.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Start-Sleep -Milliseconds 800"]).await;
+    let slow = msg_id(&out);
+    h.cli(&["send-keys", "-t", &format!("%{p}"), "-l", "Get-Da"]).await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Write-Output next"]).await;
+    let next = msg_id(&out);
+    h.cli(&["trace-message", &slow, "-w", "30"]).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
+    let (_, trace, _) = h.cli(&["trace-message", &next]).await;
+    assert!(trace.starts_with(&format!("#{next} queued")), "{trace}");
+    // The person clears the line and presses Enter: a clean prompt, free.
+    // (Apart: ESC and CR together read as Alt+Enter.)
+    h.cli(&["send-keys", "-t", &format!("%{p}"), "Escape"]).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    h.cli(&["send-keys", "-t", &format!("%{p}"), "Enter"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &next, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{next} done")) && trace.contains("output:\nnext"), "{trace}");
+    // Typing makes it busy: nothing lands in a half-typed line.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    h.cli(&["send-keys", "-t", &format!("%{p}"), "-l", "Get-Da"]).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Write-Output later"]).await;
+    assert!(out.contains("busy"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_pane_takes_work_when_it_says_so_and_answers_along_the_chain() {
+    let h = Harness::start("mail-ai").await;
+    h.cli(&["new", "-d", "-s", "ai"]).await;
+    // A window each, so the delivery fits on the agent's screen.
+    h.cli(&["new-window", "-d", "-t", "ai"]).await;
+    let (a, b) = (pane_id(&h, "ai:0.0").await, pane_id(&h, "ai:1.0").await);
+    let (pa, pb) = (format!("%{a}"), format!("%{b}"));
+    h.cli(&["set-work-mode", "-t", &pb, "ai"]).await;
+    let (_, out, _) = h.cli_in(Some(a), &["send-message", "-t", &pb, "task one"]).await;
+    assert!(out.contains("busy"), "not ready yet: {out}");
+    let id = msg_id(&out);
+    // The agent's word: in it goes, envelope first and end line last.
+    let (code, _, err) = h.cli_in(Some(b), &["pane-ready"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.starts_with(&format!("#{id} delivered")), "{trace}");
+    h.wait_capture("ai:1.0", "the delivery", |t| {
+        t.contains(&format!("{{\"keepane\":1,\"id\":{id}")) && t.contains(&format!("{{\"keepane\":1,\"end\":{id}}}"))
+    })
+    .await;
+    // Its answer carries the chain on: same task, one hop more, re the task.
+    let (code, _, err) = h.cli_in(Some(b), &["send-message", "-r", "result one"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, got, _) = h.cli_in(Some(a), &["read-message"]).await;
+    assert!(
+        got.contains(&format!(r#""task":{id}"#))
+            && got.contains(r#""hop":1"#)
+            && got.contains(&format!(r#""re":{id}"#)),
+        "{got}"
+    );
+    assert!(got.contains(r#""mode":"ai""#) && got.ends_with("result one"), "{got}");
+    // Ready again: that one is done.
+    h.cli_in(Some(b), &["pane-ready"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
+    // The chain is one task: the order, the answer, how it went.
+    let (_, tasks, _) = h.cli(&["list-tasks", "-t", "ai"]).await;
+    assert!(
+        tasks.lines().any(|l| l.starts_with(&format!("#{id} ")) && l.contains("done") && l.contains("task one")),
+        "{tasks}"
+    );
+    let (_, steps, _) = h.cli(&["show-task", &id]).await;
+    assert_eq!(steps.lines().count(), 2, "{steps}");
+    assert!(steps.contains("\"result one\"") && steps.contains(" read "), "{steps}");
+    let (_, events, _) = h.cli(&["list-events", "-t", &pb, "-S", "1h"]).await;
+    assert!(events.contains(r#""what":"mode","value":"ai","by":"user""#), "{events}");
+    // Having read the answer, something new from a starts a new chain:
+    // reading is not working on it (a person would reach the hop limit
+    // after a few exchanges otherwise).
+    h.cli(&["set", "-g", "message-hop-limit", "1"]).await;
+    let (code, out, err) = h.cli_in(Some(a), &["send-message", "-t", &pb, "and again"]).await;
+    assert_eq!(code, 0, "{err}");
+    let fresh = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &fresh]).await;
+    assert!(trace.contains(&format!("task #{fresh} · hop 0")), "{trace}");
+    // Answering what it read carries that chain on, past the hop limit:
+    // refused, so two agents cannot answer each other for ever.
+    let (code, _, err) = h.cli_in(Some(a), &["send-message", "-r", "thanks"]).await;
+    assert!(code != 0 && err.contains("message-hop-limit"), "{err}");
+    // pane-ready counts only in an ai pane; outside any pane -q is quiet.
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let (code, _, err) = h.cli(&["pane-ready"]).await;
+    assert!(code != 0 && err.contains("not run inside"), "{err}");
+    assert_eq!(h.cli(&["pane-ready", "-q"]).await.0, 0);
+    // A pane changes only itself (and what it created); a person, anything.
+    let (code, _, err) = h.cli_in(Some(a), &["rename-pane", "-t", &pb, "x"]).await;
+    assert!(code != 0 && err.contains("cannot change"), "{err}");
+    let (code, _, err) = h.cli_in(Some(a), &["set-work-mode", "-t", &pb, "shell"]).await;
+    assert!(code != 0 && err.contains("cannot change"), "{err}");
+    let (code, _, err) = h.cli_in(Some(b), &["set-work-mode", "shell"]).await;
+    assert!(code != 0 && err.contains("only a person"), "never a pane for itself: {err}");
+    assert_eq!(h.cli_in(Some(b), &["rename-pane", "worker"]).await.0, 0);
+    assert_eq!(h.cli(&["rename-pane", "-t", &pa, "boss"]).await.0, 0);
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_messages_are_managed_limited_and_logged() {
+    let h = Harness::start("mail-queue").await;
+    h.cli(&["new", "-d", "-s", "q"]).await;
+    // Another session keeps the server up when q's only pane closes.
+    h.cli(&["new", "-d", "-s", "keep"]).await;
+    let p = pane_id(&h, "q:0.0").await;
+    let t = format!("%{p}");
+    let mut ids = Vec::new();
+    for text in ["one", "two", "three"] {
+        let (_, out, _) = h.cli(&["send-message", "-t", &t, text]).await;
+        ids.push(msg_id(&out));
+    }
+    let order = |list: &str| -> Vec<String> {
+        list.lines()
+            .filter_map(|l| l.trim().strip_prefix('#'))
+            .map(|l| l.split_whitespace().next().unwrap().to_string())
+            .collect()
+    };
+    h.cli(&["move-message", &ids[2], "top"]).await;
+    let (_, list, _) = h.cli(&["list-messages", "-t", &t]).await;
+    assert_eq!(order(&list), [ids[2].clone(), ids[0].clone(), ids[1].clone()], "{list}");
+    // Deleted, then brought back where it was.
+    assert_eq!(h.cli(&["drop-message", &ids[0]]).await.0, 0);
+    let (_, trace, _) = h.cli(&["trace-message", &ids[0]]).await;
+    assert!(trace.contains("dropped") && trace.contains("deleted by user"), "{trace}");
+    let (code, _, err) = h.cli(&["drop-message", "-u"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, list, _) = h.cli(&["list-messages", "-t", &t]).await;
+    assert_eq!(order(&list), [ids[2].clone(), ids[0].clone(), ids[1].clone()], "{list}");
+    // Limits are options, and say so when they refuse.
+    h.cli(&["set", "-g", "message-inbox-limit", "3"]).await;
+    let (code, _, err) = h.cli(&["send-message", "-t", &t, "four"]).await;
+    assert!(code != 0 && err.contains("inbox is full"), "{err}");
+    h.cli(&["set", "-g", "message-max-size", "1K"]).await;
+    let (code, _, err) = h.cli(&["send-message", "-t", "q", &"x".repeat(2000)]).await;
+    assert!(code != 0 && err.contains("message-max-size"), "{err}");
+    let (code, _, err) = h.cli(&["set", "-g", "message-hop-limit", "0"]).await;
+    assert!(code != 0 && err.contains("1 to 100"), "{err}");
+    // A pane that closes drops what waited for it.
+    h.cli(&["kill-pane", "-t", &t]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &ids[1]]).await;
+    assert!(trace.contains("dropped") && trace.contains("its pane closed"), "{trace}");
+    // Everything above is in the event log, envelope and all.
+    keepane::histlog::flush(Duration::from_secs(5));
+    let dir = keepane::histlog::events_dir().join(keepane::histlog::safe_name(&h.socket));
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log = std::fs::read_to_string(dir.join(format!("{day}.jsonl"))).unwrap_or_default();
+    // The last lines, as a watcher asks for them every second: from memory.
+    let (_, tail, _) = h.cli(&["list-events", "-n", "2"]).await;
+    let tail: Vec<&str> = tail.lines().collect();
+    assert_eq!(tail.len(), 2, "{tail:?}");
+    assert!(tail.iter().all(|l| log.contains(l)), "the same lines as the file: {tail:?}");
+    // Off is off at once: nothing more is written.
+    let lines = log.lines().count();
+    h.cli(&["set", "-g", "event-log", "off"]).await;
+    h.cli(&["send-message", "-t", "keep", "unlogged"]).await;
+    keepane::histlog::flush(Duration::from_secs(5));
+    let after = std::fs::read_to_string(dir.join(format!("{day}.jsonl"))).unwrap_or_default();
+    assert_eq!(after.lines().count(), lines, "event-log off still wrote:\n{after}");
+    for want in [
+        format!(r#""ev":"sent","msg":{{"keepane":1,"id":{},"#, ids[0]),
+        format!(r#""ev":"moved","id":{},"from":2,"to":0"#, ids[2]),
+        format!(r#""ev":"dropped","id":{},"why":"deleted by user""#, ids[0]),
+        format!(r#""ev":"restored","id":{}"#, ids[0]),
+        r#""ev":"rejected""#.to_string(),
+    ] {
+        assert!(log.contains(&want), "{want} not in the event log:\n{log}");
+    }
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_keeps_its_name_and_work_mode_through_save_and_restore() {
+    let h = Harness::start("mail-save").await;
+    h.cli(&["new", "-d", "-s", "keep"]).await;
+    h.cli(&["new", "-d", "-s", "sv"]).await;
+    let p = pane_id(&h, "sv:0.0").await;
+    h.cli(&["rename-pane", "-t", &format!("%{p}"), "saved-one"]).await;
+    h.cli(&["set-work-mode", "-t", "%saved-one", "ai"]).await;
+    h.cli(&["send-message", "-t", "%saved-one", "not kept"]).await;
+    let (code, _, err) = h.cli(&["save-session", "-t", "sv"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.cli(&["kill-session", "-t", "sv"]).await;
+    let (code, _, err) = h.cli(&["restore-session", "sv"]).await;
+    assert_eq!(code, 0, "{err}");
+    let q = pane_id(&h, "%saved-one").await;
+    assert_ne!(p, q, "a new pane, found by the old name");
+    assert_eq!(ask_pane(&h, q, "#{pane_work_mode} #{pane_inbox}").await, "ai 0", "the mode is back, the inbox is not");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_makes_panes_within_its_limits_and_owns_them() {
+    let h = Harness::start("mail-create").await;
+    h.cli(&["new", "-d", "-s", "boss"]).await;
+    h.cli(&["new", "-d", "-s", "other"]).await;
+    let (a, o) = (pane_id(&h, "boss:0.0").await, pane_id(&h, "other:0.0").await);
+    // Only agent-commands programs, from inside a pane.
+    let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe", "/q"]).await;
+    assert!(code != 0 && err.contains("agent-commands"), "{err}");
+    h.cli(&["set", "-g", "agent-commands", "cmd pwsh"]).await;
+    let (code, out, err) = h
+        .cli_in(
+            Some(a),
+            &["create-pane", "-k", "window", "-n", "child", "-m", "ai", "-M", "first task", "--", "cmd.exe", "/q"],
+        )
+        .await;
+    assert_eq!(code, 0, "{err}");
+    let mut lines = out.lines();
+    let who: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+    assert_eq!(who[2..], ["child", "ai"], "{out}");
+    assert!(lines.next().unwrap_or_default().contains("queued"), "the first task waits for it: {out}");
+    // Its creator may change it, and a pane it did not make may not.
+    assert_eq!(h.cli_in(Some(a), &["set-work-mode", "-t", "%child", "shell"]).await.0, 0);
+    let (code, _, err) = h.cli_in(Some(o), &["close-pane", "-t", "%child"]).await;
+    assert!(code != 0 && err.contains("cannot change"), "{err}");
+    // A shell made for an agent takes commands unless told otherwise.
+    let (_, out, err) = h.cli_in(Some(a), &["create-pane", "-n", "sh1", "--", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    assert!(out.contains(" sh1  shell"), "{out} {err}");
+    // The line of creators has one budget.
+    h.cli(&["set", "-g", "agent-pane-limit", "3"]).await;
+    let c = pane_id(&h, "%child").await;
+    assert_eq!(h.cli_in(Some(c), &["create-pane", "-k", "window", "--", "cmd.exe"]).await.0, 0, "grandchild");
+    let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe"]).await;
+    assert!(code != 0 && err.contains("agent-pane-limit 3"), "{err}");
+    // A person is not an agent: no list, no budget, no owner.
+    assert_eq!(h.cli(&["create-pane", "-k", "window", "-t", "other", "--", "wsl.exe", "--help"]).await.0, 0);
+    // Closing what it made frees the budget.
+    assert_eq!(h.cli_in(Some(a), &["close-pane", "-t", "%sh1"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe"]).await.0, 0);
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_talks_to_keepane_over_mcp_as_its_pane() {
+    let h = Harness::start("mcp").await;
+    h.cli(&["new", "-d", "-s", "m"]).await;
+    h.cli(&["new-window", "-d", "-t", "m"]).await;
+    let (a, b) = (pane_id(&h, "m:0.0").await, pane_id(&h, "m:1.0").await);
+    h.cli(&["rename-pane", "-t", &format!("%{b}"), "peer"]).await;
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"whoami","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"%peer","text":"-from mcp"}}}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_messages","arguments":{"pane":"%peer"}}}"#,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"kill_pane","arguments":{"pane":"%peer"}}}"#,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"current_message","arguments":{}}}"#,
+    ];
+    let socket = h.socket.clone();
+    let lines = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, Write};
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_keepane"))
+            .args(["-L", &socket, "mcp"])
+            .env("KEEPANE_PANE", a.to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        for r in requests {
+            writeln!(stdin, "{r}").unwrap();
+        }
+        drop(stdin); // the agent is done: the server ends
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let lines: Vec<serde_json::Value> = out.lines().map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();
+        assert!(child.wait().unwrap().success());
+        lines
+    })
+    .await
+    .unwrap();
+    assert_eq!(lines.len(), 6, "a reply for every request, none for the notification: {lines:?}");
+    let text = |i: usize| lines[i]["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+    let error = |i: usize| lines[i]["result"]["isError"].as_bool().unwrap_or(false);
+    assert_eq!(lines[0]["result"]["serverInfo"]["name"], "keepane");
+    assert!(text(1).contains("m:0.0") && !error(1), "it is the pane it runs in: {}", text(1));
+    assert!(text(2).contains("queued for") && !error(2), "{}", text(2));
+    assert!(
+        text(3).contains("-from mcp") && text(3).contains(&format!(".%{a} (normal)")),
+        "sent as its pane: {}",
+        text(3)
+    );
+    assert!(error(4) && text(4).contains("cannot change"), "not its pane to close: {}", text(4));
+    assert!(text(5).contains("not working on a message"), "{}", text(5));
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_taken_while_its_pane_was_killed_stays_with_the_taker() {
+    let h = Harness::start("mail-undo").await;
+    h.cli(&["new", "-d", "-s", "u"]).await;
+    h.cli(&["split-window", "-t", "u"]).await;
+    let (a, b) = (pane_id(&h, "u:0.0").await, pane_id(&h, "u:0.1").await);
+    h.cli(&["rename-pane", "-t", &format!("%{b}"), "solo"]).await;
+    h.cli(&["kill-pane", "-t", "%solo"]).await;
+    // While it is kept for undo-kill, its name looks free, and is taken.
+    assert_eq!(h.cli(&["rename-pane", "-t", &format!("%{a}"), "solo"]).await.0, 0);
+    let (code, _, err) = h.cli(&["undo-kill"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(ask_pane(&h, b, "[#{pane_name}]").await, "[]", "the pane that came back has none");
+    assert_eq!(pane_id(&h, "%solo").await, a, "the name stays with the one that took it");
+    let (_, names, _) = h.cli(&["list-panes", "-a", "-F", "#{pane_name}"]).await;
+    assert_eq!(names.lines().filter(|n| *n == "solo").count(), 1, "{names}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_made_for_an_agent_is_the_one_it_asked_for_whatever_hooks_do() {
+    let h = Harness::start("mail-hook").await;
+    h.cli(&["new", "-d", "-s", "hk"]).await;
+    // A hook that makes one more pane in every new window.
+    h.cli(&["set-hook", "-g", "after-new-window", "split-window -d"]).await;
+    let (code, out, err) =
+        h.cli(&["create-pane", "-k", "window", "-t", "hk", "-n", "mine", "-m", "ai", "--", "cmd.exe", "/q"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("hk:1.0  mine  ai"), "the window's own pane, not the hook's: {out}");
+    // (The hook split the window in view, hk:0.)
+    assert_eq!(ask_pane(&h, pane_id(&h, "hk:0.1").await, "[#{pane_name}] #{pane_work_mode}").await, "[] normal");
     h.cli(&["kill-server"]).await;
 }

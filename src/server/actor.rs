@@ -1,0 +1,653 @@
+//! A pane as an actor: its name, its work mode, its inbox, and whether it
+//! is free to take the next message. Pure state and no IO: the server
+//! tells it what happened (keepane's prompt came back, a key was typed,
+//! the agent said `pane-ready`) and asks it what to deliver. Why each rule
+//! is so is in docs/design/mailbox.md.
+
+use std::collections::VecDeque;
+
+use super::layout::PaneId;
+
+pub type MsgId = u64;
+
+/// The envelope's version (`"keepane":1`). Adding a field does not change
+/// it, since readers skip fields they do not know; changing what a field
+/// means does.
+pub const ENVELOPE_VERSION: u32 = 1;
+
+/// How a pane takes its messages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkMode {
+    /// Nothing is delivered: the program takes messages with `read-message`.
+    #[default]
+    Normal,
+    /// Delivered as a command when keepane's own prompt hook says the
+    /// shell is back at its prompt.
+    Shell,
+    /// Delivered as a prompt when the agent says `pane-ready`.
+    Ai,
+}
+
+impl WorkMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkMode::Normal => "normal",
+            WorkMode::Shell => "shell",
+            WorkMode::Ai => "ai",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<WorkMode> {
+        match s {
+            "normal" => Some(WorkMode::Normal),
+            "shell" => Some(WorkMode::Shell),
+            "ai" => Some(WorkMode::Ai),
+            _ => None,
+        }
+    }
+}
+
+/// Who sent a message: a pane, as it was when it sent it, or someone
+/// outside every pane (a terminal, a key binding).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sender {
+    User,
+    Pane { id: PaneId, address: String, name: Option<String>, mode: WorkMode },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
+    pub id: MsgId,
+    /// The message that started the chain this one belongs to.
+    pub task: MsgId,
+    pub from: Sender,
+    /// The recipient's full address when it was sent.
+    pub to: String,
+    /// The recipient's work mode when it was sent. The message is
+    /// delivered only in that mode: text written for an agent is never
+    /// run as a command because the pane was switched to `shell` meanwhile.
+    pub via: WorkMode,
+    pub hop: u32,
+    /// The message this one answers.
+    pub re: Option<MsgId>,
+    pub text: String,
+    /// When it was sent. Not part of the envelope, so the envelope reads
+    /// the same wherever it is shown.
+    pub at: chrono::DateTime<chrono::Local>,
+}
+
+fn push_str_field(s: &mut String, key: &str, value: &str) {
+    s.push_str(&format!(",\"{key}\":{}", serde_json::to_string(value).expect("a string always serializes")));
+}
+
+impl Message {
+    /// The one-line JSON header, the same bytes everywhere the message is
+    /// shown: fixed field order, no spaces, absent fields left out.
+    pub fn envelope(&self) -> String {
+        let mut s = format!("{{\"keepane\":{ENVELOPE_VERSION},\"id\":{},\"task\":{}", self.id, self.task);
+        match &self.from {
+            Sender::User => push_str_field(&mut s, "from", "user"),
+            Sender::Pane { address, name, mode, .. } => {
+                push_str_field(&mut s, "from", address);
+                if let Some(n) = name {
+                    push_str_field(&mut s, "name", n);
+                }
+                push_str_field(&mut s, "mode", mode.as_str());
+            }
+        }
+        push_str_field(&mut s, "to", &self.to);
+        push_str_field(&mut s, "via", self.via.as_str());
+        s.push_str(&format!(",\"hop\":{}", self.hop));
+        if let Some(re) = self.re {
+            s.push_str(&format!(",\"re\":{re}"));
+        }
+        s.push('}');
+        s
+    }
+
+    /// The line after the text of a message given to an agent: a header
+    /// forged inside the text shows up between the real header and this.
+    pub fn end_line(&self) -> String {
+        format!("{{\"keepane\":{ENVELOPE_VERSION},\"end\":{}}}", self.id)
+    }
+
+    /// What is typed into the pane to deliver it (Enter follows). A shell
+    /// gets the envelope as a PowerShell inline comment before the
+    /// command, so it runs nothing and stays in the history; an agent gets
+    /// the envelope, the text, and the end line.
+    pub fn wrapped(&self) -> String {
+        match self.via {
+            WorkMode::Shell => format!("<# {} #> {}", self.envelope(), one_command(&self.text)),
+            WorkMode::Ai | WorkMode::Normal => format!("{}\n{}\n{}", self.envelope(), self.text, self.end_line()),
+        }
+    }
+
+    /// The pane that sent it, if a pane did.
+    pub fn sender_pane(&self) -> Option<PaneId> {
+        match self.from {
+            Sender::Pane { id, .. } => Some(id),
+            Sender::User => None,
+        }
+    }
+}
+
+/// A PowerShell command of several lines as one line that runs them as
+/// one command, in the shell's own scope (`.`), as typed by hand. Typed
+/// as they are, each line would run on its own at its Enter (PSReadLine
+/// asks for no bracketed paste, and ConPTY drops the Shift of a
+/// Shift+Enter), and the message would be over at the first prompt. Each
+/// line goes in single quotes, the quote marks PowerShell reads as single
+/// quotes doubled; whether it failed is reported as for any command. One
+/// line is left as it is.
+pub fn one_command(text: &str) -> String {
+    let text = text.trim_end_matches(['\r', '\n']);
+    if !text.contains('\n') {
+        return text.to_string();
+    }
+    let quoted: Vec<String> = text
+        .split('\n')
+        .map(|l| {
+            let mut q = String::from("'");
+            for c in l.trim_end_matches('\r').chars() {
+                if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+                    q.push(c);
+                }
+                q.push(c);
+            }
+            q.push('\'');
+            q
+        })
+        .collect();
+    // `$?` after it is the block's call, true whatever failed inside: the
+    // last part makes it false when an error was recorded meanwhile ($Error[0]
+    // compared as an object, since a full $Error keeps its count).
+    format!(
+        "$__keepane_e = $Error[0]; . ([scriptblock]::Create(({}) -join \"`n\")); \
+         if (-not [object]::ReferenceEquals($Error[0], $__keepane_e)) {{ Write-Error \"a line above failed\" -ErrorAction SilentlyContinue }}",
+        quoted.join(", ")
+    )
+}
+
+/// How the message a pane was working on came to an end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum End {
+    /// The shell's prompt came back, or the agent said it was ready, or
+    /// the program took its next message.
+    Done,
+    /// An agent's pane showed a shell prompt: the agent is gone, and the
+    /// work went with it.
+    Abandoned,
+}
+
+/// Where to move a queued message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Move {
+    Up,
+    Down,
+    Top,
+}
+
+#[derive(Debug, Default)]
+pub struct Actor {
+    pub name: Option<String>,
+    pub mode: WorkMode,
+    /// The pane that created this one (through a command run in it, or
+    /// MCP), for what a pane may change and how many it may create.
+    pub creator: Option<PaneId>,
+    pub inbox: VecDeque<Message>,
+    /// The message this pane was given last and is still working on.
+    pub current: Option<Message>,
+    /// The message it took last with `read-message`, for answering it.
+    pub last_read: Option<Message>,
+    /// What the pane last said it is doing (`pane-status`), and when.
+    pub status: Option<(String, chrono::DateTime<chrono::Local>)>,
+    /// keepane's own prompt is on the screen, and nothing was typed since.
+    at_prompt: bool,
+    /// The agent said it is ready, and nothing was typed (and no shell
+    /// prompt came back) since.
+    ready: bool,
+    /// Someone typed while the command keepane gave the pane was running:
+    /// answering it, or typing ahead, which the shell shows at its next
+    /// prompt. That prompt does not make the pane free, so no message is
+    /// typed after what is on its line.
+    typed_while_working: bool,
+}
+
+impl Actor {
+    /// Free to take the next message, by the one signal this mode trusts.
+    pub fn idle(&self) -> bool {
+        match self.mode {
+            WorkMode::Normal => false,
+            WorkMode::Shell => self.at_prompt,
+            WorkMode::Ai => self.ready,
+        }
+    }
+
+    /// keepane's prompt hook said the shell is at its prompt. In a shell
+    /// pane that ends the command it was given; in an agent's pane it
+    /// means the agent has exited, and its work ends unfinished.
+    pub fn prompt(&mut self) -> Option<(Message, End)> {
+        self.prompt_seen();
+        self.command_over()
+    }
+
+    /// The first half of `prompt`, at the marker itself: the pane is at its
+    /// prompt from now on, unless someone types (in order, after this).
+    pub fn prompt_seen(&mut self) {
+        self.at_prompt = !(self.current.is_some() && std::mem::take(&mut self.typed_while_working));
+        self.ready = false;
+    }
+
+    /// The second half, once what the command printed is on the screen:
+    /// the message it was working on ends.
+    pub fn command_over(&mut self) -> Option<(Message, End)> {
+        match self.mode {
+            WorkMode::Shell => self.current.take().map(|m| (m, End::Done)),
+            WorkMode::Ai => self.current.take().map(|m| (m, End::Abandoned)),
+            WorkMode::Normal => None,
+        }
+    }
+
+    /// The program in the pane said `pane-ready`. Only an agent's word
+    /// counts: a shell pane's idleness is keepane's to judge, and a normal
+    /// pane takes nothing on its own. Returns whether it was taken.
+    pub fn ready(&mut self) -> (bool, Option<(Message, End)>) {
+        if self.mode != WorkMode::Ai {
+            return (false, None);
+        }
+        self.ready = true;
+        (true, self.current.take().map(|m| (m, End::Done)))
+    }
+
+    /// Someone typed, pasted or sent keys into the pane: it is busy until
+    /// the next signal, so a message does not land in a line being typed.
+    pub fn input(&mut self) {
+        self.at_prompt = false;
+        self.ready = false;
+        if self.current.is_some() {
+            self.typed_while_working = true;
+        }
+    }
+
+    /// A person unsticks a pane that stays busy (text typed and deleted
+    /// again, a prompt that was not redrawn).
+    pub fn force_idle(&mut self) {
+        match self.mode {
+            WorkMode::Shell => self.at_prompt = true,
+            WorkMode::Ai => self.ready = true,
+            WorkMode::Normal => {}
+        }
+    }
+
+    /// The next message to deliver now, if the pane is free and one was
+    /// addressed to it in the mode it is in. Taking it makes the pane busy
+    /// and the message its current one.
+    pub fn next_delivery(&mut self) -> Option<Message> {
+        if !self.idle() {
+            return None;
+        }
+        let i = self.inbox.iter().position(|m| m.via == self.mode)?;
+        let m = self.inbox.remove(i)?;
+        self.at_prompt = false;
+        self.ready = false;
+        self.typed_while_working = false;
+        self.current = Some(m.clone());
+        Some(m)
+    }
+
+    /// `read-message`: the program takes the oldest message itself. It is
+    /// done with once taken, so it is not what the pane works on: an agent
+    /// taking an answer inside its turn keeps working on its own message,
+    /// and a person reading one and then asking something new starts a
+    /// new chain. It is only remembered, for `send-message -r`.
+    pub fn read(&mut self) -> Option<Message> {
+        let m = self.inbox.pop_front()?;
+        self.last_read = Some(m.clone());
+        Some(m)
+    }
+
+    /// What `send-message -r` answers: the message being worked on, else
+    /// the one read last.
+    pub fn answering(&self) -> Option<&Message> {
+        self.current.as_ref().or(self.last_read.as_ref())
+    }
+
+    /// Queue a message; how many are ahead of it.
+    pub fn enqueue(&mut self, m: Message, limit: usize) -> Result<usize, String> {
+        if self.inbox.len() >= limit {
+            return Err(format!("inbox is full (message-inbox-limit is {limit})"));
+        }
+        self.inbox.push_back(m);
+        Ok(self.inbox.len() - 1)
+    }
+
+    /// Task and hop for one this pane sends now: sent while working on a
+    /// message, it carries that chain on; an answer carries on the chain of
+    /// what it answers.
+    pub fn carry(&self, reply: bool) -> Option<(MsgId, u32)> {
+        let from = if reply { self.answering() } else { self.current.as_ref() };
+        from.map(|c| (c.task, c.hop + 1))
+    }
+
+    pub fn remove(&mut self, id: MsgId) -> Option<Message> {
+        let i = self.inbox.iter().position(|m| m.id == id)?;
+        self.inbox.remove(i)
+    }
+
+    /// Move a queued message; its old and new places.
+    pub fn move_message(&mut self, id: MsgId, to: Move) -> Option<(usize, usize)> {
+        let i = self.inbox.iter().position(|m| m.id == id)?;
+        let j = match to {
+            Move::Up => i.saturating_sub(1),
+            Move::Down => (i + 1).min(self.inbox.len() - 1),
+            Move::Top => 0,
+        };
+        let m = self.inbox.remove(i)?;
+        self.inbox.insert(j, m);
+        Some((i, j))
+    }
+
+    /// Put a deleted message back where it was (or last, if the inbox is
+    /// shorter now).
+    pub fn restore(&mut self, m: Message, at: usize) {
+        let at = at.min(self.inbox.len());
+        self.inbox.insert(at, m);
+    }
+}
+
+/// A pane name: what `%name` finds. Letters, digits, `-` and `_`, so it can
+/// never end the comment a shell envelope sits in, and never all digits,
+/// which would read as a pane id.
+pub fn check_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(format!("bad pane name '{name}' (1 to 64 characters)"));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("bad pane name '{name}' (letters, digits, - and _ only)"));
+    }
+    if name.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("bad pane name '{name}' (all digits would read as a pane id)"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at() -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+        chrono::Local.timestamp_millis_opt(1_790_000_000_000).unwrap()
+    }
+
+    fn msg(id: MsgId, via: WorkMode) -> Message {
+        Message {
+            id,
+            task: id,
+            from: Sender::Pane { id: 7, address: "$1:@3.%7".into(), name: Some("builder".into()), mode: WorkMode::Ai },
+            to: "$1:@4.%9".into(),
+            via,
+            hop: 0,
+            re: None,
+            text: format!("text {id}"),
+            at: at(),
+        }
+    }
+
+    fn actor(mode: WorkMode) -> Actor {
+        Actor { mode, ..Default::default() }
+    }
+
+    #[test]
+    fn the_envelope_is_fixed_and_leaves_out_what_is_absent() {
+        let mut m = msg(12, WorkMode::Shell);
+        m.hop = 1;
+        m.re = Some(9);
+        m.task = 3;
+        assert_eq!(
+            m.envelope(),
+            r#"{"keepane":1,"id":12,"task":3,"from":"$1:@3.%7","name":"builder","mode":"ai","to":"$1:@4.%9","via":"shell","hop":1,"re":9}"#
+        );
+        m.from = Sender::User;
+        m.re = None;
+        assert_eq!(
+            m.envelope(),
+            r#"{"keepane":1,"id":12,"task":3,"from":"user","to":"$1:@4.%9","via":"shell","hop":1}"#
+        );
+        // The same message, the same bytes, every time.
+        assert_eq!(m.envelope(), m.clone().envelope());
+    }
+
+    #[test]
+    fn each_mode_wraps_the_same_envelope_its_own_way() {
+        let m = msg(5, WorkMode::Shell);
+        assert_eq!(m.wrapped(), format!("<# {} #> text 5", m.envelope()));
+        let m = msg(5, WorkMode::Ai);
+        assert_eq!(m.wrapped(), format!("{}\ntext 5\n{{\"keepane\":1,\"end\":5}}", m.envelope()));
+    }
+
+    #[test]
+    fn a_shell_command_of_several_lines_goes_in_as_one() {
+        assert_eq!(one_command("Get-Date"), "Get-Date");
+        assert_eq!(one_command("Get-Date\r\n"), "Get-Date", "a trailing line end is not a second line");
+        let two = one_command("$a = 'x'\r\nWrite-Output $a ‘q’");
+        assert!(
+            two.starts_with("$__keepane_e = $Error[0]; . ([scriptblock]::Create(('$a = ''x''', 'Write-Output $a ‘‘q’’') -join \"`n\")); "),
+            "{two}"
+        );
+        assert!(two.ends_with("Write-Error \"a line above failed\" -ErrorAction SilentlyContinue }"), "{two}");
+        let mut m = msg(3, WorkMode::Shell);
+        m.text = "a\nb".into();
+        assert!(
+            m.wrapped().contains("#> $__keepane_e = $Error[0]; . ([scriptblock]::Create(('a', 'b')"),
+            "{}",
+            m.wrapped()
+        );
+        assert!(!m.wrapped().contains('\n'), "one line");
+    }
+
+    #[test]
+    fn a_shell_pane_is_free_at_keepanes_prompt_only() {
+        let mut a = actor(WorkMode::Shell);
+        assert!(!a.idle(), "busy until the first prompt");
+        a.enqueue(msg(1, WorkMode::Shell), 10).unwrap();
+        assert_eq!(a.next_delivery(), None);
+        // The agent's word does not count in a shell pane.
+        assert_eq!(a.ready(), (false, None));
+        assert!(!a.idle());
+        assert_eq!(a.prompt(), None);
+        assert!(a.idle());
+        // Typing at the prompt makes it busy again.
+        a.input();
+        assert_eq!(a.next_delivery(), None);
+        a.prompt();
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
+        assert!(!a.idle(), "busy with what it was given");
+        // Its prompt coming back ends that command.
+        assert_eq!(a.prompt().map(|(m, e)| (m.id, e)), Some((1, End::Done)));
+        assert_eq!(a.current, None);
+    }
+
+    #[test]
+    fn typing_right_after_the_prompt_mark_keeps_the_pane_busy() {
+        let mut a = actor(WorkMode::Shell);
+        a.prompt_seen();
+        a.input();
+        assert_eq!(a.command_over(), None);
+        assert!(!a.idle(), "typed after the marker: busy, whatever comes after");
+    }
+
+    #[test]
+    fn typing_while_its_command_runs_keeps_a_shell_pane_busy_after_it() {
+        let mut a = actor(WorkMode::Shell);
+        a.enqueue(msg(1, WorkMode::Shell), 10).unwrap();
+        a.enqueue(msg(2, WorkMode::Shell), 10).unwrap();
+        a.prompt();
+        a.next_delivery().unwrap();
+        // Typed while #1 runs: the prompt that ends it shows that text.
+        a.input();
+        assert_eq!(a.prompt().map(|(m, _)| m.id), Some(1));
+        assert!(!a.idle(), "#2 is not typed after what is on the line");
+        // The person's own Enter brings a clean prompt: free again.
+        a.input();
+        a.prompt();
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(2));
+        // Nothing typed while #2 runs: free at its end.
+        a.prompt();
+        assert!(a.idle());
+    }
+
+    #[test]
+    fn an_agents_pane_is_free_when_the_agent_says_so() {
+        let mut a = actor(WorkMode::Ai);
+        a.enqueue(msg(1, WorkMode::Ai), 10).unwrap();
+        a.prompt();
+        assert!(!a.idle(), "a shell prompt is not the agent being ready");
+        assert_eq!(a.ready(), (true, None));
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
+        assert!(!a.idle());
+        let (taken, done) = a.ready();
+        assert!(taken);
+        assert_eq!(done.map(|(m, e)| (m.id, e)), Some((1, End::Done)));
+        // Ready, then the agent exits: its pane shows the shell's prompt,
+        // and nothing is typed into that shell.
+        a.enqueue(msg(2, WorkMode::Ai), 10).unwrap();
+        a.prompt();
+        assert_eq!(a.next_delivery(), None);
+    }
+
+    #[test]
+    fn an_agent_that_exits_mid_task_abandons_it() {
+        let mut a = actor(WorkMode::Ai);
+        a.enqueue(msg(1, WorkMode::Ai), 10).unwrap();
+        a.ready();
+        a.next_delivery().unwrap();
+        assert_eq!(a.prompt().map(|(m, e)| (m.id, e)), Some((1, End::Abandoned)));
+    }
+
+    #[test]
+    fn a_normal_pane_takes_nothing_on_its_own() {
+        let mut a = actor(WorkMode::Normal);
+        a.enqueue(msg(1, WorkMode::Normal), 10).unwrap();
+        a.enqueue(msg(2, WorkMode::Normal), 10).unwrap();
+        a.prompt();
+        assert_eq!(a.ready(), (false, None));
+        a.force_idle();
+        assert_eq!(a.next_delivery(), None);
+        assert_eq!(a.read().map(|m| m.id), Some(1));
+        // Taken is done with: it is not worked on, only answerable.
+        assert_eq!(a.current, None);
+        assert_eq!(a.answering().map(|m| m.id), Some(1));
+        assert_eq!(a.carry(false), None, "something new starts a new chain");
+        assert_eq!(a.carry(true), Some((1, 1)), "an answer carries its chain on");
+        assert_eq!(a.read().map(|m| m.id), Some(2));
+        assert_eq!(a.answering().map(|m| m.id), Some(2));
+        assert_eq!(a.read(), None);
+    }
+
+    #[test]
+    fn an_agent_taking_an_answer_keeps_working_on_its_own_message() {
+        let mut a = actor(WorkMode::Ai);
+        a.enqueue(msg(1, WorkMode::Ai), 10).unwrap();
+        a.ready();
+        a.next_delivery().unwrap();
+        // An answer arrives while it works, and it takes it (wait_message).
+        let mut answer = msg(9, WorkMode::Ai);
+        answer.task = 1;
+        a.enqueue(answer, 10).unwrap();
+        assert_eq!(a.read().map(|m| m.id), Some(9));
+        assert_eq!(a.current.as_ref().map(|m| m.id), Some(1), "still on its own message");
+        assert_eq!(a.answering().map(|m| m.id), Some(1), "-r answers who gave it the work");
+    }
+
+    #[test]
+    fn a_message_is_delivered_only_in_the_mode_it_was_sent_for() {
+        let mut a = actor(WorkMode::Ai);
+        a.enqueue(msg(1, WorkMode::Ai), 10).unwrap();
+        a.enqueue(msg(2, WorkMode::Shell), 10).unwrap();
+        a.mode = WorkMode::Shell;
+        a.prompt();
+        // Text written for the agent is not run as a command.
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(2));
+        a.prompt();
+        assert_eq!(a.next_delivery(), None);
+        assert_eq!(a.inbox.len(), 1);
+    }
+
+    #[test]
+    fn switching_mode_keeps_what_was_seen() {
+        // A shell sitting at its prompt takes a message as soon as its pane
+        // is switched to shell mode, without waiting for another prompt.
+        let mut a = actor(WorkMode::Normal);
+        a.prompt();
+        a.mode = WorkMode::Shell;
+        assert!(a.idle());
+    }
+
+    #[test]
+    fn force_idle_unsticks_a_busy_pane() {
+        let mut a = actor(WorkMode::Ai);
+        a.input();
+        assert!(!a.idle());
+        a.force_idle();
+        assert!(a.idle());
+    }
+
+    #[test]
+    fn a_full_inbox_refuses() {
+        let mut a = actor(WorkMode::Normal);
+        assert_eq!(a.enqueue(msg(1, WorkMode::Normal), 2), Ok(0));
+        assert_eq!(a.enqueue(msg(2, WorkMode::Normal), 2), Ok(1));
+        assert!(a.enqueue(msg(3, WorkMode::Normal), 2).is_err());
+    }
+
+    #[test]
+    fn what_a_pane_sends_while_working_carries_the_chain_on() {
+        let mut a = actor(WorkMode::Ai);
+        assert_eq!(a.carry(false), None);
+        let mut m = msg(4, WorkMode::Ai);
+        m.task = 2;
+        m.hop = 3;
+        a.enqueue(m, 10).unwrap();
+        a.ready();
+        a.next_delivery();
+        assert_eq!(a.carry(false), Some((2, 4)));
+        a.ready();
+        assert_eq!(a.carry(false), None, "done with it: a new chain starts");
+    }
+
+    #[test]
+    fn queued_messages_move_and_come_back() {
+        let mut a = actor(WorkMode::Normal);
+        for i in 1..=4 {
+            a.enqueue(msg(i, WorkMode::Normal), 10).unwrap();
+        }
+        let ids = |a: &Actor| a.inbox.iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(a.move_message(3, Move::Top), Some((2, 0)));
+        assert_eq!(ids(&a), [3, 1, 2, 4]);
+        assert_eq!(a.move_message(3, Move::Up), Some((0, 0)));
+        assert_eq!(a.move_message(4, Move::Down), Some((3, 3)));
+        assert_eq!(a.move_message(1, Move::Down), Some((1, 2)));
+        assert_eq!(ids(&a), [3, 2, 1, 4]);
+        assert_eq!(a.move_message(9, Move::Top), None);
+        let m = a.remove(2).unwrap();
+        assert_eq!(ids(&a), [3, 1, 4]);
+        a.restore(m, 1);
+        assert_eq!(ids(&a), [3, 2, 1, 4]);
+        let m = a.remove(4).unwrap();
+        a.inbox.clear();
+        a.restore(m, 3);
+        assert_eq!(ids(&a), [4]);
+    }
+
+    #[test]
+    fn names_are_what_a_target_can_tell_from_an_id() {
+        assert!(check_name("builder").is_ok());
+        assert!(check_name("test-2_b").is_ok());
+        assert!(check_name("12").is_err());
+        assert!(check_name("").is_err());
+        assert!(check_name("a b").is_err());
+        assert!(check_name("x#>y").is_err());
+        assert!(check_name(&"a".repeat(65)).is_err());
+    }
+}

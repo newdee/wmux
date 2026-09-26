@@ -303,6 +303,98 @@ A pane or window closed with `kill-pane` or `kill-window` (`C-b x`,
 want when you kill something to free a port or a file. The last pane of a
 session is not kept, because the session ends with it.
 
+## Panes that talk to each other
+
+Every pane can have a name, a work mode and an inbox. A pane (a script, a
+person, an agent such as Claude Code) sends another a message; keepane
+queues it, types it in when the other pane is free, and records what
+became of it. Agents in different windows can hand each other work this
+way, and an agent can make its own panes to work in.
+
+```powershell
+keepane rename-pane -t %3 builder          # -t %builder finds it from now on
+keepane set-work-mode -t %builder shell    # it runs what it gets, at its prompt
+keepane send-message -t %builder -w 30 "cargo test"
+#12 delivered to $1:@2.%3 (shell)
+keepane trace-message 12 -w 600            # waits until it is done: output, success
+```
+
+A pane is found by `%7` (its id), `%builder` (its name), or its full
+address `$1:@2.%7` (session, window and pane ids, which `whoami` prints).
+An address says where the pane is expected to be: if it has moved to
+another window since, the message is refused rather than sent where it went.
+
+What a pane does with a message depends on its work mode:
+
+| Mode | Free when | Delivery |
+|---|---|---|
+| `normal` (default) | never on its own | waits for `read-message` (the window gets `@` in its flags) |
+| `shell` | keepane's own prompt hook says the shell is at its prompt | typed in and run |
+| `ai` | the agent says `pane-ready` (a hook at the end of each turn) | typed in as a prompt |
+
+Keys typed into a pane make it busy until its next signal, so a message
+does not land in a line being typed; keys typed while a command keepane gave
+it runs (an answer to it, or typing ahead, which the shell shows at its next
+prompt) keep it busy past that prompt too. Typing ahead during a command of
+your own is not caught. An `ai` pane that shows a shell
+prompt again (its agent exited) takes nothing. A message is delivered only
+in the mode it was sent for: text written for an agent is never run as a
+command because the pane was switched to `shell` meanwhile.
+
+Every message carries its source in a fixed one-line envelope, the same
+wherever it is shown:
+
+```text
+{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
+```
+
+A shell gets it as a PowerShell comment before the command (`<# … #>
+cargo test`), so it stays in the history (a command of several lines is sent
+as one line that runs them together, so it is one command with one result); an agent gets it, the text, and an
+end line `{"keepane":1,"end":12}`. `task` groups a chain (an order, the work
+it caused, the answers); `hop` counts the links, and a chain longer than
+`message-hop-limit` (8) is refused, so two agents cannot answer each other
+for ever.
+
+### Agents
+
+`keepane setup claude` prints what Claude Code needs; `--install` does it:
+two hooks in `~/.claude/settings.json` (backed up first) that run `keepane
+pane-ready -q` when a session starts and when a turn ends, and keepane's MCP
+server (`claude mcp add --scope user keepane -- keepane mcp`). The hook is
+quiet outside keepane and ignored in panes not in `ai` mode. Writing the hook
+yourself, leave the program path unquoted (or write `& "C:\path\keepane.exe"
+pane-ready -q`): Claude Code on Windows may run hooks in PowerShell, where a
+quoted path followed by arguments is a syntax error.
+
+Through MCP an agent can send and `reply`, `wait_message` for an answer
+inside its turn, `trace_message`, report what it is doing (`set_status`),
+make sessions, windows and panes (`create_session`, `create_window`,
+`split_pane`, with a name, a mode and a first message) and close the ones
+it made. What it may start is limited to `agent-commands` (`pwsh
+powershell claude codex`), how many panes it and the panes it made may
+make to `agent-pane-limit` (8). From inside a pane, only that pane and the
+ones it created can be renamed, switched to another mode or closed; only a
+person or its creator turns on `shell` mode. These rules guard against
+mistakes: any program running as you can still reach the server.
+
+### The dashboard
+
+`C-b v` (or `keepane dashboard` in any terminal) shows every pane: its
+mode, whether it is free, its inbox, what it says it is doing. Below, for
+the chosen pane: its events (Enter), messages (`m`), every task (`t`), its
+screen live (`v`) or with its scrollback (`h`). It only watches; in manage
+mode (`E`, red, ends after 30 s without a key) queued messages can be
+deleted (`d`, `u` undoes), moved (`K` `J`) or put first (`g`).
+
+Everything that happens to messages and panes is kept in an event log,
+`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, for 30 days
+(`event-log`, `event-log-days`, `event-log-max`). `list-tasks`,
+`show-task`, `trace-message` and `list-events` read it. Messages still
+queued when the server stops are not kept: they are dropped, and the log
+says so. Names and work modes are saved with the session. The design and
+why each rule is so: [docs/design/mailbox.md](docs/design/mailbox.md).
+
 ## Resume after a reboot
 
 Every session is saved to its own file under `%LOCALAPPDATA%\keepane\sessions`
@@ -733,5 +825,10 @@ following the cursor when a key goes to the pane), only the hooks listed
 above, the `choose-tree` filter is a substring rather than a format, and
 `display-popup` keeps the prefix key for keepane (`prefix prefix` sends it to
 the program in the box).
+
+Pane messages: `shell` work mode needs keepane's PowerShell prompt hook, so
+cmd and WSL shells do not take messages on their own yet (they can
+`read-message`); a pane started before keepane 0.15 has the older hook and
+must be restarted for it. The dashboard is not on the phone page yet.
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.

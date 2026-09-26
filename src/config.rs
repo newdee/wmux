@@ -105,6 +105,65 @@ pub struct Options {
     pub animation: bool,
     /// How long it takes, in milliseconds (at most 10000); 0 is the same as off.
     pub animation_time: u64,
+    /// Pane messages (docs/design/mailbox.md): the most hops a chain of
+    /// messages may take, so two agents cannot answer each other for ever.
+    pub message_hop_limit: u32,
+    /// The most messages one inbox holds.
+    pub message_inbox_limit: usize,
+    /// The most bytes one message (and a shell command's kept output) holds.
+    pub message_max_size: usize,
+    /// The longest `-w` waits, in seconds.
+    pub message_wait_max: u64,
+    /// The most panes one pane and the panes it created may create.
+    pub agent_pane_limit: u32,
+    /// The programs a pane may start in a pane it creates.
+    pub agent_commands: String,
+    /// Keep what happens to messages and panes in a JSON Lines file a day.
+    pub event_log: bool,
+    /// Days the event log keeps.
+    pub event_log_days: u32,
+    /// The most bytes one day's event log holds.
+    pub event_log_max: u64,
+}
+
+/// A number option within its bounds; out of them it is an error, never
+/// quietly clamped.
+fn ranged<T: std::str::FromStr + PartialOrd + std::fmt::Display>(
+    name: &str,
+    value: &str,
+    lo: T,
+    hi: T,
+    unit: &str,
+) -> Result<T, String> {
+    match value.trim().parse::<T>() {
+        Ok(v) if v >= lo && v <= hi => Ok(v),
+        _ => Err(format!("bad {name} '{value}' ({unit}, {lo} to {hi})")),
+    }
+}
+
+/// A size in bytes, written plainly or with K or M.
+fn parse_size(name: &str, value: &str, lo: u64, hi: u64) -> Result<u64, String> {
+    let v = value.trim();
+    let (digits, mult) = match v.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&v[..v.len() - 1], 1024),
+        Some('M') => (&v[..v.len() - 1], 1024 * 1024),
+        _ => (v, 1),
+    };
+    match digits.parse::<u64>().ok().and_then(|n| n.checked_mul(mult)) {
+        Some(n) if (lo..=hi).contains(&n) => Ok(n),
+        _ => Err(format!("bad {name} '{value}' (bytes, K or M; {} to {})", size_name(lo), size_name(hi))),
+    }
+}
+
+/// A size the way `parse_size` reads it back, in the largest unit it fits.
+fn size_name(n: u64) -> String {
+    if n >= 1024 * 1024 && n.is_multiple_of(1024 * 1024) {
+        format!("{}M", n / (1024 * 1024))
+    } else if n >= 1024 && n.is_multiple_of(1024) {
+        format!("{}K", n / 1024)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Options `show-options` can print, in display order.
@@ -155,6 +214,15 @@ pub const SHOWABLE: &[&str] = &[
     "keep-zoom",
     "animation",
     "animation-time",
+    "message-hop-limit",
+    "message-inbox-limit",
+    "message-max-size",
+    "message-wait-max",
+    "agent-pane-limit",
+    "agent-commands",
+    "event-log",
+    "event-log-days",
+    "event-log-max",
 ];
 
 impl Default for Options {
@@ -212,6 +280,15 @@ impl Default for Options {
             keep_zoom: true,
             animation: true,
             animation_time: 160,
+            message_hop_limit: 8,
+            message_inbox_limit: 100,
+            message_max_size: 64 * 1024,
+            message_wait_max: 600,
+            agent_pane_limit: 8,
+            agent_commands: "pwsh powershell claude codex".into(),
+            event_log: true,
+            event_log_days: 30,
+            event_log_max: 20 * 1024 * 1024,
         }
     }
 }
@@ -296,6 +373,8 @@ fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
 /// Every option keepane actually does something with, plus `synchronize-panes`
 /// (which the server handles itself). Used to expand an abbreviation.
 pub const KNOWN: &[&str] = &[
+    "agent-commands",
+    "agent-pane-limit",
     "animation",
     "animation-time",
     "autosave",
@@ -303,11 +382,18 @@ pub const KNOWN: &[&str] = &[
     "default-command",
     "default-shell",
     "display-time",
+    "event-log",
+    "event-log-days",
+    "event-log-max",
     "history-limit",
     "keep-zoom",
     "log-history",
     "log-history-days",
     "log-history-dir",
+    "message-hop-limit",
+    "message-inbox-limit",
+    "message-max-size",
+    "message-wait-max",
     "monitor-activity",
     "monitor-bell",
     "monitor-silence",
@@ -373,6 +459,7 @@ pub const ACCEPTED: &[&str] = &[
 const BOOLEAN: &[&str] = &[
     "animation",
     "autosave",
+    "event-log",
     "keep-zoom",
     "log-history",
     "notify",
@@ -575,6 +662,17 @@ impl Options {
             "log-history-days" => self.log_history_days = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "log-history-dir" => self.log_history_dir = value.to_string(),
             "undo-kill-time" => self.undo_kill_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
+            "message-hop-limit" => self.message_hop_limit = ranged(name, value, 1, 100, "hops")?,
+            "message-inbox-limit" => self.message_inbox_limit = ranged(name, value, 1, 10_000, "messages")?,
+            "message-max-size" => {
+                self.message_max_size = parse_size(name, value, 1024, 1024 * 1024)? as usize;
+            }
+            "message-wait-max" => self.message_wait_max = ranged(name, value, 1, 86_400, "seconds")?,
+            "agent-pane-limit" => self.agent_pane_limit = ranged(name, value, 0, 256, "panes")?,
+            "agent-commands" => self.agent_commands = value.trim().to_string(),
+            "event-log" => self.event_log = parse_bool(value)?,
+            "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
+            "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
             "window-size" => {
                 self.window_size = match value.trim() {
                     v @ ("latest" | "smallest" | "largest" | "manual") => v.to_string(),
@@ -674,6 +772,15 @@ impl Options {
             "animation-time" => self.animation_time.to_string(),
             "log-history-days" => self.log_history_days.to_string(),
             "undo-kill-time" => self.undo_kill_time.to_string(),
+            "message-hop-limit" => self.message_hop_limit.to_string(),
+            "message-inbox-limit" => self.message_inbox_limit.to_string(),
+            "message-max-size" => size_name(self.message_max_size as u64),
+            "message-wait-max" => self.message_wait_max.to_string(),
+            "agent-pane-limit" => self.agent_pane_limit.to_string(),
+            "agent-commands" => self.agent_commands.clone(),
+            "event-log" => onoff(self.event_log),
+            "event-log-days" => self.event_log_days.to_string(),
+            "event-log-max" => size_name(self.event_log_max),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()
@@ -762,6 +869,9 @@ pub fn resolve_shell(opts: &Options) -> Vec<String> {
 /// 7777;keepane-cmd;start;end;ok`, the times from the shell's own history,
 /// once per history entry), before the prompt, and where the prompt ends
 /// (`OSC 133;B`), after it: `pane-timestamps` and `list-marks` read them.
+/// Last, at every prompt, keepane's own word that the shell is at it
+/// (`OSC 7777;keepane-prompt`): what a pane in `shell` work mode waits for
+/// before the next message goes in, and which a remote shell never sends.
 /// `$global:?` is read first, before anything else can change it.
 pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__keepane_prompt = $function:prompt; \
      $global:__keepane_hid = (Get-History -Count 1).Id; \
@@ -772,7 +882,8 @@ pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__keepane_prompt = $function:p
      $__c = [char]27 + ']7777;keepane-cmd;' + ([DateTimeOffset]$__h.StartExecutionTime).ToUnixTimeMilliseconds() + ';' \
      + ([DateTimeOffset]$__h.EndExecutionTime).ToUnixTimeMilliseconds() + ';' + [int]$__ok + [char]27 + '\\' }; \
      $__p = if ($global:__keepane_prompt) { & $global:__keepane_prompt } else { 'PS ' + $PWD.Path + '> ' }; \
-     $__c + \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' + [char]27 + ']133;B' + [char]27 + '\\' }";
+     $__c + \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' + [char]27 + ']133;B' + [char]27 + '\\' \
+     + [char]27 + ']7777;keepane-prompt' + [char]27 + '\\' }";
 
 /// `argv` with keepane's shell integration added where it applies: an
 /// interactive PowerShell (pwsh or Windows PowerShell) gets the prompt hook

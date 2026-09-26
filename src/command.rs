@@ -13,27 +13,89 @@ pub struct Target {
     /// It stays the same pane when others come and go, which an index does
     /// not.
     pub pane_id: Option<u32>,
+    /// `%name`: a pane by the name `rename-pane` gave it, wherever it is.
+    pub pane_name: Option<String>,
 }
 
 impl Target {
     /// Parse `session`, `session:window`, `:window`, `session:window.pane`,
-    /// or `%N` for a pane by its id.
+    /// `%N` for a pane by its id, `%name` for a pane by its name, or a
+    /// pane's full address `$1:@3.%7`, where the session and window say
+    /// where the pane is expected to be.
     pub fn parse(s: &str) -> Target {
-        if let Some(id) = s.strip_prefix('%').and_then(|n| n.parse().ok()) {
-            return Target { pane_id: Some(id), ..Default::default() };
+        if let Some(p) = s.strip_prefix('%') {
+            let (pane_id, pane_name) = pane_ref(p);
+            return Target { pane_id, pane_name, ..Default::default() };
         }
         let (sess, rest) = match s.split_once(':') {
             Some((a, b)) => (if a.is_empty() { None } else { Some(a.to_string()) }, Some(b)),
             None => (if s.is_empty() { None } else { Some(s.to_string()) }, None),
         };
+        let (mut pane_id, mut pane_name) = (None, None);
         let (win, pane) = match rest {
             Some(r) => match r.split_once('.') {
-                Some((w, p)) => (if w.is_empty() { None } else { Some(w.to_string()) }, p.parse().ok()),
+                Some((w, p)) => {
+                    let w = if w.is_empty() { None } else { Some(w.to_string()) };
+                    match p.strip_prefix('%') {
+                        Some(p) => {
+                            (pane_id, pane_name) = pane_ref(p);
+                            (w, None)
+                        }
+                        None => (w, p.parse().ok()),
+                    }
+                }
                 None => (if r.is_empty() { None } else { Some(r.to_string()) }, None),
             },
             None => (None, None),
         };
-        Target { session: sess, window: win, pane, pane_id: None }
+        Target { session: sess, window: win, pane, pane_id, pane_name }
+    }
+
+    /// The pane is named by id or name, not by its place in a window.
+    pub fn names_pane(&self) -> bool {
+        self.pane_id.is_some() || self.pane_name.is_some()
+    }
+}
+
+/// What follows `%`: a pane id when it is all digits, else a pane name.
+fn pane_ref(p: &str) -> (Option<u32>, Option<String>) {
+    match p.parse() {
+        Ok(id) => (Some(id), None),
+        Err(_) => (None, Some(p.to_string())),
+    }
+}
+
+/// What `create-pane` makes (boxed in `Cmd`, which it would otherwise
+/// double in size).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreatePane {
+    /// `session`, `window` or `split`.
+    pub kind: String,
+    pub target: Option<Target>,
+    pub session_name: Option<String>,
+    pub horizontal: bool,
+    pub cwd: Option<String>,
+    pub name: Option<String>,
+    pub mode: Option<String>,
+    pub message: Option<String>,
+    pub argv: Vec<String>,
+}
+
+/// Where `move-message` puts a queued message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveTo {
+    Up,
+    Down,
+    Top,
+}
+
+impl MoveTo {
+    fn as_str(self) -> &'static str {
+        match self {
+            MoveTo::Up => "up",
+            MoveTo::Down => "down",
+            MoveTo::Top => "top",
+        }
     }
 }
 
@@ -96,6 +158,92 @@ pub enum Cmd {
     /// still on screen or in its scrollback.
     ListMarks {
         target: Option<Target>,
+    },
+    /// `send-message [-t pane] [-r] [-w seconds] text`: into a pane's inbox
+    /// (docs/design/mailbox.md). `-r` answers the sender of the message the
+    /// calling pane is working on; `-w` waits until it is delivered.
+    SendMessage {
+        target: Option<Target>,
+        reply: bool,
+        wait: Option<u64>,
+        text: String,
+    },
+    /// `read-message [-t pane] [-w seconds]`: take the oldest message.
+    ReadMessage {
+        target: Option<Target>,
+        wait: Option<u64>,
+    },
+    /// `list-messages [-t pane] [-a]`: what waits in an inbox (all with -a).
+    ListMessages {
+        target: Option<Target>,
+        all: bool,
+    },
+    /// `trace-message id [-w seconds]`: where a message is; -w waits until
+    /// it is done with.
+    TraceMessage {
+        id: u64,
+        wait: Option<u64>,
+    },
+    /// `drop-message id` / `drop-message -u`: delete a queued message, or
+    /// bring back the one deleted last.
+    DropMessage {
+        id: Option<u64>,
+        undo: bool,
+    },
+    /// `move-message id up|down|top`: its place in the queue.
+    MoveMessage {
+        id: u64,
+        to: MoveTo,
+    },
+    /// `pane-ready [-q] [-t pane]`: an agent is free for its next message.
+    PaneReady {
+        quiet: bool,
+        target: Option<Target>,
+    },
+    /// `pane-status [text]`: what the calling pane says it is doing.
+    PaneStatus {
+        text: String,
+    },
+    /// `set-work-mode [-t pane] normal|shell|ai`.
+    SetWorkMode {
+        target: Option<Target>,
+        mode: String,
+    },
+    /// `rename-pane [-t pane] name`: the name `%name` finds; "" clears it.
+    RenamePane {
+        target: Option<Target>,
+        name: String,
+    },
+    /// `whoami`: the calling pane's address, place, name and mode.
+    Whoami,
+    /// `create-pane [-k session|window|split] [-t target] [-s session-name]
+    /// [-h] [-c dir] [-n pane-name] [-m mode] [-M message] [-- command]`: a
+    /// pane made by an agent (what MCP's create tools run). From inside a
+    /// pane it is recorded as that pane's, counts against
+    /// `agent-pane-limit`, and may run only an `agent-commands` program.
+    CreatePane(Box<CreatePane>),
+
+    /// `close-pane -t pane`: close a pane; from inside a pane, only itself
+    /// or one it created.
+    ClosePane {
+        target: Target,
+    },
+    /// `dashboard`: every pane at a glance, in a popup (prefix v).
+    Dashboard,
+    /// `list-tasks [-t session]`: every chain of messages, newest first.
+    ListTasks {
+        target: Option<Target>,
+    },
+    /// `show-task id`: a task's messages, step by step.
+    ShowTask {
+        id: u64,
+    },
+    /// `list-events [-t target] [-S duration] [-n lines]`: the event log's
+    /// lines; -n takes the last ones from memory, without reading the files.
+    ListEvents {
+        target: Option<Target>,
+        since: Option<u64>,
+        last: Option<usize>,
     },
     ListPanes {
         target: Option<Target>,
@@ -647,6 +795,121 @@ impl fmt::Display for Cmd {
             Cmd::ListMarks { target } => {
                 f.write_str("list-marks")?;
                 fmt_target(f, target)
+            }
+            Cmd::SendMessage { target, reply, wait, text } => {
+                f.write_str("send-message")?;
+                fmt_target(f, target)?;
+                if *reply {
+                    f.write_str(" -r")?;
+                }
+                if let Some(w) = wait {
+                    write!(f, " -w {w}")?;
+                }
+                write!(f, " -- {}", quote(text))
+            }
+            Cmd::ReadMessage { target, wait } => {
+                f.write_str("read-message")?;
+                fmt_target(f, target)?;
+                if let Some(w) = wait {
+                    write!(f, " -w {w}")?;
+                }
+                Ok(())
+            }
+            Cmd::ListMessages { target, all } => {
+                f.write_str("list-messages")?;
+                fmt_target(f, target)?;
+                if *all {
+                    f.write_str(" -a")?;
+                }
+                Ok(())
+            }
+            Cmd::TraceMessage { id, wait } => {
+                write!(f, "trace-message {id}")?;
+                if let Some(w) = wait {
+                    write!(f, " -w {w}")?;
+                }
+                Ok(())
+            }
+            Cmd::DropMessage { id, undo } => {
+                f.write_str("drop-message")?;
+                if *undo {
+                    f.write_str(" -u")?;
+                }
+                if let Some(id) = id {
+                    write!(f, " {id}")?;
+                }
+                Ok(())
+            }
+            Cmd::MoveMessage { id, to } => write!(f, "move-message {id} {}", to.as_str()),
+            Cmd::PaneReady { quiet, target } => {
+                f.write_str("pane-ready")?;
+                if *quiet {
+                    f.write_str(" -q")?;
+                }
+                fmt_target(f, target)
+            }
+            Cmd::PaneStatus { text } => write!(f, "pane-status -- {}", quote(text)),
+            Cmd::SetWorkMode { target, mode } => {
+                f.write_str("set-work-mode")?;
+                fmt_target(f, target)?;
+                write!(f, " {mode}")
+            }
+            Cmd::RenamePane { target, name } => {
+                f.write_str("rename-pane")?;
+                fmt_target(f, target)?;
+                write!(f, " -- {}", quote(name))
+            }
+            Cmd::Whoami => f.write_str("whoami"),
+            Cmd::CreatePane(c) => {
+                let CreatePane { kind, target, session_name, horizontal, cwd, name, mode, message, argv } = &**c;
+                write!(f, "create-pane -k {kind}")?;
+                fmt_target(f, target)?;
+                if let Some(s) = session_name {
+                    write!(f, " -s {}", quote(s))?;
+                }
+                if *horizontal {
+                    f.write_str(" -h")?;
+                }
+                if let Some(c) = cwd {
+                    write!(f, " -c {}", quote(c))?;
+                }
+                if let Some(n) = name {
+                    write!(f, " -n {}", quote(n))?;
+                }
+                if let Some(m) = mode {
+                    write!(f, " -m {m}")?;
+                }
+                if let Some(m) = message {
+                    write!(f, " -M {}", quote(m))?;
+                }
+                if !argv.is_empty() {
+                    f.write_str(" --")?;
+                    for a in argv {
+                        write!(f, " {}", quote(a))?;
+                    }
+                }
+                Ok(())
+            }
+            Cmd::ClosePane { target } => {
+                f.write_str("close-pane")?;
+                fmt_target(f, &Some(target.clone()))
+            }
+            Cmd::Dashboard => f.write_str("dashboard"),
+            Cmd::ListTasks { target } => {
+                f.write_str("list-tasks")?;
+                fmt_target(f, target)
+            }
+            Cmd::ShowTask { id } => write!(f, "show-task {id}"),
+            Cmd::ListEvents { target, since, last } => {
+                f.write_str("list-events")?;
+                fmt_target(f, target)?;
+                if let Some(s) = since {
+                    write!(f, " -S {s}s")?;
+                }
+                if let Some(n) = last {
+                    write!(f, " -n {n}")?;
+                }
+                Ok(())
             }
             Cmd::ListWindows { target } => {
                 f.write_str("list-windows")?;
@@ -1266,17 +1529,24 @@ impl fmt::Display for Cmd {
 
 /// A target as `session:window.pane`, the way `-t` takes it back.
 fn target_string(t: &Target) -> String {
-    if let Some(id) = t.pane_id {
-        return format!("%{id}");
+    let pane = t.pane_id.map(|id| format!("%{id}")).or_else(|| t.pane_name.as_ref().map(|n| format!("%{n}")));
+    if let Some(p) = &pane
+        && t.session.is_none()
+        && t.window.is_none()
+    {
+        return p.clone();
     }
     let mut s = t.session.clone().unwrap_or_default();
     if let Some(w) = &t.window {
         s.push(':');
         s.push_str(w);
-    } else if t.pane.is_some() {
+    } else if t.pane.is_some() || pane.is_some() {
         s.push(':');
     }
-    if let Some(p) = t.pane {
+    if let Some(p) = pane {
+        s.push('.');
+        s.push_str(&p);
+    } else if let Some(p) = t.pane {
         s.push('.');
         s.push_str(&p.to_string());
     }
@@ -1432,6 +1702,31 @@ fn bad_flag(name: &str, flag: &str) -> String {
     format!("{name}: unknown flag '{flag}'")
 }
 
+fn seconds(name: &str, v: &str) -> Result<u64, String> {
+    v.parse().map_err(|_| format!("{name}: bad number of seconds '{v}'"))
+}
+
+/// A span of time: `90`, `90s`, `15m`, `2h`, `3d`, in seconds.
+fn duration(name: &str, v: &str) -> Result<u64, String> {
+    let (digits, mult) = match v.chars().last() {
+        Some('s') => (&v[..v.len() - 1], 1),
+        Some('m') => (&v[..v.len() - 1], 60),
+        Some('h') => (&v[..v.len() - 1], 3600),
+        Some('d') => (&v[..v.len() - 1], 86_400),
+        _ => (v, 1),
+    };
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mult))
+        .ok_or_else(|| format!("{name}: bad time span '{v}' (like 90s, 15m, 2h, 3d)"))
+}
+
+/// A message id as `send-message` printed it: `12` or `#12`.
+fn message_id(name: &str, v: &str) -> Result<u64, String> {
+    v.trim_start_matches('#').parse().map_err(|_| format!("{name}: bad message id '{v}'"))
+}
+
 /// The key tables: the keys after the prefix, keys without it, and the
 /// keys of copy mode (tmux's `copy-mode-vi`; `copy-mode`, its emacs table,
 /// is taken as the same one, keepane's copy mode being vi-style).
@@ -1509,6 +1804,23 @@ pub const COMMANDS: &[&str] = &[
     "list-commands",
     "list-keys",
     "list-marks",
+    "send-message",
+    "read-message",
+    "list-messages",
+    "trace-message",
+    "drop-message",
+    "move-message",
+    "pane-ready",
+    "pane-status",
+    "set-work-mode",
+    "rename-pane",
+    "whoami",
+    "list-tasks",
+    "dashboard",
+    "create-pane",
+    "close-pane",
+    "show-task",
+    "list-events",
     "list-panes",
     "list-plugins",
     "list-saved",
@@ -1616,6 +1928,23 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-commands", &[]),
     ("list-keys", &[]),
     ("list-marks", &["-t"]),
+    ("send-message", &["-t", "-r", "-w"]),
+    ("read-message", &["-t", "-w"]),
+    ("list-messages", &["-t", "-a"]),
+    ("trace-message", &["-w"]),
+    ("drop-message", &["-u"]),
+    ("move-message", &[]),
+    ("pane-ready", &["-q", "-t"]),
+    ("pane-status", &[]),
+    ("set-work-mode", &["-t"]),
+    ("rename-pane", &["-t"]),
+    ("whoami", &[]),
+    ("list-tasks", &["-t"]),
+    ("dashboard", &[]),
+    ("create-pane", &["-k", "-t", "-s", "-h", "-c", "-n", "-m", "-M"]),
+    ("close-pane", &["-t"]),
+    ("show-task", &[]),
+    ("list-events", &["-t", "-S", "-n"]),
     ("list-panes", &["-a", "-s", "-t", "-F"]),
     ("list-plugins", &[]),
     ("list-saved", &[]),
@@ -1808,6 +2137,10 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("set", "set-option"),
     ("set-window-option", "set-option"),
     ("setw", "set-option"),
+    // tmux's prefix for set-window-option, which set-work-mode would
+    // otherwise make ambiguous.
+    ("set-w", "set-option"),
+    ("dash", "dashboard"),
     ("show-option", "show-options"),
     ("show", "show-options"),
     ("show-window-options", "show-options"),
@@ -1981,6 +2314,224 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListMarks { target }
+        }
+        "send-message" => {
+            let (mut target, mut reply, mut wait) = (None, false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-r" => reply = true,
+                    "-w" => wait = Some(seconds(n, a.value("-w")?)?),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            if reply && target.is_some() {
+                return Err(format!("{n}: -r answers the sender; it takes no -t"));
+            }
+            let text = a.rest().join(" ");
+            if text.is_empty() {
+                return Err(format!("{n}: text required"));
+            }
+            Cmd::SendMessage { target, reply, wait, text }
+        }
+        "read-message" => {
+            let (mut target, mut wait) = (None, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-w" => wait = Some(seconds(n, a.value("-w")?)?),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ReadMessage { target, wait }
+        }
+        "list-messages" => {
+            let (mut target, mut all) = (None, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-a" => all = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ListMessages { target, all }
+        }
+        "trace-message" => {
+            let (mut id, mut wait) = (None, None);
+            while a.peek().is_some() {
+                if a.is_flag() {
+                    match a.next().unwrap() {
+                        "-w" => wait = Some(seconds(n, a.value("-w")?)?),
+                        f => return Err(bad_flag(n, f)),
+                    }
+                } else if id.is_none() {
+                    id = Some(message_id(n, a.next().unwrap())?);
+                } else {
+                    a.none_left(n)?;
+                }
+            }
+            Cmd::TraceMessage { id: id.ok_or_else(|| format!("{n}: message id required"))?, wait }
+        }
+        "drop-message" => {
+            let mut undo = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-u" => undo = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let id = a.next().map(|w| message_id(n, w)).transpose()?;
+            a.none_left(n)?;
+            if undo == id.is_some() {
+                return Err(format!("{n}: a message id, or -u to bring back the one deleted last"));
+            }
+            Cmd::DropMessage { id, undo }
+        }
+        "move-message" => {
+            a.none_flags(n)?;
+            let id = message_id(n, a.next().ok_or_else(|| format!("{n}: message id required"))?)?;
+            let to = match a.next() {
+                Some("up") => MoveTo::Up,
+                Some("down") => MoveTo::Down,
+                Some("top") => MoveTo::Top,
+                other => return Err(format!("{n}: where to: up, down or top (not {})", other.unwrap_or("nothing"))),
+            };
+            a.none_left(n)?;
+            Cmd::MoveMessage { id, to }
+        }
+        "pane-ready" => {
+            let (mut quiet, mut target) = (false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-q" => quiet = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::PaneReady { quiet, target }
+        }
+        "pane-status" => {
+            a.none_flags(n)?;
+            Cmd::PaneStatus { text: a.rest().join(" ") }
+        }
+        "set-work-mode" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let mode = a.next().ok_or_else(|| format!("{n}: normal, shell or ai"))?.to_string();
+            if !matches!(mode.as_str(), "normal" | "shell" | "ai") {
+                return Err(format!("{n}: bad mode '{mode}' (normal, shell or ai)"));
+            }
+            a.none_left(n)?;
+            Cmd::SetWorkMode { target, mode }
+        }
+        "rename-pane" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let name = a.next().ok_or_else(|| format!("{n}: name required (\"\" clears it)"))?.to_string();
+            a.none_left(n)?;
+            Cmd::RenamePane { target, name }
+        }
+        "whoami" => {
+            a.none_left(n)?;
+            Cmd::Whoami
+        }
+        "create-pane" => {
+            let (mut kind, mut target, mut session_name, mut horizontal) = ("split".to_string(), None, None, false);
+            let (mut cwd, mut name, mut mode, mut message) = (None, None, None, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-k" => kind = a.value("-k")?.to_string(),
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-s" => session_name = Some(a.value("-s")?.to_string()),
+                    "-h" => horizontal = true,
+                    "-c" => cwd = Some(a.value("-c")?.to_string()),
+                    "-n" => name = Some(a.value("-n")?.to_string()),
+                    "-m" => mode = Some(a.value("-m")?.to_string()),
+                    "-M" => message = Some(a.value("-M")?.to_string()),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            if !matches!(kind.as_str(), "session" | "window" | "split") {
+                return Err(format!("{n}: bad kind '{kind}' (session, window or split)"));
+            }
+            if let Some(m) = &mode
+                && !matches!(m.as_str(), "normal" | "shell" | "ai")
+            {
+                return Err(format!("{n}: bad mode '{m}' (normal, shell or ai)"));
+            }
+            let argv = a.rest();
+            Cmd::CreatePane(Box::new(CreatePane {
+                kind,
+                target,
+                session_name,
+                horizontal,
+                cwd,
+                name,
+                mode,
+                message,
+                argv,
+            }))
+        }
+        "close-pane" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ClosePane { target: target.ok_or_else(|| format!("{n}: -t pane required"))? }
+        }
+        "dashboard" => {
+            a.none_left(n)?;
+            Cmd::Dashboard
+        }
+        "list-tasks" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ListTasks { target }
+        }
+        "show-task" => {
+            a.none_flags(n)?;
+            let id = message_id(n, a.next().ok_or_else(|| format!("{n}: task id required"))?)?;
+            a.none_left(n)?;
+            Cmd::ShowTask { id }
+        }
+        "list-events" => {
+            let (mut target, mut since, mut last) = (None, None, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-S" => since = Some(duration(n, a.value("-S")?)?),
+                    "-n" => {
+                        let v = a.value("-n")?;
+                        last = Some(v.parse().map_err(|_| format!("{n}: bad number of lines '{v}'"))?);
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ListEvents { target, since, last }
         }
         "list-windows" | "list-panes" | "kill-session" | "kill-window" | "kill-pane" => {
             let (mut target, mut all_but) = (None, false);
@@ -3182,6 +3733,7 @@ mod tests {
             window: window.map(String::from),
             pane,
             pane_id: None,
+            pane_name: None,
         };
         assert_eq!(Target::parse("main"), t(Some("main"), None, None));
         assert_eq!(Target::parse("main:2"), t(Some("main"), Some("2"), None));
@@ -3190,8 +3742,17 @@ mod tests {
         // A pane by its id, and it prints back the same way.
         assert_eq!(Target::parse("%12"), Target { pane_id: Some(12), ..Default::default() });
         assert_eq!(target_string(&Target::parse("%12")), "%12");
-        // Not a number after %: an ordinary (odd) session name.
-        assert_eq!(Target::parse("%x"), t(Some("%x"), None, None));
+        // Not a number after %: a pane by its name.
+        assert_eq!(Target::parse("%builder"), Target { pane_name: Some("builder".into()), ..Default::default() });
+        // A full address: where the pane is expected, and the pane.
+        let full = Target::parse("$1:@3.%7");
+        assert_eq!(
+            full,
+            Target { session: Some("$1".into()), window: Some("@3".into()), pane_id: Some(7), ..Default::default() }
+        );
+        for s in ["%12", "%builder", "$1:@3.%7", "work:2.%tester", "s:w.3", ":2"] {
+            assert_eq!(target_string(&Target::parse(s)), s);
+        }
     }
 
     #[test]

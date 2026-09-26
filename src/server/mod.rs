@@ -1,8 +1,11 @@
 //! The keepane server: owns sessions, windows and panes; talks to clients over a
 //! named pipe; renders frames.
 
+pub mod actor;
 pub mod input;
 pub mod layout;
+mod mail;
+pub mod observe;
 pub mod pane;
 pub mod render;
 
@@ -57,7 +60,17 @@ enum Event {
     /// Windows is shutting down or the user is logging off: save every
     /// session now and tell the watcher (which is holding Windows up).
     EndSession(std::sync::mpsc::Sender<()>),
+    /// keepane's prompt came back in a pane a moment ago, and what the
+    /// command printed has been drawn by now (see `PROMPT_SETTLE`).
+    PromptSettled(PaneId),
 }
+
+/// How long after keepane's prompt marker a pane's command is taken as
+/// done. ConPTY passes the marker (an OSC) through at once but draws the
+/// text before it on its next frame, so at the marker the command's last
+/// output may not be on the screen yet (seen: keepane-cmd and 9;9 arriving
+/// ahead of the output the prompt hook wrote after it).
+const PROMPT_SETTLE: Duration = Duration::from_millis(60);
 
 /// Hooks a plugin can attach commands to (`set-hook -g <name> <command>`).
 pub const HOOKS: &[&str] = &[
@@ -397,6 +410,8 @@ struct Window {
     alert_activity: bool,
     alert_bell: bool,
     alert_silence: bool,
+    /// A pane in `normal` work mode got a message (`@` in `#F`).
+    alert_mail: bool,
     /// When this window last printed anything (`monitor-silence`).
     last_output: Instant,
     /// The focus frame moving to where the eye should go (`animation`).
@@ -446,6 +461,9 @@ impl Window {
         }
         if self.alert_silence {
             s.push('~');
+        }
+        if self.alert_mail {
+            s.push('@');
         }
         if self.zoomed {
             s.push('Z');
@@ -683,6 +701,16 @@ pub struct Server {
     events: mpsc::UnboundedSender<Event>,
     /// JSON of every session as last autosaved, to detect structural change.
     last_saved: HashMap<String, String>,
+    /// Pane messages (docs/design/mailbox.md): the id the last one got.
+    next_msg: actor::MsgId,
+    /// What happened to every message, and the event log it is kept in.
+    observe: observe::Store,
+    /// Clients waiting in a `-w` for a message or an inbox.
+    msg_waits: Vec<mail::MsgWait>,
+    /// Messages deleted lately, for `drop-message -u`.
+    msg_dropped: Vec<mail::Dropped>,
+    /// When old event log files were last cleared out (once a day).
+    events_pruned: Option<Instant>,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -804,6 +832,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     srv.force_restore = options.force_restore;
     srv.config_override = options.config;
     srv.load_config();
+    srv.mail_start();
     // A persistent interval: a fresh `sleep` per iteration would never fire
     // while events keep arriving, and autosave / idle-exit hang off the tick.
     let mut tick = tokio::time::interval(Duration::from_millis(1000));
@@ -957,6 +986,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("s", "choose-tree -Zs"),
         ("D", "choose-client"),
         ("B", "choose-jobs"),
+        ("v", "dashboard"),
         ("/", "choose-history"),
         ("u", "undo-kill"),
         (
@@ -1038,6 +1068,11 @@ impl Server {
             waits: HashMap::new(),
             events,
             last_saved: HashMap::new(),
+            next_msg: 0,
+            observe: observe::Store::default(),
+            msg_waits: Vec::new(),
+            msg_dropped: Vec::new(),
+            events_pruned: None,
         }
     }
 
@@ -1162,14 +1197,16 @@ impl Server {
                             argv: p.argv.clone(),
                             cwd: p.current_path(),
                             history: history.get(&id).cloned().unwrap_or_default(),
+                            name: p.actor.name.clone(),
+                            work_mode: (p.actor.mode != actor::WorkMode::Normal)
+                                .then(|| p.actor.mode.as_str().to_string()),
                         })
                     };
                     let order = w.layout.panes();
                     SavedWindow {
                         name: w.name.clone(),
-                        layout: SavedNode::from_layout(&w.layout, &lookup).unwrap_or(SavedNode::Pane {
-                            pane: SavedPane { argv: Vec::new(), cwd: None, history: Vec::new() },
-                        }),
+                        layout: SavedNode::from_layout(&w.layout, &lookup)
+                            .unwrap_or(SavedNode::Pane { pane: SavedPane::default() }),
                         active: order.iter().position(|p| *p == w.active).unwrap_or(0),
                         zoomed: w.zoomed,
                     }
@@ -1357,7 +1394,19 @@ impl Server {
                 text
             });
             // Sizes are refitted by relayout; spawn at the window size.
-            let pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay)?;
+            let mut pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay)?;
+            // Its name and work mode come back; a name another pane has
+            // taken meanwhile does not.
+            pane.actor.mode = saved.work_mode.as_deref().and_then(actor::WorkMode::parse).unwrap_or_default();
+            if let Some(name) = &saved.name {
+                let taken = self.pane_by_name(name).is_some()
+                    || panes.iter().any(|p: &Pane| p.actor.name.as_deref() == Some(name));
+                if taken {
+                    self.note_message(&format!("resume: pane name '{name}' is taken; %{} has none", pane.id));
+                } else {
+                    pane.actor.name = Some(name.clone());
+                }
+            }
             panes.push(pane);
         }
         let mut ids = panes.iter().map(|p| p.id);
@@ -1609,7 +1658,7 @@ impl Server {
                             p.pipe = None;
                         }
                     } else {
-                        p.write_input(&bytes);
+                        p.type_input(&bytes);
                     }
                 }
             }
@@ -1622,6 +1671,7 @@ impl Server {
                     let slow = p.pipe_write(&bytes);
                     p.record_write(&bytes);
                     p.process_output(&bytes);
+                    let prompted = std::mem::take(&mut p.prompted);
                     // A resumed pane: its saved output has all been printed
                     // (the printer's marker arrived); its program starts now,
                     // in the same console, while the printer still holds it.
@@ -1640,6 +1690,20 @@ impl Server {
                     self.note_output(id);
                     if self.opts.log_history {
                         self.log_output(id);
+                    }
+                    if prompted {
+                        self.pane_prompt_seen(id);
+                    }
+                    if prompted
+                        && let Some(p) = self.find_pane_mut(id)
+                        && !p.settle
+                    {
+                        p.settle = true;
+                        let tx = self.events.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(PROMPT_SETTLE).await;
+                            let _ = tx.send(Event::PromptSettled(id));
+                        });
                     }
                 }
             }
@@ -1749,6 +1813,7 @@ impl Server {
                 );
             }
             Event::Gone(id) => {
+                self.mail_client_gone(id);
                 let was_in = self.clients.remove(&id).and_then(|c| c.session);
                 if let Some(sid) = was_in {
                     self.fit_session(sid, None); // smallest/largest: one client fewer
@@ -1806,9 +1871,18 @@ impl Server {
                 crate::histlog::flush(Duration::from_secs(2));
                 let _ = done.send(());
             }
+            Event::PromptSettled(id) => {
+                if let Some(p) = self.find_pane_mut(id)
+                    && std::mem::take(&mut p.settle)
+                {
+                    self.pane_prompted(id);
+                    self.wake_waits();
+                }
+            }
             Event::Tick => {
                 self.autosave_changed();
                 self.history_tick();
+                self.mail_tick();
                 // Kept long enough: gone for good.
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
@@ -2041,6 +2115,7 @@ impl Server {
                     w.alert_activity = false;
                     w.alert_bell = false;
                     w.alert_silence = false;
+                    w.alert_mail = false;
                     continue;
                 }
                 if watch_silence && !w.alert_silence && w.last_output.elapsed() >= quiet {
@@ -2096,12 +2171,55 @@ impl Server {
         self.sessions.iter().find(|s| s.windows.iter().any(|w| w.pane(id).is_some())).map(|s| s.id)
     }
 
+    /// The pane a `rename-pane` name belongs to.
+    fn pane_by_name(&self, name: &str) -> Option<PaneId> {
+        self.sessions
+            .iter()
+            .flat_map(|s| s.windows.iter())
+            .flat_map(|w| w.panes.iter())
+            .find(|p| p.actor.name.as_deref() == Some(name))
+            .map(|p| p.id)
+    }
+
+    /// A pane's full address, `$session:@window.%pane`: ids that stay the
+    /// same while the server runs, whatever else moves or is renamed.
+    fn address(&self, sid: SessionId, widx: usize, pid: PaneId) -> String {
+        let wid = self.session(sid).and_then(|s| s.windows.get(widx)).map_or(0, |w| w.id);
+        format!("${sid}:@{wid}.%{pid}")
+    }
+
+    /// The pane a target names by id or name (`%7`, `%builder`,
+    /// `$1:@3.%7`), and where it is. A session or window given with it is
+    /// where the pane is expected to be: a pane that has moved since is an
+    /// error, never a message to wherever it went.
+    fn named_pane(&self, t: &Target) -> Result<Option<(SessionId, usize, PaneId)>, String> {
+        let id = match (t.pane_id, &t.pane_name) {
+            (Some(id), _) => id,
+            (None, Some(name)) => self.pane_by_name(name).ok_or_else(|| format!("can't find pane: %{name}"))?,
+            (None, None) => return Ok(None),
+        };
+        let (sid, widx) = self
+            .sessions
+            .iter()
+            .find_map(|s| s.windows.iter().position(|w| w.pane(id).is_some()).map(|widx| (s.id, widx)))
+            .ok_or_else(|| format!("can't find pane: %{id}"))?;
+        if t.session.is_some() || t.window.is_some() {
+            let place = Target { session: t.session.clone(), window: t.window.clone(), ..Default::default() };
+            let s = if t.session.is_some() { self.resolve_session(Some(&place), None)? } else { sid };
+            let w = if t.window.is_some() { self.resolve_window(s, Some(&place))? } else { widx };
+            if (s, w) != (sid, widx) {
+                return Err(format!("pane %{id} has moved: it is at {}", self.address(sid, widx, id)));
+            }
+        }
+        Ok(Some((sid, widx, id)))
+    }
+
     /// Session for a command: explicit target, else the client's attached
     /// session, else the session of the pane the client runs in, else the
     /// most recently used.
     fn resolve_session(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<SessionId, String> {
-        if let Some(id) = target.and_then(|t| t.pane_id) {
-            return self.session_of_pane(id).ok_or_else(|| format!("can't find pane: %{id}"));
+        if let Some(t) = target.filter(|t| t.names_pane()) {
+            return Ok(self.named_pane(t)?.expect("names a pane").0);
         }
         if let Some(t) = target
             && let Some(name) = &t.session
@@ -2133,12 +2251,9 @@ impl Server {
 
     fn resolve_window(&self, sid: SessionId, target: Option<&Target>) -> Result<usize, String> {
         let s = self.session(sid).ok_or("no such session")?;
-        if let Some(id) = target.and_then(|t| t.pane_id) {
-            return s
-                .windows
-                .iter()
-                .position(|w| w.pane(id).is_some())
-                .ok_or_else(|| format!("can't find pane: %{id}"));
+        if let Some(t) = target.filter(|t| t.names_pane()) {
+            let (psid, widx, id) = self.named_pane(t)?.expect("names a pane");
+            return if psid == sid { Ok(widx) } else { Err(format!("can't find pane: %{id}")) };
         }
         let Some(w) = target.and_then(|t| t.window.as_ref()) else { return Ok(s.cur) };
         if let Ok(n) = w.parse::<usize>() {
@@ -2168,7 +2283,8 @@ impl Server {
     fn resolve_pane(&self, sid: SessionId, widx: usize, target: Option<&Target>) -> Result<PaneId, String> {
         let s = self.session(sid).ok_or("no such session")?;
         let w = s.windows.get(widx).ok_or("no such window")?;
-        if let Some(id) = target.and_then(|t| t.pane_id) {
+        if let Some(t) = target.filter(|t| t.names_pane()) {
+            let (_, _, id) = self.named_pane(t)?.expect("names a pane");
             return w.pane(id).map(|p| p.id).ok_or_else(|| format!("can't find pane: %{id}"));
         }
         match target.and_then(|t| t.pane) {
@@ -2184,12 +2300,8 @@ impl Server {
 
     /// (session id, window index, pane id) for a command context.
     fn resolve(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<(SessionId, usize, PaneId), String> {
-        if let Some(id) = target.and_then(|t| t.pane_id) {
-            return self
-                .sessions
-                .iter()
-                .find_map(|s| s.windows.iter().position(|w| w.pane(id).is_some()).map(|widx| (s.id, widx, id)))
-                .ok_or_else(|| format!("can't find pane: %{id}"));
+        if let Some(t) = target.filter(|t| t.names_pane()) {
+            return Ok(self.named_pane(t)?.expect("names a pane"));
         }
         let sid = self.resolve_session(target, cid)?;
         let widx = self.resolve_window(sid, target)?;
@@ -2484,10 +2596,15 @@ impl Server {
     /// session but keep it, panes running, for `undo-kill`. A session's
     /// only window is not kept. False when nothing was kept.
     fn keep_killed_window(&mut self, sid: SessionId, widx: usize) -> bool {
-        let Some(s) = self.session_mut(sid) else { return false };
+        let Some(s) = self.session(sid) else { return false };
         if s.windows.len() < 2 || widx >= s.windows.len() {
             return false;
         }
+        let panes: Vec<PaneId> = s.windows[widx].panes.iter().map(|p| p.id).collect();
+        for p in panes {
+            self.pane_closing(p);
+        }
+        let s = self.session_mut(sid).expect("checked above");
         let w = s.windows.remove(widx);
         // The current window moves as it does when a window's last pane exits.
         if s.last == Some(w.id) {
@@ -2522,9 +2639,25 @@ impl Server {
 
     /// `undo-kill`: put back the pane or window killed last, where it was.
     fn undo_kill(&mut self) -> Outcome {
-        let Some(k) = self.killed.pop() else {
+        let Some(mut k) = self.killed.pop() else {
             return Outcome::Error("nothing to undo: no pane or window killed lately".into());
         };
+        // A name another pane took while this one was away stays with that
+        // one: names are unique, or `%name` would find either.
+        let back: Vec<&mut Pane> = match &mut k {
+            Killed::Pane { pane, .. } => vec![&mut **pane],
+            Killed::Window { window, .. } => window.panes.iter_mut().collect(),
+        };
+        for p in back {
+            if let Some(name) = p.actor.name.clone()
+                && self.pane_by_name(&name).is_some()
+            {
+                p.actor.name = None;
+                let note =
+                    format!("undo-kill: pane name '{name}' was taken meanwhile; %{} comes back without it", p.id);
+                self.note_message(&note);
+            }
+        }
         match k {
             Killed::Window { window, session, index, .. } => {
                 let Some(s) = self.session_mut(session) else {
@@ -2576,6 +2709,7 @@ impl Server {
     /// for `undo-kill`.
     fn remove_pane(&mut self, id: PaneId, exit_code: Option<u32>) -> Option<Pane> {
         let sid = self.session_of_pane(id)?;
+        self.pane_closing(id);
         let mut session_dead = false;
         let removed;
         {
@@ -2622,11 +2756,17 @@ impl Server {
             self.relayout_session(sid);
         }
         self.fire_hook("pane-exited", None);
+        // A read-message -w on this pane has nothing left to wait for.
+        self.wake_waits();
         removed
     }
 
     fn kill_session(&mut self, sid: SessionId, reason: &str) {
         let Some(pos) = self.sessions.iter().position(|s| s.id == sid) else { return };
+        let panes: Vec<PaneId> = self.sessions[pos].windows.iter().flat_map(|w| w.panes.iter().map(|p| p.id)).collect();
+        for p in panes {
+            self.pane_closing(p);
+        }
         let mut s = self.sessions.remove(pos);
         for w in &mut s.windows {
             for p in &mut w.panes {
@@ -2675,6 +2815,7 @@ impl Server {
             alert_activity: false,
             alert_bell: false,
             alert_silence: false,
+            alert_mail: false,
             last_output: Instant::now(),
             anim: None,
         };
@@ -2759,6 +2900,22 @@ impl Server {
     fn exec(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         match cmd {
             Cmd::Version => Outcome::Text(format!("keepane {}", env!("CARGO_PKG_VERSION"))),
+            c @ (Cmd::SendMessage { .. }
+            | Cmd::ReadMessage { .. }
+            | Cmd::ListMessages { .. }
+            | Cmd::TraceMessage { .. }
+            | Cmd::DropMessage { .. }
+            | Cmd::MoveMessage { .. }
+            | Cmd::PaneReady { .. }
+            | Cmd::PaneStatus { .. }
+            | Cmd::SetWorkMode { .. }
+            | Cmd::RenamePane { .. }
+            | Cmd::Whoami
+            | Cmd::ListTasks { .. }
+            | Cmd::ShowTask { .. }
+            | Cmd::ListEvents { .. }
+            | Cmd::CreatePane(_)
+            | Cmd::ClosePane { .. }) => self.exec_mail(c, cid),
             Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);
@@ -3920,6 +4077,7 @@ impl Server {
                     alert_activity: false,
                     alert_bell: false,
                     alert_silence: false,
+                    alert_mail: false,
                     last_output: Instant::now(),
                     anim: None,
                 });
@@ -4054,10 +4212,10 @@ impl Server {
                         .find(|w| w.pane(pid).is_some())
                         .unwrap();
                     for p in &mut w.panes {
-                        p.write_input(&bytes);
+                        p.type_input(&bytes);
                     }
                 } else if let Some(p) = self.find_pane_mut(pid) {
-                    p.write_input(&bytes);
+                    p.type_input(&bytes);
                 }
                 Outcome::Ok
             }
@@ -4118,7 +4276,7 @@ impl Server {
                     Err(e) => return Outcome::Error(e),
                 };
                 if let Some(p) = self.find_pane_mut(pid) {
-                    p.write_input(&bytes);
+                    p.type_input(&bytes);
                 }
                 Outcome::Ok
             }
@@ -4285,7 +4443,7 @@ impl Server {
                 }
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
                 let b = bracketed && p.screen().bracketed_paste();
-                p.write_input(&input::encode_paste(&text, b));
+                p.type_input(&input::encode_paste(&text, b));
                 Outcome::Ok
             }
             Cmd::SetBuffer { name, data, append } => {
@@ -4459,6 +4617,9 @@ impl Server {
             Cmd::SetOption { name, value, .. } => {
                 let r = self.opts.set(&name, &value);
                 if r.is_ok() {
+                    // The event log follows its options at once, not at the
+                    // next tick: `event-log off` means nothing more is written.
+                    self.sync_event_log();
                     // Status line toggles change the window area.
                     let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
                     for sid in ids {
@@ -4580,6 +4741,31 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::UndoKill => self.undo_kill(),
+            Cmd::Dashboard => {
+                let Some(cid) = cid else { return Outcome::Error("dashboard: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("dashboard: client not attached (run `keepane dashboard` instead)".into());
+                }
+                let Some(exe) = pane::helper_exe() else {
+                    return Outcome::Error("dashboard: no keepane.exe to run it with".into());
+                };
+                let cmd = Cmd::DisplayPopup {
+                    close: false,
+                    close_on_exit: true,
+                    width: Some("90%".into()),
+                    height: Some("90%".into()),
+                    x: None,
+                    y: None,
+                    cwd: None,
+                    argv: vec![
+                        exe.to_string_lossy().into_owned(),
+                        "-L".into(),
+                        self.socket.clone(),
+                        "dashboard".into(),
+                    ],
+                };
+                self.exec(cmd, Some(cid))
+            }
             Cmd::ChooseHistory => {
                 let Some(cid) = cid else { return Outcome::Error("choose-history: no client".into()) };
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
@@ -5103,6 +5289,13 @@ impl Server {
             ctx.pane_activity = unix(p.last_output);
             ctx.pane_output_count = p.output_count;
             ctx.pane_dead_time = p.died_at.map(unix).unwrap_or(0);
+            ctx.pane_name = p.actor.name.clone().unwrap_or_default();
+            ctx.pane_address = format!("${}:@{}.%{pid}", sess.id, w.id);
+            ctx.pane_work_mode = p.actor.mode.as_str().to_string();
+            ctx.pane_idle = p.actor.idle();
+            ctx.pane_inbox = p.actor.inbox.len();
+            ctx.pane_status = p.actor.status.as_ref().map(|(s, _)| s.clone()).unwrap_or_default();
+            ctx.pane_message = p.actor.current.as_ref().map(|m| m.id.to_string()).unwrap_or_default();
             ctx.pane_last = w.last_pane == Some(pid);
             ctx.pane_mode = if p.copy.is_some() { "copy-mode".into() } else { String::new() };
             let (cy, cx) = p.parser.screen().cursor_position();
@@ -5354,10 +5547,10 @@ impl Server {
         let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) else { return };
         if w.synchronized {
             for p in &mut w.panes {
-                p.write_input(bytes);
+                p.type_input(bytes);
             }
         } else if let Some(p) = w.active_pane_mut() {
-            p.write_input(bytes);
+            p.type_input(bytes);
         }
     }
 
@@ -6092,7 +6285,7 @@ impl Server {
             session: Some(s.name.clone()),
             window: Some((widx + self.opts.base_index).to_string()),
             pane: Some(pidx + self.opts.pane_base_index),
-            pane_id: None,
+            ..Default::default()
         })
     }
 

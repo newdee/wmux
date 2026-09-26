@@ -45,6 +45,14 @@ On a phone:  web [--port N] [--bind IP] [--read-only] [--keep-key]   (prints a Q
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
   list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
   undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
+Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
+  rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami
+  set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets at its prompt; ai: its agent says pane-ready)
+  send-message [-t pane] [-r] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
+  trace-message id [-w secs]   drop-message id | -u   move-message id up|down|top   pane-status [text]
+  list-tasks [-t session]   show-task id   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
+  create-pane / close-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
+  dashboard (prefix v: every pane at a glance; E manages queued messages)   setup claude [--install]
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
@@ -171,6 +179,10 @@ fn main() {
         "startup" => Some(keepane::startup::run(&socket, &args[1..])),
         "windows-terminal" | "wt" => Some(keepane::wt::run(&socket, &args[1..])),
         "completion" => Some(keepane::completion::run(&args[1..])),
+        "setup" => Some(keepane::setup::run(&args[1..])),
+        // The hook every Claude Code session runs: outside a pane there is
+        // nothing to tell and no server to ask (or to start).
+        "pane-ready" if args.iter().any(|a| a == "-q") && std::env::var_os("KEEPANE_PANE").is_none() => Some(Ok(0)),
         "version" | "restart-server" | "show-keys" if args.len() > 1 => {
             Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
         }
@@ -191,6 +203,12 @@ fn main() {
         // The panes on a phone: a client of the server that also answers
         // HTTP on the local network, until Ctrl+C.
         "web" => Some(rt.block_on(keepane::web::run(&socket, &args[1..]))),
+        // MCP for an agent in a pane: stdin/stdout, until the agent closes it.
+        "mcp" if args.len() > 1 => Some(Err(anyhow::anyhow!("mcp: takes no arguments"))),
+        "mcp" => Some(rt.block_on(keepane::mcp::run(&socket))),
+        // Every pane at a glance, in this terminal (prefix v opens it in a popup).
+        "dashboard" | "dash" if args.len() > 1 => Some(Err(anyhow::anyhow!("dashboard: takes no arguments"))),
+        "dashboard" | "dash" => Some(keepane::dashboard::run(&socket, &rt)),
         _ => None,
     };
     if let Some(result) = local {

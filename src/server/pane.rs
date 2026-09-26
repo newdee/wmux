@@ -39,6 +39,9 @@ pub struct Callbacks {
     pub replayed: bool,
     /// What the shell said about its prompts and commands, in order.
     pub marks: Vec<MarkEvent>,
+    /// keepane's own prompt hook said the shell is at its prompt (`OSC
+    /// 7777;keepane-prompt`): the one signal a `shell` pane trusts.
+    pub prompted: bool,
 }
 
 /// A shell's word about its prompt and its commands: FTCS (OSC 133, and
@@ -235,6 +238,12 @@ impl vt100::Callbacks for Callbacks {
             }
             // OSC 7777 ; keepane-cmd ; start ; end ; ok   (the PowerShell hook,
             // times in Unix milliseconds)
+            // OSC 7777 ; keepane-prompt   (the PowerShell hook, every prompt;
+            // a remote shell's OSC 133 is not keepane's word)
+            [b"7777", b"keepane-prompt"] if shell => {
+                self.prompted = true;
+                None
+            }
             [b"7777", b"keepane-cmd", start, end, ok] if shell => {
                 if let (Some(start), Some(end)) = (local_ms(start), local_ms(end)) {
                     self.marks.push(MarkEvent::Ran { start, end, ok: *ok != b"0" });
@@ -352,6 +361,18 @@ pub struct Pane {
     /// When its program exited, while `remain-on-exit` keeps the pane
     /// (`#{pane_dead_time}`; `jobs` stops the clock there).
     pub died_at: Option<std::time::Instant>,
+    /// Its name, work mode and inbox (docs/design/mailbox.md).
+    pub actor: super::actor::Actor,
+    /// keepane's prompt came through since the server last looked; the
+    /// server takes it and tells the actor.
+    pub prompted: bool,
+    /// Where the message delivered last was typed (`scrolled_total() +
+    /// row`): what the shell printed from there to its next prompt is the
+    /// command's output.
+    pub delivered_line: Option<u64>,
+    /// keepane's prompt came and the server waits a moment before taking
+    /// the command as done (`PROMPT_SETTLE`); nothing is typed in meanwhile.
+    pub settle: bool,
     /// The pty's slave side, kept only while a program is still to be
     /// started in it (a resumed pane printing its saved output first).
     slave: Option<Box<dyn portable_pty::SlavePty + Send>>,
@@ -625,6 +646,10 @@ impl Pane {
             log_hold_since: None,
             log_buf: String::new(),
             died_at: None,
+            actor: Default::default(),
+            prompted: false,
+            delivered_line: None,
+            settle: false,
         })
     }
 
@@ -850,6 +875,7 @@ impl Pane {
             self.bell = true;
         }
         let marks = std::mem::take(&mut cb.marks);
+        self.prompted |= std::mem::take(&mut cb.prompted);
         if !cb.responses.is_empty() {
             let resp = std::mem::take(&mut cb.responses);
             let _ = self.writer.write_all(&resp);
@@ -1110,6 +1136,82 @@ impl Pane {
         out
     }
 
+    /// The text of lines `from..to` (`scrolled_total() + row`), rows the
+    /// terminal wrapped joined back into the line the program printed, at
+    /// most `max` bytes; and whether it was cut there.
+    pub fn text_between(&mut self, from: u64, to: u64, max: usize) -> (String, bool) {
+        let (rows, cols) = (u64::from(self.rows), self.cols);
+        let s = self.parser.screen_mut();
+        let top = s.scrolled_total();
+        let from = from.max(top.saturating_sub(s.scrollback_rows() as u64));
+        let to = to.min(top + rows);
+        let keep = s.scrollback();
+        let mut out = String::new();
+        let mut line = from;
+        // A screenful at a time, as `take_log` reads.
+        while line < to {
+            let (offset, row0) = if line < top { ((top - line) as usize, 0) } else { (0, (line - top) as usize) };
+            s.set_scrollback(offset);
+            let n = (rows - row0 as u64).min(to - line) as usize;
+            let view: Vec<(String, bool)> = s.rows_wrapped(0, cols).skip(row0).take(n).collect();
+            if view.is_empty() {
+                break;
+            }
+            for (text, wrapped) in view {
+                // A row the terminal wrapped goes on in the next one; but
+                // ConPTY pads a line to the width with blanks, which marks it
+                // wrapped too: a row ending in a blank ends its line.
+                if wrapped && !text.ends_with(' ') {
+                    out.push_str(&text);
+                } else {
+                    out.push_str(text.trim_end());
+                    out.push('\n');
+                }
+                line += 1;
+            }
+            if out.len() > max {
+                break;
+            }
+        }
+        s.set_scrollback(keep);
+        let cut = out.len() > max;
+        if cut {
+            let mut end = max;
+            while !out.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.truncate(end);
+        }
+        // ConPTY pads a line with blanks to the width (and so wraps it): the
+        // blanks at the end of each line are not the program's.
+        let out: Vec<&str> = out.lines().map(str::trim_end).collect();
+        (out.join("\n").trim_end_matches('\n').to_string(), cut)
+    }
+
+    /// Where the cursor is, as a line that keeps its number when it
+    /// scrolls (`scrolled_total() + row`).
+    pub fn cursor_line(&self) -> u64 {
+        let s = self.parser.screen();
+        s.scrolled_total() + u64::from(s.cursor_position().0)
+    }
+
+    /// Input from a person or a command acting for one (keys, a paste,
+    /// `send-keys`): it also makes the pane busy for its messages.
+    pub fn type_input(&mut self, bytes: &[u8]) {
+        self.actor.input();
+        self.write_input(bytes);
+    }
+
+    /// Type a message into the pane and press Enter: as a paste when the
+    /// program asked for bracketed paste, so a text of several lines
+    /// arrives as one. (A shell's command of several lines comes here as
+    /// one line already: `Message::wrapped`.)
+    pub fn deliver(&mut self, text: &str) {
+        self.delivered_line = Some(self.cursor_line());
+        let mut bytes = super::input::encode_paste(text, self.screen().bracketed_paste());
+        bytes.push(b'\r');
+        self.write_input(&bytes);
+    }
     pub fn write_input(&mut self, bytes: &[u8]) {
         if self.exit_code.is_some() {
             return;
@@ -1577,6 +1679,18 @@ mod tests {
         let (tx, _rx) = channel();
         let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
         Pane::spawn(12, &argv, None, cols, rows, history, &[], tx).unwrap()
+    }
+
+    #[test]
+    fn a_line_padded_to_the_width_ends_where_a_wrapped_one_goes_on() {
+        let mut p = quiet_pane(10, 5, 100);
+        // ConPTY's way: a short line padded with blanks to the width (the
+        // row counts as wrapped), then a line that really wraps.
+        p.process_output(b"PS> cmd   22\r\nabcdefghijklmn\r\nend");
+        assert_eq!(p.text_between(0, 4, 1000), ("PS> cmd\n22\nabcdefghijklmn".to_string(), false));
+        // Cut at the size asked for, on a character boundary.
+        let (text, cut) = p.text_between(0, 4, 5);
+        assert!(cut && text.len() <= 5, "{text:?}");
     }
 
     const B: &str = "\x1b]133;B\x1b\\";

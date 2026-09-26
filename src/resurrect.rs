@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub const FORMAT_VERSION: u32 = 1;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct SavedPane {
     pub argv: Vec<String>,
     pub cwd: Option<String>,
@@ -22,6 +22,12 @@ pub struct SavedPane {
     /// Files written before this existed simply have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<String>,
+    /// Its `rename-pane` name and work mode (docs/design/mailbox.md), so
+    /// `%name` still finds it after a resume. Its inbox is not kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_mode: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -186,7 +192,7 @@ mod tests {
     use super::*;
 
     fn sample() -> SavedFile {
-        let pane = |c: &str| SavedPane { argv: vec![c.into()], cwd: Some("C:\\src".into()), history: Vec::new() };
+        let pane = |c: &str| SavedPane { argv: vec![c.into()], cwd: Some("C:\\src".into()), ..Default::default() };
         SavedFile::new(SavedSession {
             name: "main".into(),
             current: 1,
@@ -276,7 +282,7 @@ mod tests {
         let n = SavedNode::Split {
             horizontal: true,
             sizes: vec![1],
-            children: vec![SavedNode::Pane { pane: SavedPane { argv: vec![], cwd: None, history: Vec::new() } }; 3],
+            children: vec![SavedNode::Pane { pane: SavedPane::default() }; 3],
         };
         match n.to_layout(&mut (1..)).unwrap() {
             Node::Split { sizes, .. } => assert_eq!(sizes, vec![1, 1, 1]),

@@ -40,6 +40,24 @@ pub fn default_dir() -> PathBuf {
     crate::logger::log_dir().join("history")
 }
 
+/// Where the event log goes (docs/design/mailbox.md §10): `KEEPANE_EVENTS_DIR`,
+/// else beside moved saved sessions or history (the tests move those, and
+/// so stay out of the real directory), else `%LOCALAPPDATA%\keepane\events`.
+pub fn events_dir() -> PathBuf {
+    if let Some(d) = crate::legacy::var_os("KEEPANE_EVENTS_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d);
+    }
+    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d).join("events");
+    }
+    if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
+        let mut d = d;
+        d.push("-events");
+        return PathBuf::from(d);
+    }
+    crate::logger::log_dir().join("events")
+}
+
 /// A name made safe to be a directory: characters Windows refuses become
 /// `_`, as do trailing dots and spaces; nothing at all becomes `_`.
 pub fn safe_name(name: &str) -> String {
@@ -57,8 +75,11 @@ pub fn file_for(dir: &Path, session: &str, window: usize, pane: usize, day: chro
 }
 
 enum Msg {
-    Append(PathBuf, String),
-    Prune(PathBuf, u32),
+    /// Text for a file, and the most that file may hold.
+    Append(PathBuf, String, u64),
+    /// A directory, how many days to keep, and whether its day files are
+    /// right in it (the event log) rather than two levels down (history).
+    Prune(PathBuf, u32, bool),
     Flush(Sender<()>),
     /// A writer dying of a bug, for the test of its replacement.
     #[cfg(test)]
@@ -89,8 +110,13 @@ fn send(m: Msg) {
 
 /// Add `text` to the end of `path`, from the writer thread.
 pub fn append(path: PathBuf, text: String) {
+    append_capped(path, text, DAY_CAP);
+}
+
+/// `append`, with the most bytes the file may hold.
+pub fn append_capped(path: PathBuf, text: String, cap: u64) {
     if !text.is_empty() {
-        send(Msg::Append(path, text));
+        send(Msg::Append(path, text, cap));
     }
 }
 
@@ -98,7 +124,14 @@ pub fn append(path: PathBuf, text: String) {
 /// and the directories that leaves empty.
 pub fn prune(dir: PathBuf, days: u32) {
     if days > 0 {
-        send(Msg::Prune(dir, days));
+        send(Msg::Prune(dir, days, false));
+    }
+}
+
+/// `prune` for a directory whose day files are right in it.
+pub fn prune_flat(dir: PathBuf, days: u32) {
+    if days > 0 {
+        send(Msg::Prune(dir, days, true));
     }
 }
 
@@ -146,7 +179,7 @@ fn run(rx: Receiver<Msg>) {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         match m {
-            Msg::Append(path, text) => {
+            Msg::Append(path, text, cap) => {
                 // A few dozen panes at most write at once; a day's worth of
                 // stale handles is not kept.
                 if open.len() > 64 && !open.contains_key(&path) {
@@ -173,16 +206,20 @@ fn run(rx: Receiver<Msg>) {
                     }
                 }
                 let o = open.get_mut(&path).unwrap();
-                if o.size >= DAY_CAP {
+                if o.size >= cap {
                     continue;
                 }
                 // What would pass the cap is replaced by a note saying so,
-                // after which the file counts as full.
-                let (bytes, size) = if o.size + text.len() as u64 > DAY_CAP {
-                    (
-                        format!("[keepane: this file reached {} MB; the rest of the day is not kept]\n", DAY_CAP >> 20),
-                        DAY_CAP,
-                    )
+                // after which the file counts as full. A JSON Lines file
+                // gets it as a line of JSON.
+                let (bytes, size) = if o.size + text.len() as u64 > cap {
+                    let note = format!("this file reached {} MB; the rest of the day is not kept", cap >> 20);
+                    let line = if path.extension().is_some_and(|e| e == "jsonl") {
+                        format!("{{\"note\":{}}}\n", serde_json::to_string(&note).expect("a string serializes"))
+                    } else {
+                        format!("[keepane: {note}]\n")
+                    };
+                    (line, cap)
                 } else {
                     let n = o.size + text.len() as u64;
                     (text, n)
@@ -195,7 +232,7 @@ fn run(rx: Receiver<Msg>) {
                     }
                 }
             }
-            Msg::Prune(dir, days) => {
+            Msg::Prune(dir, days, flat) => {
                 // Handles into files about to go would keep them.
                 flush_all(&mut open);
                 open.clear();
@@ -203,7 +240,7 @@ fn run(rx: Receiver<Msg>) {
                 if let Some(before) =
                     chrono::Local::now().date_naive().checked_sub_days(chrono::Days::new(u64::from(days)))
                 {
-                    prune_dir(&dir, before);
+                    if flat { prune_days(&dir, before) } else { prune_dir(&dir, before) }
                 }
             }
             Msg::Flush(done) => {
@@ -222,14 +259,19 @@ fn run(rx: Receiver<Msg>) {
 fn prune_dir(dir: &Path, before: chrono::NaiveDate) {
     for session in read_dirs(dir) {
         for key in read_dirs(&session) {
-            for f in std::fs::read_dir(&key).into_iter().flatten().flatten() {
-                if day_of(&f.path()).is_some_and(|d| d < before) {
-                    let _ = std::fs::remove_file(f.path());
-                }
-            }
+            prune_days(&key, before);
             let _ = std::fs::remove_dir(&key); // only if empty
         }
         let _ = std::fs::remove_dir(&session);
+    }
+}
+
+/// Remove the day files right in `dir` dated before `before`.
+fn prune_days(dir: &Path, before: chrono::NaiveDate) {
+    for f in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if day_of(&f.path()).is_some_and(|d| d < before) {
+            let _ = std::fs::remove_file(f.path());
+        }
     }
 }
 
@@ -245,9 +287,10 @@ fn read_dirs(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// The day a `YYYY-MM-DD.log` file is for.
+/// The day a `YYYY-MM-DD.log` (history) or `YYYY-MM-DD.jsonl` (event log)
+/// file is for.
 pub fn day_of(path: &Path) -> Option<chrono::NaiveDate> {
-    if path.extension()? != "log" {
+    if !matches!(path.extension()?.to_str()?, "log" | "jsonl") {
         return None;
     }
     chrono::NaiveDate::parse_from_str(path.file_stem()?.to_str()?, "%Y-%m-%d").ok()

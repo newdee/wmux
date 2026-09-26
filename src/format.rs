@@ -61,6 +61,17 @@ pub struct Context {
     pub pane_output_count: u64,
     /// Unix time the program exited, 0 while it runs.
     pub pane_dead_time: i64,
+    /// Pane messages (docs/design/mailbox.md): the pane's name, its full
+    /// address (`$1:@3.%7`), its work mode, whether it is free for its next
+    /// message, how many wait in its inbox, and what it last said it is doing.
+    pub pane_name: String,
+    pub pane_address: String,
+    pub pane_work_mode: String,
+    pub pane_idle: bool,
+    pub pane_inbox: usize,
+    pub pane_status: String,
+    /// The id of the message the pane is working on, empty when none.
+    pub pane_message: String,
     /// Unix times: the session's last output and last attach.
     pub session_activity: i64,
     pub session_last_attached: i64,
@@ -218,6 +229,13 @@ impl Context {
             "pane_id" | "D" => format!("%{}", self.pane_id),
             "pane_title" | "T" => self.pane_title.clone(),
             "pane_current_command" => self.pane_command.clone(),
+            "pane_name" => self.pane_name.clone(),
+            "pane_address" => self.pane_address.clone(),
+            "pane_work_mode" => self.pane_work_mode.clone(),
+            "pane_idle" => flag(self.pane_idle),
+            "pane_inbox" => self.pane_inbox.to_string(),
+            "pane_status" => self.pane_status.clone(),
+            "pane_message" => self.pane_message.clone(),
             "pane_start_command" => self.pane_start_command.clone(),
             "pane_current_path" => self.pane_path.clone(),
             "pane_width" => self.pane_width.to_string(),
