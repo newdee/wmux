@@ -1,6 +1,6 @@
 [package]
 name = "keepane"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Panes that keep running and hand each other work: a terminal multiplexer where every pane is an actor with an inbox, with tmux keys and an MCP server for agents."
