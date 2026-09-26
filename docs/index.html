@@ -39,7 +39,7 @@
 
     <main id="top">
       <section class="hero">
-        <span class="eyebrow" data-i18n="hero.eyebrow">Open source · Native Windows</span>
+        <span class="eyebrow" data-i18n="hero.eyebrow">Open source</span>
         <h1 data-i18n="hero.title">Panes that keep running, and talk to each other.</h1>
         <p class="lede" data-i18n="hero.lede">
           keepane is a terminal multiplexer. The programs in its panes keep running after the terminal
@@ -64,7 +64,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>294</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>297</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -73,75 +73,33 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">01</span>
-          <h2 data-i18n="c1.title">Panes, the way you already know</h2>
-          <p data-i18n="c1.sub">
-            <kbd>C-b %</kbd> splits left and right, <kbd>C-b "</kbd> top and bottom. Move with the vim keys or
-            the arrows, and keep pressing: movement and resizing repeat without the prefix.
+          <h2 data-i18n="cm.title">Send work between panes</h2>
+          <p data-i18n="cm.sub">
+            Give a pane a name and a work mode, and send it messages: a shell runs them at its prompt, an agent gets them
+            when it is free. <kbd>C-b v</kbd> shows every pane and its inbox.
           </p>
         </header>
+        <figure class="stage">
+          <img src="img/keepane-messages.gif" width="880" loading="lazy" alt="A command sent to the pane named builder runs there with its envelope as a comment; its record says done and keeps the output; the dashboard shows every pane and an agent's inbox, and a message is moved to the top in manage mode" />
+          <figcaption data-i18n="cm.caption">
+            A command sent to the pane named builder runs there, its source in a comment; its record says done and keeps
+            what it printed. Then the dashboard: every pane, an agent's inbox, a message put first in manage mode.
+          </figcaption>
+        </figure>
         <div class="pair">
-          <figure class="shot"><img src="img/panes.png" alt="Three panes: a shell on the left, keepane list-panes top right, a build loop bottom right" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/sync.png" alt="The same three panes after one echo typed with synchronize-panes on: the line ran in every pane, S on the status line" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/messages.png" alt="Left, the command running with its envelope as a comment; right, trace-message showing it delivered, done and its output" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/dashboard.png" alt="The dashboard in manage mode: three panes with their modes and states, an agent's two queued messages" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside keepane.</li>
-          <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the Windows clipboard.</li>
-          <li data-i18n="c1.p3"><kbd>C-b S</kbd> or <code>:set sync</code> (Tab completes the name) sends every key to every pane in the window. <code>split-window -N 3</code> adds three panes at once and tiles them.</li>
+          <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
+          <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup claude</code> prints the two hooks and the registration.</li>
+          <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
         </ul>
       </section>
 
-      <section class="chapter phone">
+      <section class="chapter">
         <header class="chapter-head">
           <span class="num">02</span>
-          <h2 data-i18n="cw.title">Your panes, on your phone</h2>
-          <p data-i18n="cw.sub">
-            Start <code>keepane web</code> before you walk away from a long build. It prints a QR code; scan it on
-            the same Wi-Fi and the phone's browser lists every pane, shows any of them as it appears on screen,
-            and lets you type into it. Nothing to install on the phone.
-          </p>
-        </header>
-        <figure class="shot phone-shot">
-          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
-        </figure>
-        <ul class="points">
-          <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
-          <li data-i18n="cw.p2">A row under the screen has the keys a phone keyboard lacks: Esc, Tab, Shift+Tab, the arrows, Ctrl+C, y, n, 1, 2 and 3. Longer input goes in the text box. The <kbd>+</kbd> menu splits the pane, opens a window or closes the pane.</li>
-          <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
-          <li data-i18n="cw.p4">It works only while <code>keepane web</code> is running, and the QR code carries a new 128-bit key each time. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
-        </ul>
-      </section>
-
-      <section class="chapter">
-        <header class="chapter-head">
-          <span class="num">03</span>
-          <h2 data-i18n="c2.title">Full screen, a list, or a menu</h2>
-          <p data-i18n="c2.sub">
-            <kbd>C-b z</kbd> blows the current pane up to the whole window and back. <kbd>C-b w</kbd> opens the
-            tree of sessions and windows: <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>g</kbd> <kbd>G</kbd> for top
-            and bottom, digits to jump, <kbd>Enter</kbd> to go. <kbd>C-b &gt;</kbd> puts the pane commands in a
-            menu, so nothing has to be remembered.
-          </p>
-        </header>
-        <div class="pair">
-          <figure class="shot"><img src="img/zoom.png" alt="A zoomed pane filling the window, Z on the status line" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/picker.png" alt="The choose-tree picker listing a session and its windows" loading="lazy" /></figure>
-        </div>
-        <div class="pair">
-          <figure class="shot"><img src="img/menu.png" alt="The pane menu: split, swap, break out, zoom, respawn, kill, each with a letter" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
-        </div>
-        <ul class="points">
-          <li data-i18n="c2.p1"><kbd>C-b Space</kbd> cycles through five layouts: even columns, even rows, a main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to the current one.</li>
-          <li data-i18n="c2.p2"><kbd>C-b q</kbd> draws a number on every pane; press the number to jump there.</li>
-          <li data-i18n="c2.p5">Zooming grows the pane itself, each of its corners heading for the window's, and unzooming shrinks it back; when the focus moves to another pane or window, a frame flies there. Programs are resized once, so nothing waits for it; <code>set -g animation off</code> turns it off. A zoomed window stays zoomed as you move between its panes, until <kbd>C-b z</kbd>.</li>
-          <li data-i18n="c2.p3">In copy mode, <kbd>/</kbd> searches forward and <kbd>?</kbd> backward, <kbd>n</kbd> and <kbd>N</kbd> repeat the search, and the match is scrolled to the middle of the screen.</li>
-          <li data-i18n="c2.p4"><code>display-popup</code> runs a program in a box over the window and closes the box when the program exits. It is handy for a quick <code>git log</code> without touching the layout.</li>
-        </ul>
-      </section>
-
-      <section class="chapter">
-        <header class="chapter-head">
-          <span class="num">04</span>
           <h2 data-i18n="c3.title">Close the terminal, the programs keep running</h2>
           <p data-i18n="c3.sub">
             <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>keepane attach</code>
@@ -161,31 +119,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">05</span>
-          <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
-          <p data-i18n="c35.sub">
-            <code>monitor-activity</code> marks a window you are not looking at with <b>#</b> when it prints,
-            <b>!</b> on a bell, and <b>~</b> when it has been silent too long. <kbd>C-b M-n</kbd> jumps to the
-            next marked window.
-          </p>
-        </header>
-        <figure class="stage">
-          <img src="img/keepane-alerts.gif" width="880" loading="lazy" alt="A background job finishes in another window, the status line marks it, C-b M-n jumps there, a failing command leaves its pane in place, and a popup shows the window list" />
-          <figcaption data-i18n="c35.caption">
-            A deploy finishes in window 1 while window 0 carries on; the flag appears in the status line and in
-            <code>list-windows</code>; a command that fails leaves its pane and its exit code behind.
-          </figcaption>
-        </figure>
-        <ul class="points">
-          <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
-          <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
-          <li data-i18n="c35.p3">Scripts can wait on each other: <code>keepane wait-for ready</code> blocks until another client runs <code>keepane wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
-        </ul>
-      </section>
-
-      <section class="chapter">
-        <header class="chapter-head">
-          <span class="num">06</span>
+          <span class="num">03</span>
           <h2 data-i18n="ch.title">What ran, when, and how long</h2>
           <p data-i18n="ch.sub">
             <kbd>C-b C-t</kbd> writes each command's start time, duration and result at the end of its line.
@@ -212,28 +146,94 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">07</span>
-          <h2 data-i18n="cm.title">Send work between panes</h2>
-          <p data-i18n="cm.sub">
-            Give a pane a name and a work mode, and send it messages: a shell runs them at its prompt, an agent gets them
-            when it is free. <kbd>C-b v</kbd> shows every pane and its inbox.
+          <span class="num">04</span>
+          <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
+          <p data-i18n="c35.sub">
+            <code>monitor-activity</code> marks a window you are not looking at with <b>#</b> when it prints,
+            <b>!</b> on a bell, and <b>~</b> when it has been silent too long. <kbd>C-b M-n</kbd> jumps to the
+            next marked window.
           </p>
         </header>
         <figure class="stage">
-          <img src="img/keepane-messages.gif" width="880" loading="lazy" alt="A command sent to the pane named builder runs there with its envelope as a comment; its record says done and keeps the output; the dashboard shows every pane and an agent's inbox, and a message is moved to the top in manage mode" />
-          <figcaption data-i18n="cm.caption">
-            A command sent to the pane named builder runs there, its source in a comment; its record says done and keeps
-            what it printed. Then the dashboard: every pane, an agent's inbox, a message put first in manage mode.
+          <img src="img/keepane-alerts.gif" width="880" loading="lazy" alt="A background job finishes in another window, the status line marks it, C-b M-n jumps there, a failing command leaves its pane in place, and a popup shows the window list" />
+          <figcaption data-i18n="c35.caption">
+            A deploy finishes in window 1 while window 0 carries on; the flag appears in the status line and in
+            <code>list-windows</code>; a command that fails leaves its pane and its exit code behind.
           </figcaption>
         </figure>
+        <ul class="points">
+          <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
+          <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
+          <li data-i18n="c35.p3">Scripts can wait on each other: <code>keepane wait-for ready</code> blocks until another client runs <code>keepane wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">05</span>
+          <h2 data-i18n="c1.title">Panes, the way you already know</h2>
+          <p data-i18n="c1.sub">
+            <kbd>C-b %</kbd> splits left and right, <kbd>C-b "</kbd> top and bottom. Move with the vim keys or
+            the arrows, and keep pressing: movement and resizing repeat without the prefix.
+          </p>
+        </header>
         <div class="pair">
-          <figure class="shot"><img src="img/messages.png" alt="Left, the command running with its envelope as a comment; right, trace-message showing it delivered, done and its output" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/dashboard.png" alt="The dashboard in manage mode: three panes with their modes and states, an agent's two queued messages" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/panes.png" alt="Three panes: a shell on the left, keepane list-panes top right, a build loop bottom right" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/sync.png" alt="The same three panes after one echo typed with synchronize-panes on: the line ran in every pane, S on the status line" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
-          <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup claude</code> prints the two hooks and the registration.</li>
-          <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
+          <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside keepane.</li>
+          <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the Windows clipboard.</li>
+          <li data-i18n="c1.p3"><kbd>C-b S</kbd> or <code>:set sync</code> (Tab completes the name) sends every key to every pane in the window. <code>split-window -N 3</code> adds three panes at once and tiles them.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">06</span>
+          <h2 data-i18n="c2.title">Full screen, a list, or a menu</h2>
+          <p data-i18n="c2.sub">
+            <kbd>C-b z</kbd> blows the current pane up to the whole window and back. <kbd>C-b w</kbd> opens the
+            tree of sessions and windows: <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>g</kbd> <kbd>G</kbd> for top
+            and bottom, digits to jump, <kbd>Enter</kbd> to go. <kbd>C-b &gt;</kbd> puts the pane commands in a
+            menu, so nothing has to be remembered.
+          </p>
+        </header>
+        <div class="pair">
+          <figure class="shot"><img src="img/zoom.png" alt="A zoomed pane filling the window, Z on the status line" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/picker.png" alt="The choose-tree picker listing a session and its windows" loading="lazy" /></figure>
+        </div>
+        <div class="pair">
+          <figure class="shot"><img src="img/menu.png" alt="The pane menu: split, swap, break out, zoom, respawn, kill, each with a letter" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
+        </div>
+        <ul class="points">
+          <li data-i18n="c2.p1"><kbd>C-b Space</kbd> cycles through five layouts: even columns, even rows, a main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to the current one.</li>
+          <li data-i18n="c2.p2"><kbd>C-b q</kbd> draws a number on every pane; press the number to jump there.</li>
+          <li data-i18n="c2.p5">Zooming grows the pane itself, each of its corners heading for the window's, and unzooming shrinks it back; when the focus moves to another pane or window, a frame flies there. Programs are resized once, so nothing waits for it; <code>set -g animation off</code> turns it off. A zoomed window stays zoomed as you move between its panes, until <kbd>C-b z</kbd>.</li>
+          <li data-i18n="c2.p3">In copy mode, <kbd>/</kbd> searches forward and <kbd>?</kbd> backward, <kbd>n</kbd> and <kbd>N</kbd> repeat the search, and the match is scrolled to the middle of the screen.</li>
+          <li data-i18n="c2.p4"><code>display-popup</code> runs a program in a box over the window and closes the box when the program exits. It is handy for a quick <code>git log</code> without touching the layout.</li>
+        </ul>
+      </section>
+
+      <section class="chapter phone">
+        <header class="chapter-head">
+          <span class="num">07</span>
+          <h2 data-i18n="cw.title">Your panes, on your phone</h2>
+          <p data-i18n="cw.sub">
+            Start <code>keepane web</code> before you walk away from a long build. It prints a QR code; scan it on
+            the same Wi-Fi and the phone's browser lists every pane, shows any of them as it appears on screen,
+            and lets you type into it. Nothing to install on the phone.
+          </p>
+        </header>
+        <figure class="shot phone-shot">
+          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
+        </figure>
+        <ul class="points">
+          <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
+          <li data-i18n="cw.p2">A row under the screen has the keys a phone keyboard lacks: Esc, Tab, Shift+Tab, the arrows, Ctrl+C, y, n, 1, 2 and 3. Longer input goes in the text box. The <kbd>+</kbd> menu splits the pane, opens a window or closes the pane.</li>
+          <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
+          <li data-i18n="cw.p4">It works only while <code>keepane web</code> is running, and the QR code carries a new 128-bit key each time. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
         </ul>
       </section>
 
