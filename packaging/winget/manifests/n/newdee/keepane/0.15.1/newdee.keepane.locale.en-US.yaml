@@ -9,16 +9,16 @@ PackageName: keepane
 PackageUrl: https://github.com/newdee/keepane
 License: MIT
 LicenseUrl: https://github.com/newdee/keepane/blob/master/LICENSE
-ShortDescription: Panes that keep running and hand each other work - a terminal multiplexer where every pane is an actor with an inbox, with tmux keys and an MCP server for agents.
+ShortDescription: A terminal multiplexer whose panes keep running after you detach and can pass messages to each other, with tmux's keys and commands.
 Description: |-
-  keepane (keep pane) is a terminal multiplexer whose panes keep running
-  when the terminal closes and hand each other work. Every pane is an actor
-  with a name, an inbox and a work mode (normal, shell or ai): a script, a
-  person or an AI agent in one pane sends a message to another, and keepane
-  delivers it when that pane is free and records what became of it. Agents
-  use it through a built-in MCP server, and a dashboard shows every pane,
-  its inbox and its tasks. Panes, windows, copy mode, tmux key bindings and
-  tmux.conf syntax, plus sessions that survive a reboot.
+  keepane is a terminal multiplexer whose panes keep running after you
+  detach and can pass messages to each other. A named pane gets messages in
+  an inbox and takes each one when it is ready: a shell runs it at its next
+  prompt, a program reads it when it asks. Every message carries its sender
+  and its task, and an event log and a dashboard show what became of it.
+  Scripts, people and AI agents (through a built-in MCP server) send the
+  same messages. tmux's keys, commands and tmux.conf syntax, and sessions
+  that survive a reboot.
 Moniker: keepane
 Tags:
 - terminal
