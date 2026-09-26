@@ -5,7 +5,7 @@
 
 [English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)**
 
-keepane 是 Windows 上的终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用。
+keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"

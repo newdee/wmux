@@ -5,7 +5,7 @@
 
 [中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)**
 
-keepane is a terminal multiplexer for Windows. The programs in its panes
+keepane is a terminal multiplexer. The programs in its panes
 keep running after the terminal connection closes, and panes can pass
 messages to each other through inboxes. The usual tmux keys, commands and
 config file keep working.
