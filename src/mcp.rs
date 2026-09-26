@@ -322,7 +322,7 @@ async fn call(socket: &str, pane: Option<u32>, name: &str, args: &Value) -> Valu
 
 /// Serve MCP on stdin/stdout until stdin closes.
 pub async fn run(socket: &str) -> Result<i32> {
-    let pane = std::env::var("KEEPANE_PANE").ok().and_then(|p| p.parse().ok());
+    let pane = crate::client::own_pane(socket);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     // stdin is read on a thread of its own; the requests are answered one
     // at a time, in order.

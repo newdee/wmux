@@ -2614,3 +2614,23 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 6 | 可复现性 | 生成器同输入两次，4 个文件哈希相同；update 单测 3/3 | 干净（3/3） |
 
 遗留：真正非管理员会话里的安装与 `keepane update`（用户的 SSH 会话）待下个版本发布后实测。
+
+## 64. 平台拆分（纯重构）；pane 身份只对自己的 server 有效
+
+一、Windows 专属的代码移到 `src/platform/windows/`（docs/design/platform.md）：整块搬的 clipboard、console、notify、proccwd、shutdown、startup、update、winsec、wt；从别处抽出来的 ipc（命名管道的监听与连接，原在 server 与 client）、process（进程树守卫 `Tree`、`shell_command`、`pipe_command`、`spawn_self`，原在 server、pane、client）、shell（默认 shell、PowerShell 钩子、`which`、共享历史文件、每 pane 历史的变量名，原在 config 与 server）、random（原在 web）；sysinfo 拆开（git 分支、字节写法留在原处）。原来的路径以 `pub use` 保留。目录交给 `dirs`，不另设模块。platform 之外对 Windows API 的直接调用：0。
+
+二、实操中发现的旧 bug：客户端不论 `KEEPANE` 指哪个 server 都把 `KEEPANE_PANE` 发出去，别的 server 把那个编号当成自己的 pane（"模式只能在自己 pane 里改"错拦、消息来源记错）。改为只对自己的 socket 发（`own_pane`，`restart-server` 原有同样的判断）；嵌套检查（tmux：在任何 server 的 pane 里都算）对别的 server 的 pane 改由客户端做，自己的仍由 server 做，协议不变。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 基准 | 重构前 303 个测试名单 | — |
+| 1 | 同一套测试 | 303/303 名字相同（31 个只换了模块路径），204/10/84 通过，忽略数同 | 干净 |
+| 2 | 静态一致性 | platform 外仍有 2 处 Windows 调用：web 的随机数、pipe-pane 的 CREATE_NO_WINDOW | **有问题**，移入 random、`pipe_command`（照原样，不并入 shell_command）；设计文档对齐实际模块 |
+| 3 | 同一套测试 | 303/303 同名，204/10/84 | 干净 |
+| 4 | 机制通路（release 实操） | 自动起 server、run-shell（rs-42）、pipe-pane 写文件、分屏与 respawn、web 密钥都通；但从另一 server 的 pane 里 `set-work-mode` 被错拦（旧 bug，HEAD 同） | **有问题**，`own_pane`；单测 + 变异（去掉 socket 判断即失败） |
+| 5 | 实操重跑 | 全部通，消息来源记为 user | 干净 |
+| 6 | 全量 | 控制台嵌套测试失败：收紧后嵌套检查也失效 | **有问题**，嵌套检查对别的 server 的 pane 由客户端做 |
+| 7 | 全量 | MCP 测试失败：它只设 `KEEPANE_PANE`、继承了开发者 shell 的 `KEEPANE`（真实 pane 两个都有） | **有问题**，测试补上 `KEEPANE` |
+| 8 | 同一套测试 | 304 = 303 + 新单测，205/10/84 | 干净（1/3） |
+| 9 | 环境无关 | 清掉 `KEEPANE`/`KEEPANE_PANE` 全量再跑：205/10/84 | 干净（2/3） |
+| 10 | 实操 | 别的 server 的 pane：`new` 客户端拒、`new -d` 可、改模式不受限；同 server 的 pane：`new` 由 server 拒；不存在的 pane 按 pane 外处理（设计如此，HEAD 同） | 干净（3/3） |

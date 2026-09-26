@@ -1,11 +1,9 @@
 //! keepane: a terminal multiplexer whose panes keep running and pass messages to each other.
 
 pub mod client;
-pub mod clipboard;
 pub mod command;
 pub mod completion;
 pub mod config;
-pub mod console;
 pub mod dashboard;
 pub mod format;
 pub mod histlog;
@@ -14,16 +12,13 @@ pub mod keys;
 pub mod legacy;
 pub mod logger;
 pub mod mcp;
-pub mod notify;
 pub mod pager;
-pub mod proccwd;
+pub mod platform;
 pub mod resurrect;
 pub mod server;
 pub mod setup;
-pub mod shutdown;
-pub mod startup;
 pub mod sysinfo;
-pub mod update;
 pub mod web;
-pub mod winsec;
-pub mod wt;
+
+// Where these lived before the platform split, so their paths stay.
+pub use platform::{clipboard, console, notify, proccwd, shutdown, startup, update, winsec, wt};

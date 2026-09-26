@@ -3,25 +3,23 @@
 
 use crate::console::{Console, InputEvent};
 use crate::ipc::{ClientMsg, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame};
+use crate::platform::ipc::{self as pipe_ipc, Stream};
+use crate::platform::process::{leave_job_denied, spawn_self};
 use anyhow::{Context, Result, bail};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::sync::mpsc;
 
-const ERROR_PIPE_BUSY: i32 = 231;
-const ERROR_FILE_NOT_FOUND: i32 = 2;
-
-async fn connect(pipe: &str, autostart: bool, socket: &str) -> Result<NamedPipeClient> {
+async fn connect(pipe: &str, autostart: bool, socket: &str) -> Result<Stream> {
     let mut started = false;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        match ClientOptions::new().open(pipe) {
+        match pipe_ipc::connect(pipe) {
             Ok(c) => return Ok(c),
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+            Err(e) if pipe_ipc::is_busy(&e) => {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Err(e) if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => {
+            Err(e) if pipe_ipc::is_absent(&e) => {
                 if !autostart {
                     bail!("no server running on {pipe}");
                 }
@@ -30,7 +28,7 @@ async fn connect(pipe: &str, autostart: bool, socket: &str) -> Result<NamedPipeC
                     started = true;
                 }
                 if Instant::now() > deadline {
-                    bail!("server did not start (see %LOCALAPPDATA%\\keepane\\server.log)");
+                    bail!("server did not start (see {})", server_log().display());
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -66,67 +64,9 @@ fn start_server(socket: &str) -> Result<()> {
 fn spawn_server(socket: &str) -> Result<()> {
     let args = ["-L", socket, "__server"];
     match spawn_self(&args, true) {
-        Err(e) if e.downcast_ref::<std::io::Error>().and_then(|e| e.raw_os_error()) == Some(5) => {
-            spawn_self(&args, false)
-        }
+        Err(e) if leave_job_denied(&e) => spawn_self(&args, false),
         r => r,
     }
-}
-
-/// Run this program again, detached from the console and inheriting no
-/// handles. `breakaway` also takes it out of the job the caller is in (a
-/// pane's kill-on-close job), which only a job allowing it permits.
-fn spawn_self(args: &[&str], breakaway: bool) -> Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-        DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
-    };
-    let exe = std::env::current_exe().context("current_exe")?;
-    let quote = |s: &str| -> String {
-        if s.is_empty() || s.contains([' ', '\t', '"']) {
-            format!("\"{}\"", s.replace('"', "\\\""))
-        } else {
-            s.to_string()
-        }
-    };
-    let mut cmdline = quote(&exe.to_string_lossy());
-    for a in args {
-        cmdline.push(' ');
-        cmdline.push_str(&quote(a));
-    }
-    let flags = DETACHED_PROCESS
-        | CREATE_NEW_PROCESS_GROUP
-        | CREATE_UNICODE_ENVIRONMENT
-        | if breakaway { CREATE_BREAKAWAY_FROM_JOB } else { 0 };
-    let mut exe_w: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    let mut cmd_w: Vec<u16> = std::ffi::OsStr::new(&cmdline).encode_wide().chain(std::iter::once(0)).collect();
-    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let ok = unsafe {
-        CreateProcessW(
-            exe_w.as_mut_ptr(),
-            cmd_w.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            0, // bInheritHandles = FALSE
-            flags,
-            std::ptr::null(), // inherit our environment block
-            std::ptr::null(),
-            &si,
-            &mut pi,
-        )
-    };
-    if ok == 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| format!("spawn {}", args.join(" ")));
-    }
-    unsafe {
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-    }
-    Ok(())
 }
 
 /// Commands that must not start a server just to answer.
@@ -157,16 +97,31 @@ fn needs_server(argv: &[String]) -> bool {
     )
 }
 
+/// The pane this program runs in, when it runs in one of `socket`'s panes:
+/// `KEEPANE_PANE`, if `KEEPANE` (the socket that pane belongs to, `default`
+/// when empty) is `socket`. A pane of another server is not one of this
+/// server's, whatever its number.
+pub fn own_pane(socket: &str) -> Option<u32> {
+    pane_of(socket, std::env::var("KEEPANE").ok(), std::env::var("KEEPANE_PANE").ok())
+}
+
+/// Whether `argv` makes a session and attaches to it (`new` without `-d`).
+fn attaches_new(argv: &[String]) -> bool {
+    matches!(crate::command::parse(argv), Ok(crate::command::Cmd::NewSession { detached: false, .. }))
+}
+
+fn pane_of(socket: &str, keepane: Option<String>, pane: Option<String>) -> Option<u32> {
+    let home = keepane.filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
+    (home == socket).then_some(()).and(pane).and_then(|p| p.trim().trim_start_matches('%').parse().ok())
+}
+
 /// What a server says when it goes away to come back (`kill-server -r`,
 /// sent by `restart-server`): an attached client waits and attaches again.
 pub const RESTARTING: &str = "server restarting";
 
 /// Whether a server is listening on `pipe` (without starting one).
 pub fn server_running(pipe: &str) -> bool {
-    match ClientOptions::new().open(pipe) {
-        Ok(_) => true,
-        Err(e) => e.raw_os_error() == Some(ERROR_PIPE_BUSY),
-    }
+    pipe_ipc::server_running(pipe)
 }
 
 /// Run one command against the running server, the way a script would:
@@ -272,8 +227,7 @@ pub async fn restart_server(socket: &str) -> Result<i32> {
     // it writes what it did to restart.log, and this terminal attaches to
     // the new server like every other.
     let detached = std::env::var_os("KEEPANE_RESTART_DETACHED").is_some();
-    let in_pane = std::env::var_os("KEEPANE_PANE").is_some()
-        && std::env::var("KEEPANE").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into()) == socket;
+    let in_pane = own_pane(socket).is_some();
     if in_pane && !detached {
         unsafe { std::env::set_var("KEEPANE_RESTART_DETACHED", "1") };
         return match spawn_self(&["-L", socket, "restart-server"], true) {
@@ -362,7 +316,7 @@ pub async fn migrate(socket: &str) -> Result<i32> {
             let deadline = Instant::now() + Duration::from_secs(15);
             while !server_running(&pipe) {
                 if Instant::now() > deadline {
-                    bail!("the keepane server did not start (see %LOCALAPPDATA%\\keepane\\server.log)");
+                    bail!("the keepane server did not start (see {})", server_log().display());
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -456,12 +410,16 @@ async fn restore_beside(
 
 /// Where a restart run outside a pane leaves its result.
 /// (Beside the sessions when `KEEPANE_SESSIONS_DIR` moves them: tests do.)
+/// The server's log, where a server that did not come up says why.
+fn server_log() -> std::path::PathBuf {
+    crate::logger::log_dir().join("server.log")
+}
+
 fn restart_log() -> std::path::PathBuf {
     if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return std::path::PathBuf::from(d).join("restart.log");
     }
-    let base = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("keepane").join("restart.log")
+    crate::logger::log_dir().join("restart.log")
 }
 
 async fn restart_server_here(socket: &str, pipe: &str, old: &str) -> Result<(i32, String)> {
@@ -495,7 +453,7 @@ async fn restart_server_here(socket: &str, pipe: &str, old: &str) -> Result<(i32
     let deadline = Instant::now() + Duration::from_secs(15);
     while !server_running(pipe) {
         if Instant::now() > deadline {
-            bail!("the new server did not start (see %LOCALAPPDATA%\\keepane\\server.log)");
+            bail!("the new server did not start (see {})", server_log().display());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -537,7 +495,15 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
     let mut console = Console::open().ok();
     let (cols, rows) = console.as_ref().map(|c| c.size()).unwrap_or((80, 24));
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    let pane_env = std::env::var("KEEPANE_PANE").ok().and_then(|p| p.parse().ok());
+    let pane_env = own_pane(&socket);
+    // Inside a pane of another server: its number means nothing to this one
+    // and is not sent, but a session made here and attached to at once would
+    // still be nested, which tmux refuses whatever server `TMUX` names. (For
+    // this server's own panes the server says so.)
+    if pane_env.is_none() && std::env::var_os("KEEPANE_PANE").is_some() && console.is_some() && attaches_new(&argv) {
+        eprintln!("sessions should be nested with care, unset KEEPANE to force");
+        return Ok(1);
+    }
     // A terminal about to attach to a server of another version is told
     // so (in its title while attached, and when it detaches): the usual
     // cause is an upgrade with the old server still running.
@@ -692,7 +658,7 @@ fn spawn_input(console: Arc<Console>) -> Result<mpsc::UnboundedReceiver<ClientMs
     Ok(rx)
 }
 
-type Halves = (tokio::io::ReadHalf<NamedPipeClient>, tokio::io::WriteHalf<NamedPipeClient>, String);
+type Halves = (tokio::io::ReadHalf<Stream>, tokio::io::WriteHalf<Stream>, String);
 
 /// The server went away to come back: wait for the new one (up to half a
 /// minute) and attach to the same session again.
@@ -793,6 +759,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_counts_only_for_its_own_server() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(pane_of("default", s("default"), s("4")), Some(4));
+        assert_eq!(pane_of("default", s(""), s("4")), Some(4), "an empty KEEPANE is the default socket");
+        assert_eq!(pane_of("default", None, s("4")), Some(4));
+        assert_eq!(pane_of("work", s("default"), s("4")), None, "a pane of another server");
+        assert_eq!(pane_of("work", s("work"), s("%7")), Some(7));
+        assert_eq!(pane_of("default", s("default"), None), None, "not in a pane");
+        assert_eq!(pane_of("default", s("default"), s("x")), None);
+    }
     use tokio::io::AsyncWriteExt;
 
     /// Frames must survive a `select!` loop that keeps waking up for other

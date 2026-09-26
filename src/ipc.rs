@@ -9,17 +9,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME: u32 = 64 * 1024 * 1024;
 
-/// Name of the per-user named pipe the server listens on. Both the user name
-/// and the socket name are reduced to `[A-Za-z0-9_.-]` so a `-L` value can
-/// never escape the `keepane-<user>-` namespace (pipe names accept `\`).
+/// Where the server for socket `socket_name` listens: the platform's
+/// address for it (a named pipe on Windows, a Unix socket elsewhere).
 pub fn pipe_name(socket_name: &str) -> String {
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
-    let clean = |s: &str| -> String {
-        s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' { c } else { '_' }).collect()
-    };
-    let (user, socket) = (clean(&user), clean(socket_name));
-    let socket = if socket.is_empty() { "default".to_string() } else { socket };
-    format!(r"\\.\pipe\keepane-{user}-{socket}")
+    crate::platform::ipc::address(socket_name)
 }
 
 /// Raw Windows `KEY_EVENT_RECORD`, forwarded verbatim so the server can hand it
@@ -149,15 +142,5 @@ mod tests {
         drop(a);
         let eof: Option<ClientMsg> = read_frame(&mut b).await.unwrap();
         assert!(eof.is_none());
-    }
-
-    #[test]
-    fn pipe_name_is_sanitized() {
-        let n = pipe_name("default");
-        assert!(n.starts_with(r"\\.\pipe\keepane-"));
-        assert!(n.ends_with("-default"));
-        assert!(pipe_name(r"..\evil").ends_with("-.._evil"));
-        assert!(pipe_name("").ends_with("-default"));
-        assert!(pipe_name("a b/c").ends_with("-a_b_c"));
     }
 }

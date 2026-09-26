@@ -674,7 +674,7 @@ impl Server {
             // An agent takes prompts; a shell made for an agent takes commands.
             None => match stem.as_str() {
                 "claude" | "codex" | "gemini" => WorkMode::Ai,
-                "pwsh" | "powershell" => WorkMode::Shell,
+                s if crate::platform::shell::takes_commands(s) => WorkMode::Shell,
                 _ => WorkMode::Normal,
             },
         };

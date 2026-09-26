@@ -305,7 +305,7 @@ pub struct Pane {
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// Kill-on-close job holding the shell and everything it started, so a
     /// dead pane never leaves orphans (tmux's SIGHUP-the-process-group).
-    job: Option<crate::winsec::KillOnCloseJob>,
+    job: Option<crate::platform::process::Tree>,
     pub title: String,
     /// The last title the program itself sent. Sending the same one again
     /// (prompts that set the title on every prompt do) is not a new title
@@ -467,7 +467,7 @@ fn launch(
     run: &[String],
     dir: Option<&str>,
     env: &[(String, String)],
-) -> Result<(Child, Option<u32>, Killer, Option<crate::winsec::KillOnCloseJob>)> {
+) -> Result<(Child, Option<u32>, Killer, Option<crate::platform::process::Tree>)> {
     let mut cmd = CommandBuilder::new(&run[0]);
     cmd.args(&run[1..]);
     if let Some(d) = dir {
@@ -479,20 +479,10 @@ fn launch(
     let child = slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", run))?;
     let pid = child.process_id();
     let killer = child.clone_killer();
-    let job = match crate::winsec::KillOnCloseJob::new() {
-        Ok(j) => match child.as_raw_handle() {
-            // The handle comes straight from CreateProcessW inside portable-pty.
-            Some(h) => match unsafe { j.assign(h as _) } {
-                Ok(()) => Some(j),
-                Err(e) => {
-                    log::warn!("pane {id}: job assign failed: {e}");
-                    None
-                }
-            },
-            None => None,
-        },
+    let job = match crate::platform::process::Tree::of_pty(child.as_ref()) {
+        Ok(t) => Some(t),
         Err(e) => {
-            log::warn!("pane {id}: no job object: {e}");
+            log::warn!("pane {id}: its process tree is not held: {e}");
             None
         }
     };
@@ -732,27 +722,15 @@ impl Pane {
     /// `output` feeds the pane's output to the command (`-O`); `input`
     /// feeds what the command prints to the pane as if typed (`-I`).
     pub fn pipe_to(&mut self, command: &str, env: &[(String, String)], input: bool, output: bool) -> Result<()> {
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
         self.pipe = None;
-        let (exe, args): (&str, Vec<String>) = match crate::config::which("pwsh.exe") {
-            Some(_) => ("pwsh.exe", vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into(), command.into()]),
-            None => match crate::config::which("powershell.exe") {
-                Some(_) => {
-                    ("powershell.exe", vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into(), command.into()])
-                }
-                None => ("cmd.exe", vec!["/d".into(), "/c".into(), command.into()]),
-            },
-        };
-        let mut c = Command::new(exe);
-        c.args(&args)
-            .stdin(if output { Stdio::piped() } else { Stdio::null() })
+        let (mut c, exe) = crate::platform::process::pipe_command(command);
+        c.stdin(if output { Stdio::piped() } else { Stdio::null() })
             .stdout(if input { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::null());
         for (k, v) in env {
             c.env(k, v);
         }
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
         let mut child = c.spawn().with_context(|| format!("pipe-pane: {exe}"))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();

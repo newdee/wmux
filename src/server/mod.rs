@@ -21,7 +21,6 @@ use render::{CopyView, Frame, Grid, PaneView, StatusLine};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
-use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::mpsc;
 
 /// Where a new pane's PowerShell keeps its command history.
@@ -46,13 +45,6 @@ fn prune_shell_history_files(dir: &std::path::Path, keep: &HashSet<String>, cuto
             let _ = std::fs::remove_file(&path);
         }
     }
-}
-
-/// PSReadLine's default history file, shared by every PowerShell of the user.
-fn shared_shell_history() -> Option<PathBuf> {
-    let p = PathBuf::from(std::env::var_os("APPDATA")?)
-        .join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt");
-    p.is_file().then_some(p)
 }
 
 pub type ClientId = u32;
@@ -785,37 +777,19 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
             .context("spawn pane event bridge")?;
     }
 
-    // Only this user (and SYSTEM) may open the pipe: tmux's 0700 socket.
-    let mut sec = crate::winsec::OwnerOnly::new().context("pipe security descriptor")?;
-    // Listener: the first instance must be created before we are considered up.
-    let first = unsafe {
-        ServerOptions::new()
-            .first_pipe_instance(true)
-            .reject_remote_clients(true)
-            .create_with_security_attributes_raw(&pipe, sec.as_ptr() as *mut _)
-    }
-    .with_context(|| format!("create pipe {pipe} (server already running?)"))?;
+    // Only this user may connect (the platform's listener sees to that); it
+    // is up, and a second server refused, before we are considered up.
+    let mut server = crate::platform::ipc::Listener::bind(&pipe)?;
     log::info!("listening on {pipe}");
     let listener = {
         let tx = tx.clone();
-        let pipe = pipe.clone();
         tokio::spawn(async move {
-            let mut server = first;
             let mut next_client: ClientId = 1;
             loop {
-                if let Err(e) = server.connect().await {
-                    log::error!("pipe connect: {e}");
-                    break;
-                }
-                let conn = server;
-                server = match unsafe {
-                    ServerOptions::new()
-                        .reject_remote_clients(true)
-                        .create_with_security_attributes_raw(&pipe, sec.as_ptr() as *mut _)
-                } {
-                    Ok(s) => s,
+                let conn = match server.accept().await {
+                    Ok(c) => c,
                     Err(e) => {
-                        log::error!("create next pipe instance: {e}");
+                        log::error!("accept a client: {e}");
                         break;
                     }
                 };
@@ -2596,7 +2570,10 @@ impl Server {
             }
         };
         if let Some(n) = &name {
-            env.push(("KEEPANE_SHELL_HISTORY".into(), self.shell_history_path(n).to_string_lossy().into_owned()));
+            env.push((
+                crate::platform::shell::HISTORY_VAR.into(),
+                self.shell_history_path(n).to_string_lossy().into_owned(),
+            ));
         }
         let mut pane = Pane::spawn_replaying(
             id,
@@ -2632,7 +2609,7 @@ impl Server {
             .and_then(|p| p.shell_history.as_deref())
             .map(|n| self.shell_history_path(n))
             .filter(|p| p.is_file())
-            .or_else(shared_shell_history);
+            .or_else(crate::platform::shell::shared_history);
         if let Some(src) = source
             && let Some(dir) = path.parent()
         {
@@ -3190,7 +3167,7 @@ impl Server {
                     let mut env = self.pane_env(id);
                     if let Some(n) = self.pane_ref(id).and_then(|p| p.shell_history.clone()) {
                         env.push((
-                            "KEEPANE_SHELL_HISTORY".into(),
+                            crate::platform::shell::HISTORY_VAR.into(),
                             self.shell_history_path(&n).to_string_lossy().into_owned(),
                         ));
                     }
@@ -7586,43 +7563,21 @@ const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 const ONE_SHOT_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Run a shell command to completion, returning (stdout+stderr, exit code).
-/// Uses pwsh when available, else Windows PowerShell, else cmd. With a
+/// Uses the platform's shell (`platform::process::shell_command`). With a
 /// `timeout` the process tree is killed when it expires (exit code 124).
 fn run_shell_blocking(command: &str, env: &[(String, String)], timeout: Option<Duration>) -> (String, i32) {
-    // `-Command` alone reports 0/1; make a native command's exit code
-    // propagate like `sh -c` does for tmux.
-    // Without a console PowerShell writes the ANSI code page; ask for UTF-8 so
-    // non-ASCII output survives the trip into the status line / overlay.
-    let ps_script = format!(
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8\n\
-         {command}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}"
-    );
-    let (exe, args): (&str, Vec<&str>) = if crate::config::which("pwsh.exe").is_some() {
-        ("pwsh.exe", vec!["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &ps_script])
-    } else if crate::config::which("powershell.exe").is_some() {
-        ("powershell.exe", vec!["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &ps_script])
-    } else {
-        ("cmd.exe", vec!["/d", "/c", command])
-    };
-    let mut c = std::process::Command::new(exe);
-    c.args(&args).stdin(std::process::Stdio::null());
+    let (mut c, exe) = crate::platform::process::shell_command(command);
+    c.stdin(std::process::Stdio::null());
     for (k, v) in env {
         c.env(k, v);
     }
-    #[allow(unused_imports)]
-    use std::os::windows::process::CommandExt;
-    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
     c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    let mut job = crate::winsec::KillOnCloseJob::new().ok();
     let child = match c.spawn() {
         Ok(ch) => ch,
         Err(e) => return (format!("{exe}: {e}"), 127),
     };
-    if let Some(j) = &job {
-        use std::os::windows::io::AsRawHandle;
-        // Straight from CreateProcess; killing the job takes grandchildren too.
-        let _ = unsafe { j.assign(child.as_raw_handle() as _) };
-    }
+    // Killing the tree takes grandchildren too.
+    let mut job = crate::platform::process::Tree::of(&child).ok();
     // Watchdog: close the job (killing the tree) when the timeout expires.
     // Without a timeout the job simply lives until the command is done.
     let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

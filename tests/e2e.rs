@@ -5,9 +5,9 @@ use keepane::ipc::{
     ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame,
 };
 use keepane::keys::{LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_ESCAPE, VK_RETURN};
+use keepane::platform::ipc::{Stream as NamedPipeClient, connect as open_pipe};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -57,7 +57,7 @@ impl Harness {
         });
         let pipe = pipe_name(&socket);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while ClientOptions::new().open(&pipe).is_err() {
+        while open_pipe(&pipe).is_err() {
             assert!(Instant::now() < deadline, "server did not come up");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -76,7 +76,7 @@ impl Harness {
         let pipe = pipe_name(&self.socket);
         let deadline = Instant::now() + Duration::from_secs(10);
         let c = loop {
-            match ClientOptions::new().open(&pipe) {
+            match open_pipe(&pipe) {
                 Ok(c) => break c,
                 Err(e) => {
                     assert!(Instant::now() < deadline, "server {} not reachable: {e}", self.socket);
@@ -319,7 +319,7 @@ async fn cli_lifecycle() {
     assert_eq!(code, 0);
     // The server exits when its last session dies.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while ClientOptions::new().open(pipe_name(&h.socket)).is_ok() {
+    while open_pipe(&pipe_name(&h.socket)).is_ok() {
         assert!(Instant::now() < deadline, "server should have exited");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -2456,7 +2456,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     });
     let pipe = pipe_name(&socket);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while ClientOptions::new().open(&pipe).is_err() {
+    while open_pipe(&pipe).is_err() {
         assert!(Instant::now() < deadline, "server did not come up");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -4848,6 +4848,8 @@ async fn an_agent_talks_to_keepane_over_mcp_as_its_pane() {
         use std::io::{BufRead, Write};
         let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_keepane"))
             .args(["-L", &socket, "mcp"])
+            // A pane's program has both: its server's socket and its pane.
+            .env("KEEPANE", &socket)
             .env("KEEPANE_PANE", a.to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

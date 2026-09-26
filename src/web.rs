@@ -145,14 +145,8 @@ fn lan_ip() -> IpAddr {
 
 /// 128 random bits from the system's generator, URL-safe.
 pub fn new_key() -> Result<String> {
-    use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
     let mut bytes = [0u8; 16];
-    let status = unsafe {
-        BCryptGenRandom(std::ptr::null_mut(), bytes.as_mut_ptr(), bytes.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG)
-    };
-    if status != 0 {
-        bail!("BCryptGenRandom failed: {status:#x}");
-    }
+    crate::platform::random::fill(&mut bytes)?;
     Ok(base64url(&bytes))
 }
 
