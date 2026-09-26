@@ -114,13 +114,13 @@ impl Screen {
         self.grid_mut().set_scrollback(rows);
     }
 
-    /// (wmux) How many lines the scrollback holds, without moving through it.
+    /// (keepane) How many lines the scrollback holds, without moving through it.
     #[must_use]
     pub fn scrollback_rows(&self) -> usize {
         self.grid().scrollback_rows()
     }
 
-    /// (wmux) Rows that have left the top of the screen in view (the main
+    /// (keepane) Rows that have left the top of the screen in view (the main
     /// one or the alternate), ever: `scrolled_total() + row` is a stable
     /// name for the line at `row`.
     #[must_use]
@@ -171,7 +171,7 @@ impl Screen {
         })
     }
 
-    /// (wmux) `rows`, each with whether the terminal wrapped it onto the
+    /// (keepane) `rows`, each with whether the terminal wrapped it onto the
     /// next one: one walk through the rows where `rows` plus `row_wrapped`
     /// for each would start over from the top of the scrollback every time.
     pub fn rows_wrapped(

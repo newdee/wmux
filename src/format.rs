@@ -56,7 +56,7 @@ pub struct Context {
     /// Unix time the pane's program was started, and of its last output.
     pub pane_start_time: i64,
     pub pane_activity: i64,
-    /// How many times the pane has printed (wmux's own): changes with every
+    /// How many times the pane has printed (keepane's own): changes with every
     /// output, where `pane_activity` changes once a second at most.
     pub pane_output_count: u64,
     /// Unix time the program exited, 0 while it runs.
@@ -605,7 +605,7 @@ mod tests {
         c.pane_dead_status = Some(3);
         c.pane_pid = Some(4242);
         c.client_width = 120;
-        c.pane_path = r"C:\Users\me\src\wmux".into();
+        c.pane_path = r"C:\Users\me\src\keepane".into();
         c.host = "box.example.com".into();
         c.session_created = 0;
         assert_eq!(t("#{session_id} #{window_id} #{pane_id} #D", &c), "$3 @7 %12 %12");
@@ -614,17 +614,17 @@ mod tests {
         assert_eq!(t("#{host_short} #h", &c), "box box");
         assert_eq!(t("#{version}", &c), env!("CARGO_PKG_VERSION"));
         // Modifiers, nested and in conditionals.
-        assert_eq!(t("#{b:pane_current_path}", &c), "wmux");
+        assert_eq!(t("#{b:pane_current_path}", &c), "keepane");
         assert_eq!(t("#{d:pane_current_path}", &c), r"C:\Users\me\src");
-        c.pane_path = r"C:\Users\me\src\wmux\".into();
-        assert_eq!(t("#{b:pane_current_path}", &c), "wmux", "a trailing separator is not a component");
+        c.pane_path = r"C:\Users\me\src\keepane\".into();
+        assert_eq!(t("#{b:pane_current_path}", &c), "keepane", "a trailing separator is not a component");
         assert_eq!(t("#{d:pane_current_path}", &c), r"C:\Users\me\src");
-        c.pane_path = r"C:\Users\me\src\wmux".into();
+        c.pane_path = r"C:\Users\me\src\keepane".into();
         assert_eq!(t("#{=4:pane_current_path}", &c), "C:\\U");
-        assert_eq!(t("#{=-4:pane_current_path}", &c), "wmux");
-        assert_eq!(t("#{=2:b:pane_current_path}", &c), "wm");
-        assert_eq!(t("#{s/src/SRC/:pane_current_path}", &c), r"C:\Users\me\SRC\wmux");
-        assert_eq!(t("#{?pane_active,#{b:pane_current_path},-}", &c), "wmux");
+        assert_eq!(t("#{=-4:pane_current_path}", &c), "pane");
+        assert_eq!(t("#{=2:b:pane_current_path}", &c), "ke");
+        assert_eq!(t("#{s/src/SRC/:pane_current_path}", &c), r"C:\Users\me\SRC\keepane");
+        assert_eq!(t("#{?pane_active,#{b:pane_current_path},-}", &c), "keepane");
         assert!(t("#{t:session_created}", &c).contains("1970") || t("#{t:session_created}", &c).contains("1969"));
         // Things that look like modifiers but are not stay unknown, and an
         // unknown variable is empty as before.

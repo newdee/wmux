@@ -1,16 +1,16 @@
-# wmux
+# keepane
 
-[![CI](https://github.com/newdee/wmux/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/wmux/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/newdee/wmux)](https://github.com/newdee/wmux/releases)
+[![CI](https://github.com/newdee/keepane/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/keepane/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/newdee/keepane)](https://github.com/newdee/keepane/releases)
 
-[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/wmux/)**
+[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)**
 
 A tmux-style terminal multiplexer for Windows. Sessions survive closing the
 terminal, panes and windows split the screen, and PowerShell, WSL and cmd all
 run inside panes with full key fidelity.
 
 <p align="center">
-  <img src="docs/img/wmux-demo.gif" width="880"
+  <img src="docs/img/keepane-demo.gif" width="880"
        alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
 </p>
 
@@ -20,7 +20,7 @@ run inside panes with full key fidelity.
 - Keystrokes reach panes as raw Windows key events (the win32-input-mode
   protocol Windows Terminal uses), so PSReadLine chords, `Ctrl+Space`,
   `Shift+Enter`, arrows with modifiers, IME input and WSL/Linux TUIs behave
-  as they do outside wmux.
+  as they do outside keepane.
 - The keys and commands are tmux's: `C-b` prefix, `%` / `"` to split, `c`
   for a new window, `d` to detach, `[` for copy mode, `:` for a command
   prompt, the same command names on the CLI (`new-session`, `attach`, `ls`,
@@ -33,21 +33,50 @@ run inside panes with full key fidelity.
   of its line (`C-b C-t`). What panes print is kept on disk, a file per
   pane per day for 30 days, and `C-b /` opens any day in a viewer. A pane
   or window closed by mistake comes back with `C-b u` within 10 seconds.
-- `wmux web` prints a QR code. Scan it on the same Wi-Fi and the phone's
+- `keepane web` prints a QR code. Scan it on the same Wi-Fi and the phone's
   browser lists every pane, shows any of them as it appears on screen, and
   lets you type into it, with nothing to install on the phone.
 
 <p align="center">
-  <img src="docs/img/wmux-alerts.gif" width="880"
+  <img src="docs/img/keepane-alerts.gif" width="880"
        alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
 </p>
+
+## Formerly wmux
+
+Up to 0.13.1 this project was called wmux. That name turned out to be taken
+several times over: other terminal multiplexers on GitHub, on winget and on
+crates.io go by it, some of them older and better known. From 0.14.0 it is
+keepane, after what it does: the panes keep running when the terminal is
+gone.
+
+Coming from wmux:
+
+- `keepane migrate` moves everything in one go: the sessions of a wmux
+  server still running (saved, the old server stopped, restored in keepane
+  with their layout, history and directories; the programs in them start
+  again, as with `restart-server`), what wmux saved under
+  `%LOCALAPPDATA%\wmux` (sessions, history, the phone key), the start at
+  logon, the Windows Terminal profile and the notification link. A wmux
+  session whose name keepane already runs comes back beside it as
+  `<name>-wmux`. Starting keepane while a wmux server still runs says so.
+- Your `~/.wmux.conf` keeps working, and so do `WMUX_*` environment
+  variables, `~/.wmux/plugins` and `*.wmux` plugin files, until you rename
+  them (`~/.keepane.conf`, `KEEPANE_*`, `~/.keepane/plugins`,
+  `*.keepane`).
+- The MSI replaces the wmux one in "Apps & features", and `wmux update`
+  (0.10 to 0.13) installs keepane. With scoop, `scoop uninstall wmux` and
+  install the keepane manifest (below).
+- The repository is now github.com/newdee/keepane (the old links lead
+  there) and the site dfine.tech/keepane.
+- A `tmux` or `wmux` alias in your `$PROFILE` needs to point at keepane.
 
 ## On your phone
 
 Leave a build, a deploy or an agent running, and check on it from the sofa:
 
 ```powershell
-wmux web
+keepane web
 ```
 
 prints a QR code in the terminal. Scan it with the phone's camera (same
@@ -55,7 +84,7 @@ network) and the browser opens a page that lists every pane with the program
 running in it, and with the window's alert marks from the status line (`#`
 printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so
 you can see which job finished. Tap one to see its screen, colours and all;
-wmux sends it again whenever it changes, so there is no refresh to wait for;
+keepane sends it again whenever it changes, so there is no refresh to wait for;
 type into it from the box at the bottom, or with the row of keys the phone
 keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
 + menu splits the pane, opens a window or closes the pane; the ⏱ button adds
@@ -66,53 +95,53 @@ it open like an app.
 
 <p align="center">
   <img src="docs/img/phone.png" width="620"
-       alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
+       alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
 </p>
 
 The code carries the address and a key made fresh at each start (128 random
 bits); nothing but the page itself answers without it, and the phone can only
-look, type into a pane and use that menu: no command of its own reaches wmux.
+look, type into a pane and use that menu: no command of its own reaches keepane.
 It is off until started and stops with Ctrl+C.
 
 ```powershell
-wmux web --read-only     # look, but not type
-wmux web --keep-key      # the same code next time, so a bookmark keeps working
-wmux web --port 8080 --bind 192.168.1.23   # another port, or another network card
+keepane web --read-only     # look, but not type
+keepane web --keep-key      # the same code next time, so a bookmark keeps working
+keepane web --port 8080 --bind 192.168.1.23   # another port, or another network card
 ```
 
 It is plain HTTP, meant for your own network: on a shared one, someone
 watching the traffic could read the key. From elsewhere, put a private
 network such as Tailscale in between and bind to its address. Windows asks
-once whether wmux may use the network; allow it for private networks.
+once whether keepane may use the network; allow it for private networks.
 
 ## Install
 
-From the [releases page](https://github.com/newdee/wmux/releases):
+From the [releases page](https://github.com/newdee/keepane/releases):
 
-- `wmux-<version>-windows-x86_64.msi` installs into `Program Files`, puts
-  `wmux` on the system `PATH` and uninstalls from "Apps & features"
-  (`msiexec /i wmux-<version>-windows-x86_64.msi /qn` for an unattended
+- `keepane-<version>-windows-x86_64.msi` installs into `Program Files`, puts
+  `keepane` on the system `PATH` and uninstalls from "Apps & features"
+  (`msiexec /i keepane-<version>-windows-x86_64.msi /qn` for an unattended
   install).
-- `wmux-<version>-windows-x86_64.zip` is the same `wmux.exe` to unzip
+- `keepane-<version>-windows-x86_64.zip` is the same `keepane.exe` to unzip
   wherever you like.
 
 With Scoop, the manifest in this repository installs the zip and keeps
 it current:
 
 ```powershell
-scoop install https://raw.githubusercontent.com/newdee/wmux/master/packaging/scoop/wmux.json
+scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json
 ```
 
 WinGet manifests for the MSI are in `packaging/winget/` (validated with
-`winget validate`); `winget install newdee.wmux` works once they are
+`winget validate`); `winget install newdee.keepane` works once they are
 merged into winget-pkgs, and until then
-`winget install --manifest packaging/winget/manifests/n/newdee/wmux/<version>`
+`winget install --manifest packaging/winget/manifests/n/newdee/keepane/<version>`
 from a clone does the same. See `packaging/README.md`.
 
 Or build from source, which needs Rust 1.88+:
 
 ```powershell
-cargo install --git https://github.com/newdee/wmux --locked   # latest master
+cargo install --git https://github.com/newdee/keepane --locked   # latest master
 cargo install --path .                                         # a local clone
 ```
 
@@ -123,29 +152,29 @@ downloaded on demand if it is not already installed:
 
 ```powershell
 cargo build --release
-pwsh -File installer/build-msi.ps1        # target\wmux-<version>-windows-x86_64.msi
+pwsh -File installer/build-msi.ps1        # target\keepane-<version>-windows-x86_64.msi
 ```
 
 ## Use
 
 ```powershell
-wmux                      # new session, attached
-wmux new -s work          # named session
-wmux new -d -s bg wsl.exe # detached session running WSL
-wmux ls                   # list sessions
-wmux attach -t work       # re-attach (works from a different terminal window)
-wmux send-keys -t work "git status" Enter
-wmux capture-pane -p -t work   # print what the pane shows (-S -200 adds scrollback)
-wmux kill-server
+keepane                      # new session, attached
+keepane new -s work          # named session
+keepane new -d -s bg wsl.exe # detached session running WSL
+keepane ls                   # list sessions
+keepane attach -t work       # re-attach (works from a different terminal window)
+keepane send-keys -t work "git status" Enter
+keepane capture-pane -p -t work   # print what the pane shows (-S -200 adds scrollback)
+keepane kill-server
 ```
 
-Any unambiguous prefix of a command name works, as in tmux: `wmux att`,
-`wmux lsp`, `wmux splitw -h`. `wmux kill` is refused, because four commands
-start that way. `wmux list-commands` prints them all, and
+Any unambiguous prefix of a command name works, as in tmux: `keepane att`,
+`keepane lsp`, `keepane splitw -h`. `keepane kill` is refused, because four commands
+start that way. `keepane list-commands` prints them all, and
 [docs/tmux-parity.md](docs/tmux-parity.md) tracks them against tmux's own
 list, command by command and key by key.
 
-Several panes at once: `wmux split-window -N 3` makes three more and tiles
+Several panes at once: `keepane split-window -N 3` makes three more and tiles
 the window (`-d` keeps the focus where it is). A window too small for all of
 them keeps the ones that fit and says how many it made.
 
@@ -218,11 +247,11 @@ clipboard into the pane, as the terminal itself would.
 ## Command times and history
 
 <p align="center">
-  <img src="docs/img/wmux-history.gif" width="880"
+  <img src="docs/img/keepane-history.gif" width="880"
        alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
 </p>
 
-A PowerShell pane reports each command it runs (wmux's prompt hook does
+A PowerShell pane reports each command it runs (keepane's prompt hook does
 this, the same hook that reports the directory). `C-b C-t` (or `set -g
 pane-timestamps on`) shows, at the right end of the line the command was
 typed on, when it started, how long it took and whether it failed:
@@ -234,13 +263,13 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 
 The time goes in the blank end of the line. The pane keeps its width,
 nothing is added to what the program printed (copy mode and `capture-pane`
-do not see it), and a line too full to hold it goes without. `wmux
+do not see it), and a line too full to hold it goes without. `keepane
 list-marks` prints the same for a script. On the phone, the ⏱ button does
 the same in a column to the left.
 
 A PowerShell started with a script of its own (`-File`, `-Command`) is left
 as it is, hook and all; that script can install the hook itself with
-`Invoke-Expression (wmux __shell-hook | Out-String)`.
+`Invoke-Expression (keepane __shell-hook | Out-String)`.
 
 Other shells report their commands with the sequences Windows Terminal and
 VS Code read too (OSC 133). For bash under WSL:
@@ -252,7 +281,7 @@ PROMPT_COMMAND='printf "\e]133;D;%s\e\\\e]133;A\e\\" "$?"'
 
 What panes print is also kept on disk (`log-history`, on by default): one
 text file per pane position per day, at
-`%LOCALAPPDATA%\wmux\history\<session>\<window>.<pane>\2026-09-25.log`,
+`%LOCALAPPDATA%\keepane\history\<session>\<window>.<pane>\2026-09-25.log`,
 for 30 days (`log-history-days`), at most 20 MB a day each. A line is
 written when it scrolls off the top of the pane, so a progress bar or a
 prompt being edited leaves its final text; full-screen programs such as vim
@@ -264,7 +293,7 @@ then. Each reported command gets a line of its times before it
 with their days. Enter on a day opens it in a viewer in a popup. The viewer
 starts at the end and moves like `less`: `j` `k`, `Space` `b`, `g` `G`,
 `/` `?` to search, `n` `N` to repeat, `[` `]` to jump from command to
-command, `q` to quit. `wmux view FILE` opens any file in it. `set -g
+command, `q` to quit. `keepane view FILE` opens any file in it. `set -g
 log-history off` stops the logging.
 
 A pane or window closed with `kill-pane` or `kill-window` (`C-b x`,
@@ -276,17 +305,17 @@ session is not kept, because the session ends with it.
 
 ## Resume after a reboot
 
-Every session is saved to its own file under `%LOCALAPPDATA%\wmux\sessions`
+Every session is saved to its own file under `%LOCALAPPDATA%\keepane\sessions`
 whenever its shape changes (windows, panes, layout, names, start commands
 and directories) and when the server exits. A reboot, a crash or a
 `kill-session` does not lose that file, so:
 
 ```powershell
-wmux resume              # bring back every saved session, attach to the first
-wmux resume work         # bring back (or just attach to) the session "work"
-wmux list-saved          # what can be resumed, newest first
-wmux delete-saved old    # forget one
-wmux save-session -a     # save everything right now (prefix C-s saves the current one)
+keepane resume              # bring back every saved session, attach to the first
+keepane resume work         # bring back (or just attach to) the session "work"
+keepane list-saved          # what can be resumed, newest first
+keepane delete-saved old    # forget one
+keepane save-session -a     # save everything right now (prefix C-s saves the current one)
 ```
 
 Resuming recreates the pane tree, puts back the last `save-history` lines
@@ -303,32 +332,32 @@ restore-on-start on` makes a fresh server restore everything by itself;
 To have all of that happen by itself when you log on:
 
 ```powershell
-wmux startup on          # start the server at logon and restore every saved session
-wmux startup status      # what is registered
-wmux startup off         # stop doing that
+keepane startup on          # start the server at logon and restore every saved session
+keepane startup status      # what is registered
+keepane startup off         # stop doing that
 ```
 
 This writes one value under the per-user `Run` registry key (no
 administrator rights, nothing in Task Scheduler), running the server
 through `conhost --headless` so no console window appears at logon. After a
-reboot, `wmux attach` finds everything as it was.
+reboot, `keepane attach` finds everything as it was.
 
-Upgrading: installing a new wmux does not replace the server that is
+Upgrading: installing a new keepane does not replace the server that is
 already running, which keeps your sessions and is still the old program.
 
 ```powershell
-wmux version          # this wmux, and the server's version when it differs
-wmux update --check   # is there a newer release?
-wmux update           # install it the way this one was installed (MSI or scoop)
-wmux restart-server   # move every running session to a server of this version
+keepane version          # this keepane, and the server's version when it differs
+keepane update --check   # is there a newer release?
+keepane update           # install it the way this one was installed (MSI or scoop)
+keepane restart-server   # move every running session to a server of this version
 ```
 
 `restart-server` saves the running sessions, stops the old server, starts
 one of this version and restores exactly those sessions, layout, history
 and directories included; terminals attached to it attach again by
 themselves (from 0.10 on; an older server's terminals are detached, and
-`wmux attach` takes them back). Run from inside a pane it finishes outside
-the pane and writes what it did to `%LOCALAPPDATA%\wmux\restart.log`.
+`keepane attach` takes them back). Run from inside a pane it finishes outside
+the pane and writes what it did to `%LOCALAPPDATA%\keepane\restart.log`.
 Options and key bindings come from the config file again, as after
 `kill-server`: ones typed with `set`/`bind` since are not carried over
 (the old server cannot tell them from its defaults, and copying all of
@@ -342,15 +371,15 @@ Tab completion in PowerShell (command names, each command's flags, `-t`
 targets from the running server, and option names and values after `set`
 / `show`; aliases like `splitw` and prefixes like `split-w` count as the
 command they stand for) comes from a completer the program prints, for
-`wmux` and for a `tmux` alias of it; one line in `$PROFILE` loads it.
+`keepane` and for a `tmux` alias of it; one line in `$PROFILE` loads it.
 Windows PowerShell 5.1 does not ask a program's completer about words
 starting with `-`, so flags complete in PowerShell 7 only.
 
 ```powershell
-wmux completion powershell | Out-String | Invoke-Expression
+keepane completion powershell | Out-String | Invoke-Expression
 ```
 
-Inside wmux, Tab at the `:` prompt completes the command name, its flags
+Inside keepane, Tab at the `:` prompt completes the command name, its flags
 once a `-` is typed (an alias or a prefix counts as its command; a flag
 already given is not offered again), a target after `-t`, and after
 `set` / `show` the option's name (abbreviations too:
@@ -366,16 +395,16 @@ not close a pane either. To have it exit on an empty line, add to
 Set-PSReadLineKeyHandler -Chord Ctrl+d -Function DeleteCharOrExit
 ```
 
-And to have wmux in the Windows Terminal dropdown:
+And to have keepane in the Windows Terminal dropdown:
 
 ```powershell
-wmux windows-terminal install    # a "wmux" profile that attaches to (or starts) the session "main"
-wmux windows-terminal status
-wmux windows-terminal remove
+keepane windows-terminal install    # a "keepane" profile that attaches to (or starts) the session "main"
+keepane windows-terminal status
+keepane windows-terminal remove
 ```
 
-This is a profile *fragment*, one JSON file of wmux's own under
-`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wmux\`; Windows
+This is a profile *fragment*, one JSON file of keepane's own under
+`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\keepane\`; Windows
 Terminal merges it in, `settings.json` is never touched, and the profile
 keeps its identity across reinstalls so the font or colours you give it
 stay. Every tab opened from it joins the same session, as `tmux new -A -s
@@ -385,9 +414,9 @@ A pane's directory follows its shell's `cd`, with nothing to set up:
 PowerShell (pwsh or Windows PowerShell) is started with a prompt hook that
 reports the directory after every prompt (an invisible OSC 9;9; your own
 prompt, oh-my-posh and the like included, is left as it is), and for
-`cmd.exe` and other programs wmux reads the process's own directory. A
+`cmd.exe` and other programs keepane reads the process's own directory. A
 shell that announces its directory itself (OSC 9;9, quoted or not, or OSC 7
-from bash/zsh under WSL) is believed first, and `wmux set-cwd` (no argument:
+from bash/zsh under WSL) is believed first, and `keepane set-cwd` (no argument:
 the directory you run it from) sets it by hand:
 
 ```bash
@@ -400,16 +429,16 @@ it on the status line.
 
 ## Configuration
 
-`%USERPROFILE%\.wmux.conf` (or `%USERPROFILE%\.config\wmux\wmux.conf`, or
-the file named by `WMUX_CONFIG`) holds one command per line, tmux syntax.
-With no wmux config at all, an existing `~/.tmux.conf` (or
-`~/.config/tmux/tmux.conf`) is read instead: what wmux understands is
+`%USERPROFILE%\.keepane.conf` (or `%USERPROFILE%\.config\keepane\keepane.conf`, or
+the file named by `KEEPANE_CONFIG`) holds one command per line, tmux syntax.
+With no keepane config at all, an existing `~/.tmux.conf` (or
+`~/.config/tmux/tmux.conf`) is read instead: what keepane understands is
 applied (`%if` blocks are evaluated, and `bind -T copy-mode-vi v send -X
 begin-selection`-style lines bind keys in copy mode), and what it cannot
 use (TPM's `@plugin` lines for plugins it does not have, options tmux has
-and wmux does not) is skipped and listed in `show-messages` rather than
+and keepane does not) is skipped and listed in `show-messages` rather than
 thrown at you on every attach. Mouse "keys" such as `MouseDragEnd1Pane`
-are taken and do nothing: wmux's mouse handling is fixed.
+are taken and do nothing: keepane's mouse handling is fixed.
 
 ```tmux
 set -g prefix C-a
@@ -447,10 +476,10 @@ bind | split-window -h
 bind - split-window -v
 bind -n M-Left previous-window     # -n: no prefix
 bind -n M-Right next-window
-bind r source-file ~/.wmux.conf
+bind r source-file ~/.keepane.conf
 
-set -ag status-right " | wmux"    # -a adds to what the option already holds
-source-file ~/.wmux/themes/nord.conf
+set -ag status-right " | keepane"    # -a adds to what the option already holds
+source-file ~/.keepane/themes/nord.conf
 ```
 
 Option names take an unambiguous abbreviation, the way command names do:
@@ -460,7 +489,7 @@ Option names take an unambiguous abbreviation, the way command names do:
 `set sync`. Something that could mean several options says which
 (`set mon` lists the three `monitor-*` ones).
 
-Options unknown to wmux but common in `.tmux.conf` (`escape-time`,
+Options unknown to keepane but common in `.tmux.conf` (`escape-time`,
 `default-terminal`, ...) are accepted and ignored, so an existing tmux config
 can be reused as a starting point.
 
@@ -468,11 +497,11 @@ can be reused as a starting point.
 
 `themes/` in this repository holds ready-made colour schemes (Tokyo Night,
 which the pictures here wear, Nord, Gruvbox dark, Dracula, Catppuccin
-Mocha). They are ordinary wmux commands, so a theme is just a file to source
+Mocha). They are ordinary keepane commands, so a theme is just a file to source
 and an easy thing to copy and edit:
 
 ```tmux
-source-file ~/.wmux/themes/dracula.conf
+source-file ~/.keepane/themes/dracula.conf
 ```
 
 ### Status line
@@ -540,29 +569,29 @@ set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm
 ## Plugins
 
 Plugins work the way tmux plugins do: a plugin is a directory with a
-`<name>.wmux` (or `plugin.wmux`) file of wmux commands, plus any scripts it
-needs, in any language. Scripts call back through the CLI: `WMUX` holds the
-socket name and `WMUX_PANE` the pane, so `wmux -L $env:WMUX display-message
+`<name>.keepane` (or `plugin.keepane`) file of keepane commands, plus any scripts it
+needs, in any language. Scripts call back through the CLI: `KEEPANE` holds the
+socket name and `KEEPANE_PANE` the pane, so `keepane -L $env:KEEPANE display-message
 ...` from a script reaches the right server.
 
 ```tmux
-# ~/.wmux.conf
-set -g plugin-path ~/.wmux/plugins       # default
-set -g @plugin demo                       # ~/.wmux/plugins/demo/demo.wmux
+# ~/.keepane.conf
+set -g plugin-path ~/.keepane/plugins       # default
+set -g @plugin demo                       # ~/.keepane/plugins/demo/demo.keepane
 set -g @plugin C:\src\my-plugin           # or a path (dir or file)
 ```
 
 Inside a plugin file you have everything the config has, plus:
 
 - `run-shell [-b] [-t target] command` runs a command (through pwsh) with
-  the wmux environment; its output is shown when it finishes (`-b`: ignore).
+  the keepane environment; its output is shown when it finishes (`-b`: ignore).
 - `set-hook -g <hook> <command>` runs a command when something happens:
   `after-new-session`, `after-new-window`, `after-split-window`,
   `after-select-window`, `after-select-pane`, `after-kill-pane`,
   `client-attached`, `client-detached`, `pane-exited`. `set-hook -gu <hook>`
   removes it; `show-hooks` lists them.
 - `set -g @anything value` stores a user option; `show-options -gqv @anything`
-  reads it back (from a script: `wmux -L $env:WMUX show-options -gqv @anything`).
+  reads it back (from a script: `keepane -L $env:KEEPANE show-options -gqv @anything`).
 - `#(command)` pieces on the status line (above).
 - `load-plugin name-or-path` and `list-plugins` at runtime.
 
@@ -570,26 +599,26 @@ A minimal plugin that shows an agent's progress file on the status line and
 pops the full log with `prefix A`:
 
 ```tmux
-# ~/.wmux/plugins/agent-status/agent-status.wmux
-set -g status-right "#[fg=cyan]#(pwsh -NoProfile -File ~/.wmux/plugins/agent-status/summary.ps1)#[default] %H:%M"
+# ~/.keepane/plugins/agent-status/agent-status.keepane
+set -g status-right "#[fg=cyan]#(pwsh -NoProfile -File ~/.keepane/plugins/agent-status/summary.ps1)#[default] %H:%M"
 set -g status-interval 5
 bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
 ```
 
 Commands a script or a binding reaches for, beyond the obvious ones
-(`wmux list-commands` prints all 85, and any unambiguous prefix works):
+(`keepane list-commands` prints all 85, and any unambiguous prefix works):
 
 - `pipe-pane [-o] [-I] [-O] [-t target] [command]` copies everything a pane
   prints into a command's standard input (`-O`, the default); with no
-  command it stops. `wmux pipe-pane "$input | Add-Content build.log"` keeps
+  command it stops. `keepane pipe-pane "$input | Add-Content build.log"` keeps
   a build log without touching the build (PowerShell reads all of its input
   before it runs, so that file is written when the pipe stops; a `cmd.exe /c
   findstr ... > file` command writes as lines arrive). `-I` goes the other way: what the
   command prints is typed into the pane, and the pipe ends with the
   command's output (`-IO` does both).
 - `wait-for [-L|-U|-S] channel` blocks until another client signals the
-  channel (or unlocks it), so two scripts can take turns: `wmux wait-for
-  ready` waits, `wmux wait-for -S ready` releases it.
+  channel (or unlocks it), so two scripts can take turns: `keepane wait-for
+  ready` waits, `keepane wait-for -S ready` releases it.
 - `display-menu [-T title] name key command ...` opens a menu over the
   window; an empty name is a separator. `display-popup [-E] [-w W] [-h H]
   [-x X] [-y Y] [-d dir] [command]` runs a program in a box over the window
@@ -605,20 +634,20 @@ Commands a script or a binding reaches for, beyond the obvious ones
 - `find-text pattern` searches what every pane has printed and says where
   each hit is and how far back: `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C`
   matches case, `-t` narrows to a session or window, `-n` caps the hits per
-  pane. wmux's `find-window` searches only window names and titles.
+  pane. keepane's `find-window` searches only window names and titles.
 - `record [-t target] out.cast` writes everything a pane prints from now
   on as an [asciinema](https://asciinema.org) v2 file (resizes included);
   `record -t target` with no path stops. Play it back with `asciinema play`,
   upload it, or embed it in a page.
 - `notify [-T title] message` raises a desktop notification (a Windows
-  toast, in the Action Center under wmux's own name), and `set -g notify on`
+  toast, in the Action Center under keepane's own name), and `set -g notify on`
   sends one for every alert, so a job that ends while the terminal is
   behind other windows still reaches you. An alert's toast has a "Go to
-  pane" button: it opens a `wmux://` link that runs `focus-pane`, which
+  pane" button: it opens a `keepane://` link that runs `focus-pane`, which
   switches every attached client to that pane and brings its window
   forward (best effort: Windows Terminal does not always let a window be
   raised from outside). The first toast registers two entries under
-  `HKCU\Software\Classes` (the AppUserModelID and the `wmux:` protocol),
+  `HKCU\Software\Classes` (the AppUserModelID and the `keepane:` protocol),
   nothing machine-wide; when a toast cannot be shown a tray balloon is used
   instead.
 - `focus-pane %N` is that command on its own: every attached client goes to
@@ -634,7 +663,7 @@ Commands a script or a binding reaches for, beyond the obvious ones
 
   ```
   PANE       STATE    UP     IDLE   PID    COMMAND       DIR
-  build:0.0  running  2h13m  4s     21608  cargo build   C:\src\wmux
+  build:0.0  running  2h13m  4s     21608  cargo build   C:\src\keepane
   web:0.0    exit 1   2h13m  1h02m  28748  npm run dev   C:\src\site
   ```
 
@@ -648,28 +677,28 @@ index) rather than a window target, next to `-L` `-R` `-U` `-D`.
 
 ## How it works
 
-`wmux` is a client. The first invocation starts a detached server process
-(`wmux __server`) that owns every session; clients talk to it over a per-user
-named pipe (`\\.\pipe\wmux-<user>-<socket>`, choose the socket with `-L`).
+`keepane` is a client. The first invocation starts a detached server process
+(`keepane __server`) that owns every session; clients talk to it over a per-user
+named pipe (`\\.\pipe\keepane-<user>-<socket>`, choose the socket with `-L`).
 Each pane is a ConPTY with a `vt100` terminal model on the server side; the
 server composites the visible panes, borders and status line into a frame and
 sends only the cells that changed to the attached client, which writes them to
 the console with VT sequences. The server exits when its last session ends.
 
-Environment inside panes: `WMUX` (socket name) and `WMUX_PANE` (pane id). A
-`wmux` command run inside a pane talks to the server that owns it, the way
-`$TMUX` works for tmux, so `wmux ls` from a script or a plugin needs no `-L`.
-Server log: `%LOCALAPPDATA%\wmux\server.log` (`WMUX_LOG=debug` for more).
+Environment inside panes: `KEEPANE` (socket name) and `KEEPANE_PANE` (pane id). A
+`keepane` command run inside a pane talks to the server that owns it, the way
+`$TMUX` works for tmux, so `keepane ls` from a script or a plugin needs no `-L`.
+Server log: `%LOCALAPPDATA%\keepane\server.log` (`KEEPANE_LOG=debug` for more).
 Past 5 MB it becomes `server.log.1` and a new one starts, so a server that
 runs for months keeps at most about 10 MB of log.
 
-When a key does nothing (the prefix, say), run `wmux show-keys` in that same
+When a key does nothing (the prefix, say), run `keepane show-keys` in that same
 terminal and press it: each key prints what the console handed over and the
-key wmux reads it as, and `q` quits. Nothing printed means the program
+key keepane reads it as, and `q` quits. Nothing printed means the program
 hosting the terminal kept the key for itself (VS Code, for one, binds
 `Ctrl+B`). Hosts that pass input on as bytes rather than key events (SSH,
 some remote tools) send `Ctrl+B` as the character 0x02 with no Ctrl flag;
-wmux reads control characters the way tmux does, so that is still `C-b`.
+keepane reads control characters the way tmux does, so that is still `C-b`.
 
 The pipe carries a DACL that admits only the creating user (and SYSTEM), the
 Windows equivalent of tmux's mode-0700 socket directory. Every pane runs in a
@@ -679,7 +708,7 @@ process group), and a slow client console never makes the server buffer
 frames without bound: it drops to a full redraw instead.
 
 `vendor/vt100` is vt100 0.16.2 with a one-function fix for a panic when a
-pane shrinks through a wide (CJK) character; see `vendor/vt100/WMUX-PATCH.md`.
+pane shrinks through a wide (CJK) character; see `vendor/vt100/KEEPANE-PATCH.md`.
 The server also logs and survives any panic in a command (`server.log`).
 
 ## Development
@@ -689,7 +718,7 @@ cargo test              # unit + pipe-level e2e + real-console tests (spawns cmd
 cargo clippy --all-targets
 ```
 
-The `tests/console.rs` suite runs the real `wmux.exe` inside a ConPTY, so the
+The `tests/console.rs` suite runs the real `keepane.exe` inside a ConPTY, so the
 console code path (raw input mode, alternate screen, detach cleanup) is
 covered without a human at the keyboard.
 
@@ -702,7 +731,7 @@ it: the one used last, the smallest, the largest, or none but
 window, panned with `Shift`+arrows or `refresh-client -U/-D/-L/-R`, and
 following the cursor when a key goes to the pane), only the hooks listed
 above, the `choose-tree` filter is a substring rather than a format, and
-`display-popup` keeps the prefix key for wmux (`prefix prefix` sends it to
+`display-popup` keeps the prefix key for keepane (`prefix prefix` sends it to
 the program in the box).
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.

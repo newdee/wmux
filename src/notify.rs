@@ -1,10 +1,10 @@
 //! Desktop notifications, so a job that finishes in a window nobody is
 //! looking at can say so outside the terminal too.
 //!
-//! First choice is a WinRT toast: it carries wmux's own name in the Action
+//! First choice is a WinRT toast: it carries keepane's own name in the Action
 //! Center and a "Go to pane" button that brings the terminal to the pane
 //! the notification is about. A toast needs an AppUserModelID the shell
-//! knows and, for the button, a URL protocol that starts wmux; both are
+//! knows and, for the button, a URL protocol that starts keepane; both are
 //! plain registry entries under the user's own hive (`HKCU\Software\
 //! Classes`), written once, so the portable zip gets them too and no
 //! administrator is involved.
@@ -32,8 +32,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// The AppUserModelID toasts are shown under, and the URL protocol the
 /// "Go to pane" button opens.
-pub const AUMID: &str = "wmux";
-pub const PROTOCOL: &str = "wmux";
+pub const AUMID: &str = "keepane";
+pub const PROTOCOL: &str = "keepane";
 
 /// One notification: a bold first line, the text under it, and the URL a
 /// "Go to pane" button opens (toasts only).
@@ -55,7 +55,7 @@ pub fn notify(title: &str, body: &str) -> bool {
     notify_with(title, body, None)
 }
 
-/// As `notify`, with a "Go to pane" button opening `action` (a `wmux://`
+/// As `notify`, with a "Go to pane" button opening `action` (a `keepane://`
 /// URL from `go_to_pane_url`) when the notification is a toast.
 pub fn notify_with(title: &str, body: &str, action: Option<&str>) -> bool {
     if toast::show(title, body, action) {
@@ -71,7 +71,7 @@ pub fn notify_with(title: &str, body: &str, action: Option<&str>) -> bool {
 }
 
 /// The URL a notification's button opens to bring the terminal to a pane:
-/// `wmux://go/<socket>/<pane id>`, the socket percent-encoded.
+/// `keepane://go/<socket>/<pane id>`, the socket percent-encoded.
 pub fn go_to_pane_url(socket: &str, pane: u32) -> String {
     let mut enc = String::new();
     for b in socket.bytes() {
@@ -140,7 +140,8 @@ pub mod registration {
     use anyhow::{Result, bail};
     use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW,
+        RegGetValueW, RegSetValueExW,
     };
 
     fn wide(s: &str) -> Vec<u16> {
@@ -197,7 +198,7 @@ pub mod registration {
         }
     }
 
-    /// What the protocol runs: wmux itself, headless so no console flashes
+    /// What the protocol runs: keepane itself, headless so no console flashes
     /// up, with the URL as its one argument.
     pub fn protocol_command(exe: &str) -> String {
         format!("conhost.exe --headless \"{exe}\" \"%1\"")
@@ -207,13 +208,50 @@ pub mod registration {
     /// (the URL scheme whose links start `exe`). Idempotent.
     pub fn register(aumid: &str, protocol: &str, exe: &str) -> Result<()> {
         let app = Key::create(&format!("Software\\Classes\\AppUserModelId\\{aumid}"))?;
-        app.set(Some("DisplayName"), "wmux")?;
+        app.set(Some("DisplayName"), "keepane")?;
         let proto = Key::create(&format!("Software\\Classes\\{protocol}"))?;
         proto.set(None, &format!("URL:{protocol} protocol"))?;
         proto.set(Some("URL Protocol"), "")?;
         let cmd = Key::create(&format!("Software\\Classes\\{protocol}\\shell\\open\\command"))?;
         cmd.set(None, &protocol_command(exe))?;
         Ok(())
+    }
+
+    /// The command a URL protocol runs, when it is registered.
+    pub fn command_of(protocol: &str) -> Option<String> {
+        let path = wide(&format!("Software\\Classes\\{protocol}\\shell\\open\\command"));
+        let mut size = 0u32;
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                path.as_ptr(),
+                std::ptr::null(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+        if rc != 0 || size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                path.as_ptr(),
+                std::ptr::null(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr() as *mut _,
+                &mut size,
+            )
+        };
+        if rc != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]))
     }
 
     /// Remove both again. Not an error when they are not there.
@@ -292,7 +330,7 @@ mod toast {
     pub fn show(title: &str, body: &str, action: Option<&str>) -> bool {
         // Tests and CI: no toasts, and no registry entries pointing at a
         // test binary (the balloon needs neither).
-        if std::env::var_os("WMUX_NO_TOAST").is_some() {
+        if crate::legacy::var_os("KEEPANE_NO_TOAST").is_some() {
             return false;
         }
         if !registered() {
@@ -376,7 +414,7 @@ fn show(hwnd: HWND, note: &Note) -> bool {
     d.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
     d.uCallbackMessage = 0;
     d.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
-    put(&mut d.szTip, "wmux");
+    put(&mut d.szTip, "keepane");
     put(&mut d.szInfoTitle, &note.title);
     put(&mut d.szInfo, &note.body);
     d.dwInfoFlags = NIIF_INFO;
@@ -414,8 +452,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
 
 /// A window nobody sees, only there because a tray icon needs an owner.
 fn message_window() -> Option<HWND> {
-    let class = wide("wmux-notify\0");
-    let name = wide("wmux\0");
+    let class = wide("keepane-notify\0");
+    let name = wide("keepane\0");
     let mut wc: WNDCLASSEXW = unsafe { std::mem::zeroed() };
     wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
     wc.lpfnWndProc = Some(wnd_proc);
@@ -470,33 +508,33 @@ mod tests {
     #[test]
     fn notify_never_panics() {
         // No toast from a test: it would register this test binary as the
-        // wmux:// handler on the developer's machine.
-        unsafe { std::env::set_var("WMUX_NO_TOAST", "1") };
-        let _ = notify("wmux", "test notification");
-        let _ = notify("wmux", "");
+        // keepane:// handler on the developer's machine.
+        unsafe { std::env::set_var("KEEPANE_NO_TOAST", "1") };
+        let _ = notify("keepane", "test notification");
+        let _ = notify("keepane", "");
         let _ = notify("", "body only");
-        let _ = notify_with("wmux", "with a button", Some("wmux://go/default/3"));
+        let _ = notify_with("keepane", "with a button", Some("keepane://go/default/3"));
     }
 
     #[test]
     fn go_urls_round_trip() {
-        assert_eq!(go_to_pane_url("default", 7), "wmux://go/default/7");
-        assert_eq!(parse_go_url("wmux://go/default/7"), Some(("default".into(), 7)));
-        assert_eq!(parse_go_url("wmux://go/default/7/"), Some(("default".into(), 7)), "a trailing slash is fine");
+        assert_eq!(go_to_pane_url("default", 7), "keepane://go/default/7");
+        assert_eq!(parse_go_url("keepane://go/default/7"), Some(("default".into(), 7)));
+        assert_eq!(parse_go_url("keepane://go/default/7/"), Some(("default".into(), 7)), "a trailing slash is fine");
         // Odd socket names survive the trip.
         for sock in ["work", "my sock", "a/b", "中文", "x%y"] {
             let url = go_to_pane_url(sock, 42);
-            assert!(url.starts_with("wmux://go/"), "{url}");
+            assert!(url.starts_with("keepane://go/"), "{url}");
             assert_eq!(parse_go_url(&url), Some((sock.to_string(), 42)), "{url}");
         }
         for bad in [
-            "wmux://go/",
-            "wmux://go//3",
-            "wmux://stop/default/3",
+            "keepane://go/",
+            "keepane://go//3",
+            "keepane://stop/default/3",
             "http://go/default/3",
-            "wmux://go/default/x",
-            "wmux://go/default/3/extra",
-            "wmux://go/%zz/3",
+            "keepane://go/default/x",
+            "keepane://go/default/3/extra",
+            "keepane://go/%zz/3",
         ] {
             assert_eq!(parse_go_url(bad), None, "{bad}");
         }
@@ -504,11 +542,11 @@ mod tests {
 
     #[test]
     fn toast_xml_is_escaped_and_has_a_button_only_with_a_url() {
-        let x = toast::xml("a & b", "<done> \"ok\"", Some("wmux://go/s/1"));
+        let x = toast::xml("a & b", "<done> \"ok\"", Some("keepane://go/s/1"));
         assert!(x.contains("<text>a &amp; b</text>"), "{x}");
         assert!(x.contains("<text>&lt;done&gt; &quot;ok&quot;</text>"), "{x}");
-        assert!(x.contains("content=\"Go to pane\" arguments=\"wmux://go/s/1\" activationType=\"protocol\""), "{x}");
-        assert!(x.starts_with("<toast launch=\"wmux://go/s/1\" activationType=\"protocol\">"), "{x}");
+        assert!(x.contains("content=\"Go to pane\" arguments=\"keepane://go/s/1\" activationType=\"protocol\""), "{x}");
+        assert!(x.starts_with("<toast launch=\"keepane://go/s/1\" activationType=\"protocol\">"), "{x}");
         let plain = toast::xml("t", "b", None);
         assert!(!plain.contains("<actions>") && plain.starts_with("<toast><visual>"), "{plain}");
         // It parses as XML (the toast API would refuse it otherwise).
@@ -519,15 +557,15 @@ mod tests {
     /// touched: register, register again, remove, remove again.
     #[test]
     fn registration_round_trip() {
-        let id = format!("wmux-unit-test-{}", std::process::id());
-        let proto = format!("wmuxtest{}", std::process::id());
+        let id = format!("keepane-unit-test-{}", std::process::id());
+        let proto = format!("keepanetest{}", std::process::id());
         let _ = registration::unregister(&id, &proto);
-        registration::register(&id, &proto, r"C:\x\wmux.exe").unwrap();
-        registration::register(&id, &proto, r"C:\x\wmux.exe").unwrap();
+        registration::register(&id, &proto, r"C:\x\keepane.exe").unwrap();
+        registration::register(&id, &proto, r"C:\x\keepane.exe").unwrap();
         // What the protocol runs: headless, quoted, the URL as %1.
         assert_eq!(
-            registration::protocol_command(r"C:\x y\wmux.exe"),
-            "conhost.exe --headless \"C:\\x y\\wmux.exe\" \"%1\""
+            registration::protocol_command(r"C:\x y\keepane.exe"),
+            "conhost.exe --headless \"C:\\x y\\keepane.exe\" \"%1\""
         );
         registration::unregister(&id, &proto).unwrap();
         registration::unregister(&id, &proto).unwrap();

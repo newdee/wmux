@@ -1,4 +1,4 @@
-//! `wmux web`: the panes on a phone, over the local network.
+//! `keepane web`: the panes on a phone, over the local network.
 //!
 //! A client of the server like any other (it asks the server with the same
 //! commands the CLI sends), which also answers HTTP on the LAN: a page that
@@ -35,7 +35,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 const PAGE: &str = include_str!("web_page.html");
 const ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a1b26"/><rect x="10" y="12" width="44" height="40" rx="5" fill="none" stroke="#7aa2f7" stroke-width="4"/><path d="M32 12v40M32 32h22" stroke="#7aa2f7" stroke-width="4"/><path d="M16 22l6 5-6 5" fill="none" stroke="#9ece6a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
-const MANIFEST: &str = r##"{"name":"wmux","short_name":"wmux","start_url":"/","display":"standalone","background_color":"#1a1b26","theme_color":"#16161e","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml"}]}"##;
+const MANIFEST: &str = r##"{"name":"keepane","short_name":"keepane","start_url":"/","display":"standalone","background_color":"#1a1b26","theme_color":"#16161e","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml"}]}"##;
 
 /// Named keys the page's buttons send; anything else is typed as text.
 const KEYS: &[&str] = &[
@@ -91,11 +91,11 @@ impl State {
     }
 }
 
-/// `wmux web [--port N] [--bind IP] [--read-only] [--keep-key]`.
+/// `keepane web [--port N] [--bind IP] [--read-only] [--keep-key]`.
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     let o = parse_args(args)?;
     if !crate::client::server_running(&crate::ipc::pipe_name(socket)) {
-        bail!("no wmux server is running (socket '{socket}'): start a session first, then `wmux web`");
+        bail!("no keepane server is running (socket '{socket}'): start a session first, then `keepane web`");
     }
     let ip = o.bind.unwrap_or_else(lan_ip);
     let key = if o.keep_key { kept_key()? } else { new_key()? };
@@ -113,7 +113,7 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         if o.read_only { "see" } else { "see and type into" },
         if o.keep_key { "; the key stays for next time (--keep-key)" } else { "; the next start makes a new key" }
     );
-    println!("Windows may ask to let wmux onto the network: allow it for private networks.");
+    println!("Windows may ask to let keepane onto the network: allow it for private networks.");
     serve(listener, Arc::new(State::new(socket, &key, o.read_only, true))).await
 }
 
@@ -158,7 +158,7 @@ pub fn new_key() -> Result<String> {
 
 /// The key kept from last time (`--keep-key`), or a new one kept from now.
 fn kept_key() -> Result<String> {
-    let dir = dirs::data_local_dir().context("no local app data folder")?.join("wmux");
+    let dir = dirs::data_local_dir().context("no local app data folder")?.join("keepane");
     let path = dir.join("web.key");
     if let Ok(k) = std::fs::read_to_string(&path) {
         let k = k.trim();
@@ -246,7 +246,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
         let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
             length = value.parse().context("bad Content-Length")?;
-        } else if name.eq_ignore_ascii_case("x-wmux-key") {
+        } else if name.eq_ignore_ascii_case("x-keepane-key") {
             key = Some(value.to_string());
         }
     }
@@ -616,7 +616,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 _ => return Response::text(400, &format!("do: one of {}", ACTIONS.join(", "))),
             };
             // A new pane starts where the pane it came from is, not where
-            // `wmux web` was started (the directory this client would give).
+            // `keepane web` was started (the directory this client would give).
             if argv[0] != "kill-pane"
                 && let Ok((0, dir, _)) = q(vec![
                     "display-message".into(),
@@ -751,7 +751,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_are_read_whole_and_bounded() {
-        let raw = b"POST /api/send?pane=%252&key=Enter HTTP/1.1\r\nHost: x\r\nX-Wmux-Key: abc\r\ncontent-length: 5\r\n\r\nhello";
+        let raw = b"POST /api/send?pane=%252&key=Enter HTTP/1.1\r\nHost: x\r\nX-Keepane-Key: abc\r\ncontent-length: 5\r\n\r\nhello";
         let r = read_request(&mut &raw[..]).await.unwrap().unwrap();
         assert_eq!(r.method, "POST");
         assert_eq!(r.path, "/api/send");
@@ -775,7 +775,7 @@ mod tests {
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         // No server behind this state: every answer here comes before one
         // would be asked.
-        let s = State::new("wmux-web-test-no-server", "sekrit", false, false);
+        let s = State::new("keepane-web-test-no-server", "sekrit", false, false);
         assert_eq!(handle(&req("GET", "/", None), ip, &s).await.status, 200);
         assert_eq!(handle(&req("GET", "/icon.svg", None), ip, &s).await.status, 200);
         assert_eq!(handle(&req("GET", "/manifest.webmanifest", None), ip, &s).await.status, 200);
@@ -793,7 +793,7 @@ mod tests {
         badkey.query = vec![("pane".into(), "%1".into()), ("key".into(), "-X".into())];
         assert_eq!(handle(&badkey, ip, &s).await.status, 400, "only the page's keys");
         // Read-only: looking is allowed, typing and the menu are not.
-        let ro = State::new("wmux-web-test-no-server", "sekrit", true, false);
+        let ro = State::new("keepane-web-test-no-server", "sekrit", true, false);
         assert_eq!(handle(&req("POST", "/api/send", Some("sekrit")), ip, &ro).await.status, 403);
         assert_eq!(handle(&req("POST", "/api/action", Some("sekrit")), ip, &ro).await.status, 403);
         let info = handle(&req("GET", "/api/info", Some("sekrit")), ip, &ro).await;

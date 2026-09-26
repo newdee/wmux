@@ -1,5 +1,7 @@
 # 验收记录（三轮干净）
 
+> 项目在 0.14.0 由 wmux 改名为 keepane（原因见 README「原名 wmux」一节）。第五十一次及以前的记录保留当时的名字 wmux。
+
 规则：每轮 = 一次 review（换视角）+ 一次全量测试。发现问题即修，该轮不计数，重新开始。
 连续三轮零发现才算通过。
 
@@ -2359,3 +2361,36 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 5 | 可复现性 | 两个动画测试各 5/5；e2e 连跑 3 次 0 失败；全量 164/9/74；残留进程 0 | 干净（1/3） |
 | 6 | 机制通路 | 去掉上限 → 配置测试失败；去掉"到时结束" → 动画测试在"grown"超时；还原后全量 164/9/74 | 干净（2/3） |
 | 7 | 静态一致性 | 旧描述残留 0；i18n 键 71/71；网站测试数 247 = 164+9+74；README 中英都写了上限；全量 164/9/74 | 干净（3/3） |
+
+# 第五十二次记录（2026-09-26）— wmux 改名 keepane
+
+用户发现 GitHub 上 wmux 同名撞车。核实：GitHub 上约 20 个 wmux 仓库，其中 openwong2kim/wmux（398 星，wmux.app，winget 已上架 `openwong2kim.wmux`）和 amirlehmam/wmux（396 星，wmux.org）都比我们早半年；crates.io 的 `wmux` 已被注册；winget 已有两个 wmux 包。我们是 1 星、0 fork、winget PR 未合并，改名成本最低的时候。候选名逐一查了 GitHub 同名仓库、crates.io、npm、winget、六个常见域名（RDAP）；用户先后否掉 winplex / panestack / panemux（不要被 mux 限制，panestack 已有网站），选定 keepane：各渠道全空，.com .dev .io .app 未注册。
+
+**做了什么**
+
+- 全仓库 56 个文件、1186 处 wmux → keepane（程序、crate、命令、配置文件、数据目录、环境变量、管道名、通知协议、Windows Terminal 片段、开机启动项、安装包、文档、网站、工具脚本）；历史验收记录、旧版本 winget 清单、旧 scoop 清单保留原名。
+- 兼容（`src/legacy.rs`）：`WMUX_*` 环境变量、`~/.wmux.conf`、`~/.wmux/plugins`、`*.wmux` 插件在新名缺席时仍生效；`%LOCALAPPDATA%\wmux` 在没有旧服务端运行时首次启动即按文件搬到 `keepane`（已有的不覆盖）；测试等设了目录覆盖的环境不动真实目录。
+- `keepane migrate`：让仍在运行的 wmux 服务端存盘退出，搬数据目录，在 keepane 里恢复会话；同名会话以 `<名字>-wmux` 恢复在旁边；开机启动、Windows Terminal 片段、通知链接改成 keepane（只动能认出是我们写的注册项）。wmux 服务端还在时启动 keepane 会提示。
+- MSI 保留原 UpgradeCode（安装即替换 wmux）；发版时同一个 MSI 再以 `wmux-<版本>-…msi` 名字上传，旧版 `wmux update` 能直接装上 keepane。
+- README 中英加「原名 wmux / Formerly wmux」一节；网站首屏加"原名 wmux"；动图、截图、手机截图用新名重录。
+
+**用真实旧版 wmux 0.13.1（从 GitHub release 下载）实测迁移**
+
+| 场景 | 结果 |
+|---|---|
+| 旧服务端 2 个会话（一个 2 窗口）在跑时启动 keepane | 打印提示 |
+| `keepane migrate` | 旧服务端存了 2 个会话后退出；两个会话恢复，窗口和屏幕文字都在；再跑一次只报"没有旧服务端" |
+| keepane 已有同名 `work`、旧服务端有 `work` / `ops` / `my work` | keepane 的 `work` 原样保留，wmux 的恢复为 `work-wmux`，其余两个恢复 |
+
+验收（每轮先 fmt --check + clippy -D warnings，再 review + 全量测试）：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 | 剩余 wmux 逐处核对；`packaging/scoop/keepane.json` 是替换时未被跟踪的新文件，漏改了 6 处；parity 没列 `migrate` | **有问题**，已改。不计数（此前替换还误伤了 4 处测试数据：格式模块取末 4 字符、缓冲区字节数、提示符后的光标列、小窗口跟随光标的列，均按新名字长度改正） |
+| 2 | 机制通路 | 去掉环境变量回退 → 单测失败；去掉旧配置路径 → 单测失败；迁移不恢复会话 / 不提示 → 真实旧版脚本检出；还原后通过。全量 167/9/74 | 干净（1/3）后被下一轮打断 |
+| 3 | 边界 | 同名会话：`migrate` 报"restored"，实际什么也没恢复（restore-session 对已在运行的名字只是附着），wmux 那份也不会被搬过来 | **有问题**，改为以 `<名字>-wmux` 恢复在旁边（从旧服务端实际的 sessions-dir 找它的存档）。不计数。排查中另发现我脚本里 `"$$"` 被 PowerShell 展开导致误判，已改 |
+| 4 | 可复现性 | 两个迁移脚本各跑 2 次输出一致（归一"created Ns ago"）；e2e 2 次 0 失败；全量 167/9/74；残留进程 0 | 干净（1/3） |
+| 5 | 机制通路 | 同名处理变异（跳过）→ 脚本里没有 `work-wmux`；还原后有。全量 167/9/74 | 干净（2/3） |
+| 6 | 静态一致性 | 重录图和动画后：剩余 wmux 87 处全是兼容代码、改名说明、旧文件名；图片引用缺失 0；i18n 71/71；网站测试数 250 = 167+9+74；`migrate` 在帮助 / 补全 / parity 都有。全量 167/9/74 | 干净（3/3） |
+
+未在真实机器上验证：MSI 同 UpgradeCode 替换已安装的 wmux、旧版 `wmux update` 装上 keepane、开机启动 / Windows Terminal / 通知注册的迁移（这些在用户实际升级时发生）。

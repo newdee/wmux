@@ -3,12 +3,12 @@
   Render the frames recorded by tests/demo_frames.rs as PNGs.
 
 .DESCRIPTION
-  Each frame is a JSON grid of coloured text runs taken from a real wmux
+  Each frame is a JSON grid of coloured text runs taken from a real keepane
   session. This draws them with a monospace font inside a terminal-looking
   window, so the result is a picture of what the terminal actually showed.
 
 .EXAMPLE
-  $env:WMUX_DEMO_OUT = "target/demo-frames"
+  $env:KEEPANE_DEMO_OUT = "target/demo-frames"
   cargo test --release --test demo_frames -- --ignored --nocapture
   pwsh -File tools/render-frames.ps1 -In target/demo-frames -Out target/demo-png
   # f0001.png ... for the animation, still-<name>.png for the pictures.
@@ -22,7 +22,7 @@ param(
     [double]$FontSize = 15,
     # Only render these frame numbers (1-based). Empty means all of them.
     [int[]]$Only = @(),
-    [string]$Title = "wmux"
+    [string]$Title = "keepane"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,7 +34,7 @@ if ($installed -notcontains $FontName) {
     $FontName = "Cascadia Mono"
 }
 
-# Tokyo Night, the palette the recordings' wmux theme (themes/tokyo-night.conf)
+# Tokyo Night, the palette the recordings' keepane theme (themes/tokyo-night.conf)
 # is made for.
 $palette = @(
     "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",

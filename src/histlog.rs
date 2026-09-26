@@ -26,15 +26,15 @@ use std::time::Duration;
 /// Most bytes one pane position writes in one day.
 pub const DAY_CAP: u64 = 20 * 1024 * 1024;
 
-/// Where the files go when `log-history-dir` is not set: `WMUX_HISTORY_DIR`,
-/// else beside the saved sessions when `WMUX_SESSIONS_DIR` moves those
+/// Where the files go when `log-history-dir` is not set: `KEEPANE_HISTORY_DIR`,
+/// else beside the saved sessions when `KEEPANE_SESSIONS_DIR` moves those
 /// (the tests do, and so stay out of the real directory), else
-/// `%LOCALAPPDATA%\wmux\history`.
+/// `%LOCALAPPDATA%\keepane\history`.
 pub fn default_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("WMUX_HISTORY_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    if let Some(d) = std::env::var_os("WMUX_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("history");
     }
     crate::logger::log_dir().join("history")
@@ -180,7 +180,7 @@ fn run(rx: Receiver<Msg>) {
                 // after which the file counts as full.
                 let (bytes, size) = if o.size + text.len() as u64 > DAY_CAP {
                     (
-                        format!("[wmux: this file reached {} MB; the rest of the day is not kept]\n", DAY_CAP >> 20),
+                        format!("[keepane: this file reached {} MB; the rest of the day is not kept]\n", DAY_CAP >> 20),
                         DAY_CAP,
                     )
                 } else {
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn a_dead_writer_is_replaced() {
         let _turn = turn();
-        let dir = std::env::temp_dir().join(format!("wmux-histlog-crash-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-histlog-crash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         send(Msg::Crash);
         std::thread::sleep(Duration::from_millis(300));
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn junk_and_extreme_settings_are_survived() {
         let _turn = turn();
-        let dir = std::env::temp_dir().join(format!("wmux-histlog-junk-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-histlog-junk-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let today = chrono::Local::now().date_naive();
         // A file where a session directory would be, a directory where a
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn written_scanned_capped_and_pruned() {
         let _turn = turn();
-        let dir = std::env::temp_dir().join(format!("wmux-histlog-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-histlog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let today = chrono::Local::now().date_naive();
         let old = today - chrono::Days::new(40);
@@ -403,7 +403,7 @@ mod tests {
         let keys: Vec<String> = scan(&dir).into_iter().map(|k| k.key).collect();
         assert_eq!(keys, ["0.0", "3.0", "10.0"]);
         assert!(!dir.join("s").join("2.1").exists());
-        // A file deleted while wmux runs is made again after a quiet
+        // A file deleted while keepane runs is made again after a quiet
         // moment, not written into unseen.
         let f = file_for(&dir, "s", 0, 0, today);
         std::thread::sleep(SETTLE * 3);

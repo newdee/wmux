@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Per-machine MSI for wmux: one directory under Program Files, wmux.exe on the
+  Per-machine MSI for keepane: one directory under Program Files, keepane.exe on the
   system PATH, and a normal entry in "Apps & features".
 
   Build (WiX 3.14):
-    candle -arch x64 -dVersion=<x.y.z> -dSourceDir=<dir with wmux.exe> installer\wmux.wxs -o <obj>
-    light -ext WixUIExtension <obj> -o wmux-<x.y.z>-x86_64.msi
+    candle -arch x64 -dVersion=<x.y.z> -dSourceDir=<dir with keepane.exe> installer\keepane.wxs -o <obj>
+    light -ext WixUIExtension <obj> -o keepane-<x.y.z>-x86_64.msi
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
-           Name="wmux"
+           Name="keepane"
            Language="1033"
            Version="$(var.Version)"
            Manufacturer="newdee"
@@ -17,30 +17,30 @@
     <Package InstallerVersion="500"
              Compressed="yes"
              InstallScope="perMachine"
-             Description="wmux $(var.Version) - a tmux-style terminal multiplexer for Windows" />
+             Description="keepane $(var.Version) - a tmux-style terminal multiplexer for Windows" />
 
     <!-- Installing a newer version replaces the old one in place. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of wmux is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of keepane is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <Icon Id="wmux.exe" SourceFile="$(var.SourceDir)\wmux.exe" />
-    <Property Id="ARPPRODUCTICON" Value="wmux.exe" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/newdee/wmux" />
+    <Icon Id="keepane.exe" SourceFile="$(var.SourceDir)\keepane.exe" />
+    <Property Id="ARPPRODUCTICON" Value="keepane.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/newdee/keepane" />
 
-    <Feature Id="Main" Title="wmux" Level="1">
+    <Feature Id="Main" Title="keepane" Level="1">
       <ComponentGroupRef Id="Files" />
     </Feature>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="wmux" />
+        <Directory Id="INSTALLFOLDER" Name="keepane" />
       </Directory>
     </Directory>
 
     <ComponentGroup Id="Files" Directory="INSTALLFOLDER">
       <Component Id="Exe" Guid="*" Win64="yes">
-        <File Id="wmuxExe" Name="wmux.exe" Source="$(var.SourceDir)\wmux.exe" KeyPath="yes" />
-        <!-- `wmux` works from any shell; removed again on uninstall. -->
+        <File Id="keepaneExe" Name="keepane.exe" Source="$(var.SourceDir)\keepane.exe" KeyPath="yes" />
+        <!-- `keepane` works from any shell; removed again on uninstall. -->
         <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" Permanent="no" />
       </Component>
       <!-- One file per component: an auto GUID needs a single unversioned file. -->
@@ -51,7 +51,7 @@
         <File Id="LicenseFile" Name="LICENSE" Source="$(var.SourceDir)\LICENSE" KeyPath="yes" />
       </Component>
       <Component Id="ConfExample" Guid="*" Win64="yes">
-        <File Id="ConfExampleFile" Name="wmux.conf.example" Source="$(var.SourceDir)\wmux.conf.example" KeyPath="yes" />
+        <File Id="ConfExampleFile" Name="keepane.conf.example" Source="$(var.SourceDir)\keepane.conf.example" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 

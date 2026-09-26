@@ -1,4 +1,4 @@
-/* wmux feature tour: dark editorial layout over the terminal's own palette */
+/* keepane feature tour: dark editorial layout over the terminal's own palette */
 
 /* Self-hosted so the page renders where Google's font CDN is unreachable.
    swap = text paints in the fallback immediately, then upgrades. */
@@ -421,7 +421,7 @@ figcaption {
   font-size: 13px;
 }
 
-/* A status line as wmux draws it by default: black on green, one row. */
+/* A status line as keepane draws it by default: black on green, one row. */
 .code.statusline {
   padding: 6px 12px;
   background: #3fb950;

@@ -73,7 +73,7 @@ impl Row {
     pub fn resize(&mut self, len: u16, cell: crate::Cell) {
         self.cells.resize(usize::from(len), cell);
         self.wrapped = false;
-        // wmux patch: shrinking may cut a wide character in half, leaving
+        // keepane patch: shrinking may cut a wide character in half, leaving
         // its first cell in the last column with no continuation cell after
         // it. Clear it like `truncate` does, or `clear_wide` will index past
         // the row later.
@@ -94,7 +94,7 @@ impl Row {
 
     pub fn clear_wide(&mut self, col: u16) {
         let cell = &self.cells[usize::from(col)];
-        // wmux patch: bounds-check the neighbour instead of indexing blindly.
+        // keepane patch: bounds-check the neighbour instead of indexing blindly.
         let other = if cell.is_wide() {
             self.cells.get_mut(usize::from(col) + 1)
         } else if cell.is_wide_continuation() {

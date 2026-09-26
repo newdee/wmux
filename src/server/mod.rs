@@ -1,4 +1,4 @@
-//! The wmux server: owns sessions, windows and panes; talks to clients over a
+//! The keepane server: owns sessions, windows and panes; talks to clients over a
 //! named pipe; renders frames.
 
 pub mod input;
@@ -608,7 +608,7 @@ impl From<Result<(), String>> for Outcome {
 }
 
 /// One `wait-for` channel: a lock with its queue, and the wait/signal pair.
-/// A client that is waiting has had no reply sent yet, so its `wmux wait-for`
+/// A client that is waiting has had no reply sent yet, so its `keepane wait-for`
 /// is still sitting there; waking it means answering that command.
 #[derive(Default)]
 struct WaitChannel {
@@ -693,7 +693,7 @@ pub async fn run(socket: String) -> Result<()> {
 #[derive(Default, Clone, Debug)]
 pub struct RunOptions {
     /// Bring every saved session back at start whatever the config says
-    /// (`wmux __server --restore`, which is what the logon entry runs).
+    /// (`keepane __server --restore`, which is what the logon entry runs).
     pub force_restore: bool,
     /// Read this config file instead of looking for one. Tests use it so
     /// that servers sharing a process never share a config through the
@@ -1404,9 +1404,9 @@ impl Server {
         }
     }
 
-    /// Source a file of wmux commands, then load any `@plugin` it declared.
+    /// Source a file of keepane commands, then load any `@plugin` it declared.
     ///
-    /// A file named `*tmux.conf` is one written for tmux: whatever wmux
+    /// A file named `*tmux.conf` is one written for tmux: whatever keepane
     /// cannot use in it (other key tables, TPM, `%if` blocks) is skipped
     /// with a note in `show-messages`, and the result is a one-line summary
     /// rather than a wall of errors on every attach.
@@ -1461,7 +1461,7 @@ impl Server {
             }
             let short = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned());
             return Err(format!(
-                "{}: {} lines wmux could not use were skipped (prefix ~ or show-messages lists them)",
+                "{}: {} lines keepane could not use were skipped (prefix ~ or show-messages lists them)",
                 short.unwrap_or_else(|| path.clone()),
                 errors.len()
             ));
@@ -1469,10 +1469,10 @@ impl Server {
         Err(errors.join("\n"))
     }
 
-    /// A plugin is a directory holding `<name>.wmux` or `plugin.wmux`; `name`
+    /// A plugin is a directory holding `<name>.keepane` or `plugin.keepane`; `name`
     /// is a path or a directory name under `plugin-path`. Sourcing it once is
     /// all "loading" means: it binds keys, sets options, hooks and status
-    /// pieces, and its scripts talk back through the `wmux` CLI.
+    /// pieces, and its scripts talk back through the `keepane` CLI.
     fn load_plugin(&mut self, name: &str) -> Result<(), String> {
         let name = name.trim_matches(['"', '\'']);
         let direct = std::path::PathBuf::from(expand_home(name));
@@ -1490,18 +1490,29 @@ impl Server {
             // `user/repo` (TPM style) -> last component.
             let short = name.rsplit(['/', '\\']).next().unwrap_or(name);
             let cand = base.join(short);
+            // Plugins installed under wmux's name (up to 0.13.1) are found
+            // there while the default place has none.
+            let old = std::path::PathBuf::from(expand_home("~/.wmux/plugins")).join(short);
             if cand.is_dir() {
                 cand
+            } else if self.opts.plugin_path == Options::default().plugin_path && old.is_dir() {
+                old
             } else {
                 return Err(format!("plugin not found: {name} (looked in {})", base.display()));
             }
         };
         let short = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let entry = [format!("{short}.wmux"), "plugin.wmux".into(), "plugin.conf".into()]
-            .iter()
-            .map(|f| dir.join(f))
-            .find(|p| p.is_file())
-            .ok_or_else(|| format!("{}: no {short}.wmux or plugin.wmux", dir.display()))?;
+        let entry = [
+            format!("{short}.keepane"),
+            "plugin.keepane".into(),
+            "plugin.conf".into(),
+            format!("{short}.wmux"),
+            "plugin.wmux".into(),
+        ]
+        .iter()
+        .map(|f| dir.join(f))
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("{}: no {short}.keepane or plugin.keepane", dir.display()))?;
         let dir_s = dir.to_string_lossy().into_owned();
         if self.plugins.contains(&dir_s) {
             return Ok(());
@@ -1530,7 +1541,7 @@ impl Server {
         let events = self.events.clone();
         let mut env = self.pane_env(pane.unwrap_or(0));
         if pane.is_none() {
-            env.retain(|(k, _)| k != "WMUX_PANE");
+            env.retain(|(k, _)| k != "KEEPANE_PANE");
         }
         let spawned = std::thread::Builder::new().name("run-shell".into()).spawn({
             let events = events.clone();
@@ -1802,7 +1813,7 @@ impl Server {
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
                 // A server nobody uses has no reason to live (e.g. started by
-                // `wmux attach` when there was nothing to attach to).
+                // `keepane attach` when there was nothing to attach to).
                 if self.sessions.is_empty()
                     && self.clients.is_empty()
                     && self.started.elapsed() > Duration::from_secs(10)
@@ -2000,9 +2011,9 @@ impl Server {
         // a notification reaches them when it is behind other windows, with
         // a button that brings them to the pane it is about.
         if self.opts.notify {
-            let name = self.session(sid).map(|s| s.name.clone()).unwrap_or_else(|| "wmux".into());
+            let name = self.session(sid).map(|s| s.name.clone()).unwrap_or_else(|| "keepane".into());
             let go = pane.map(|p| crate::notify::go_to_pane_url(&self.socket, p));
-            crate::notify::notify_with(&format!("wmux: {name}"), text, go.as_deref());
+            crate::notify::notify_with(&format!("keepane: {name}"), text, go.as_deref());
         }
         let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
         for cid in ids {
@@ -2297,7 +2308,7 @@ impl Server {
     // ----------------------------------------------------------------- panes
 
     /// Environment for panes and `run-shell`: the socket, the pane, and PATH
-    /// with this executable's directory first so `wmux` is callable from
+    /// with this executable's directory first so `keepane` is callable from
     /// scripts and panes even when it was never installed.
     /// A buffer by name, or the newest one.
     fn buffer(&self, name: Option<&str>) -> Option<&(String, String)> {
@@ -2335,8 +2346,8 @@ impl Server {
 
     fn pane_env(&self, pane_id: PaneId) -> Vec<(String, String)> {
         let mut env = vec![
-            ("WMUX".into(), self.socket.clone()),
-            ("WMUX_PANE".into(), pane_id.to_string()),
+            ("KEEPANE".into(), self.socket.clone()),
+            ("KEEPANE_PANE".into(), pane_id.to_string()),
             ("PATH".into(), path_with_self()),
         ];
         // `set-environment` entries last, so they can override even PATH.
@@ -2747,7 +2758,7 @@ impl Server {
 
     fn exec(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         match cmd {
-            Cmd::Version => Outcome::Text(format!("wmux {}", env!("CARGO_PKG_VERSION"))),
+            Cmd::Version => Outcome::Text(format!("keepane {}", env!("CARGO_PKG_VERSION"))),
             Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);
@@ -2760,7 +2771,7 @@ impl Server {
                 }
                 let inside = client.is_some_and(|c| c.pane_env.is_some() && c.session.is_none());
                 if inside && !detached && interactive {
-                    return Outcome::Error("sessions should be nested with care, unset WMUX to force".into());
+                    return Outcome::Error("sessions should be nested with care, unset KEEPANE to force".into());
                 }
                 if attach_existing
                     && let Some(n) = &name
@@ -2878,7 +2889,7 @@ impl Server {
                 let (history, tx) = (self.opts.history_limit, self.pane_tx.clone());
                 let mut done = 0;
                 for id in ids {
-                    // The same environment a new pane gets: WMUX, WMUX_PANE
+                    // The same environment a new pane gets: KEEPANE, KEEPANE_PANE
                     // and PATH, not just the set-environment entries.
                     let env = self.pane_env(id);
                     let Some(p) = self.find_pane_mut(id) else { continue };
@@ -3204,7 +3215,7 @@ impl Server {
                 let title = match (title, cid) {
                     (Some(t), Some(cid)) => self.expand_format(&t, cid),
                     (Some(t), None) => t,
-                    (None, _) => "wmux".to_string(),
+                    (None, _) => "keepane".to_string(),
                 };
                 let message = match cid {
                     Some(cid) => self.expand_format(&message, cid),
@@ -3502,7 +3513,7 @@ impl Server {
                 let cwd = self.pane_cwd(cwd.as_deref(), sid, cid);
                 let count = count.max(1);
                 let was_active = self.session(sid).unwrap().windows[widx].active;
-                // `-N count` (wmux's own): that many panes at once. Each
+                // `-N count` (keepane's own): that many panes at once. Each
                 // split takes the largest pane and the window is tiled after
                 // it, so the panes stay even and none gets too small to split.
                 let mut into = pid;
@@ -4094,7 +4105,7 @@ impl Server {
                 let bytes = input::encode_key(self.opts.prefix, false);
                 // With a popup open (and no target named), the prefix is for
                 // the program in the box: `prefix prefix` is how it gets the
-                // key the popup otherwise keeps for wmux.
+                // key the popup otherwise keeps for keepane.
                 if target.is_none()
                     && let Some(p) = cid.and_then(|c| self.clients.get_mut(&c)).and_then(|c| c.popup.as_mut())
                     && !p.finished
@@ -4411,7 +4422,7 @@ impl Server {
                     Outcome::Ok
                 }
                 // tmux's mouse "keys" (MouseDragEnd1Pane, WheelUpPane, ...):
-                // wmux's mouse handling is fixed, so a config line for one
+                // keepane's mouse handling is fixed, so a config line for one
                 // is taken and does nothing, instead of an error at load.
                 None if is_mouse_key(&key) => Outcome::Ok,
                 None => Outcome::Error(format!("unknown key: {key}")),
@@ -4538,7 +4549,7 @@ impl Server {
                 let clients: Vec<ClientId> =
                     self.clients.values().filter(|c| c.interactive && c.session.is_some()).map(|c| c.id).collect();
                 if clients.is_empty() {
-                    return Outcome::Error("focus-pane: no client attached (`wmux attach` first)".into());
+                    return Outcome::Error("focus-pane: no client attached (`keepane attach` first)".into());
                 }
                 for c in &clients {
                     self.chooser_go_pane(*c, sid, wid, pane);
@@ -4792,7 +4803,7 @@ impl Server {
                 Outcome::Text(lines.join("\n"))
             }
             Cmd::SetCwd { target, dir } => {
-                // No target: the pane the client runs in (WMUX_PANE), else the active one.
+                // No target: the pane the client runs in (KEEPANE_PANE), else the active one.
                 let pid = match (&target, cid.and_then(|c| self.clients.get(&c)).and_then(|c| c.pane_env)) {
                     (None, Some(p)) if self.find_pane_mut(p).is_some() => p,
                     _ => match self.resolve(target.as_ref(), cid) {
@@ -4997,7 +5008,7 @@ impl Server {
             return text(first);
         }
         let mut env = self.pane_env(pid);
-        env.retain(|(k, _)| k != "WMUX_PANE");
+        env.retain(|(k, _)| k != "KEEPANE_PANE");
         for cmd in missing {
             let (output, _) = run_shell_blocking(&cmd, &env, Some(ONE_SHOT_SHELL_TIMEOUT));
             let line = output.lines().next().unwrap_or("").trim_end().to_string();
@@ -5193,7 +5204,7 @@ impl Server {
                 if k == self.opts.prefix {
                     // Send the prefix key itself to the pane, or to the popup
                     // when one is open: that is how a program in the box gets
-                    // the one key the popup keeps for wmux. In copy mode the
+                    // the one key the popup keeps for keepane. In copy mode the
                     // key is copy mode's: `C-b C-b` pages up when C-b is the
                     // prefix, as the vi table says C-b does.
                     if in_copy {
@@ -6004,7 +6015,7 @@ impl Server {
         }
     }
 
-    /// A day of the history log in `wmux view`, in a popup over the window.
+    /// A day of the history log in `keepane view`, in a popup over the window.
     fn view_log(&mut self, cid: ClientId, path: &std::path::Path) {
         // Gone since the list was read (cleared out, deleted by hand): the
         // viewer would fail and its popup vanish before it could say so.
@@ -6013,7 +6024,7 @@ impl Server {
             return;
         }
         let Some(exe) = pane::helper_exe() else {
-            self.message(cid, "no wmux.exe to view the log with");
+            self.message(cid, "no keepane.exe to view the log with");
             return;
         };
         let cmd = Cmd::DisplayPopup {
@@ -7995,7 +8006,7 @@ mod tests {
         assert_eq!(code, 3);
         assert!(out.contains("中文-ok"), "{out:?}");
         let (out, code) =
-            run_shell_blocking("Write-Output $env:WMUX_TEST_VAR", &[("WMUX_TEST_VAR".into(), "v1".into())], None);
+            run_shell_blocking("Write-Output $env:KEEPANE_TEST_VAR", &[("KEEPANE_TEST_VAR".into(), "v1".into())], None);
         assert_eq!(code, 0);
         assert_eq!(out.trim(), "v1");
     }
@@ -8017,7 +8028,7 @@ mod tests {
     fn expand_home_forms() {
         let home = dirs::home_dir().unwrap().display().to_string();
         assert_eq!(expand_home("~"), home);
-        assert_eq!(expand_home("~/.wmux.conf"), format!("{home}/.wmux.conf"));
+        assert_eq!(expand_home("~/.keepane.conf"), format!("{home}/.keepane.conf"));
         assert_eq!(expand_home("~\\x"), format!("{home}\\x"));
         assert_eq!(expand_home("~user/x"), "~user/x");
         assert_eq!(expand_home("C:\\x"), "C:\\x");

@@ -1,5 +1,5 @@
-//! Server options and the config file (`%USERPROFILE%\.wmux.conf`), which is
-//! a list of wmux commands, one per line, like `.tmux.conf`.
+//! Server options and the config file (`%USERPROFILE%\.keepane.conf`), which is
+//! a list of keepane commands, one per line, like `.tmux.conf`.
 
 use crate::keys::Key;
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ pub struct Options {
     pub visual_bell: bool,
     pub visual_activity: bool,
     /// Also raise a desktop notification for an alert, so a job that ends
-    /// while wmux is not on screen still reaches you.
+    /// while keepane is not on screen still reaches you.
     pub notify: bool,
     /// A line of text on every pane's top or bottom border ("off", "top",
     /// "bottom"), from `pane-border-format`.
@@ -83,7 +83,7 @@ pub struct Options {
     pub window_size: String,
     /// Show when each command ran, and how it went, at the right end of
     /// its line (tmux has no such thing): needs a shell that reports its
-    /// commands, which wmux's PowerShell hook does.
+    /// commands, which keepane's PowerShell hook does.
     pub pane_timestamps: bool,
     /// Keep what panes print on disk, a file per pane position per day,
     /// for choose-history (see histlog.rs).
@@ -197,7 +197,7 @@ impl Default for Options {
             status_interval: 15,
             window_status_format: "#I:#W#F".into(),
             window_status_current_format: "#I:#W#F".into(),
-            plugin_path: "~/.wmux/plugins".into(),
+            plugin_path: "~/.keepane/plugins".into(),
             pending_plugins: Vec::new(),
             user: Vec::new(),
             autosave: true,
@@ -293,7 +293,7 @@ fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
     Ok((fg, bg))
 }
 
-/// Every option wmux actually does something with, plus `synchronize-panes`
+/// Every option keepane actually does something with, plus `synchronize-panes`
 /// (which the server handles itself). Used to expand an abbreviation.
 pub const KNOWN: &[&str] = &[
     "animation",
@@ -694,18 +694,23 @@ impl Options {
 /// Candidate config file locations, first existing wins.
 pub fn config_paths() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Ok(p) = std::env::var("WMUX_CONFIG") {
+    if let Some(p) = crate::legacy::var("KEEPANE_CONFIG") {
         v.push(PathBuf::from(p));
     }
+    if let Some(home) = dirs::home_dir() {
+        v.push(home.join(".keepane.conf"));
+        v.push(home.join(".config").join("keepane").join("keepane.conf"));
+    }
+    if let Some(cfg) = dirs::config_dir() {
+        v.push(cfg.join("keepane").join("keepane.conf"));
+    }
+    // keepane was wmux up to 0.13.1: a config under the old name still counts.
     if let Some(home) = dirs::home_dir() {
         v.push(home.join(".wmux.conf"));
         v.push(home.join(".config").join("wmux").join("wmux.conf"));
     }
-    if let Some(cfg) = dirs::config_dir() {
-        v.push(cfg.join("wmux").join("wmux.conf"));
-    }
-    // With no wmux config of its own, an existing tmux config is read the
-    // way tmux would read it, skipping what wmux has no equivalent for.
+    // With no keepane config of its own, an existing tmux config is read the
+    // way tmux would read it, skipping what keepane has no equivalent for.
     if let Some(home) = dirs::home_dir() {
         v.push(home.join(".tmux.conf"));
         v.push(home.join(".config").join("tmux").join("tmux.conf"));
@@ -720,7 +725,7 @@ pub fn find_config() -> Option<PathBuf> {
     config_paths().into_iter().find(|p| p.is_file())
 }
 
-/// A config written for tmux rather than wmux: lines it cannot use are
+/// A config written for tmux rather than keepane: lines it cannot use are
 /// skipped with a note instead of being reported as errors.
 pub fn is_tmux_conf(path: &std::path::Path) -> bool {
     path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.ends_with("tmux.conf"))
@@ -747,29 +752,29 @@ pub fn resolve_shell(opts: &Options) -> Vec<String> {
     }
 }
 
-/// The prompt hook wmux gives PowerShell: whatever the prompt was, plus an
+/// The prompt hook keepane gives PowerShell: whatever the prompt was, plus an
 /// invisible OSC 9;9 with the current directory after it, so `#{pane_
 /// current_path}`, `split-window -c '#{pane_current_path}'` and the saved
 /// session follow `cd` without anyone editing a profile. `Set-Location`
 /// does not move the process's directory, so nothing else can know it.
 ///
 /// It also says when the last command ran and whether it failed (`OSC
-/// 7777;wmux-cmd;start;end;ok`, the times from the shell's own history,
+/// 7777;keepane-cmd;start;end;ok`, the times from the shell's own history,
 /// once per history entry), before the prompt, and where the prompt ends
 /// (`OSC 133;B`), after it: `pane-timestamps` and `list-marks` read them.
 /// `$global:?` is read first, before anything else can change it.
-pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__wmux_prompt = $function:prompt; \
-     $global:__wmux_hid = (Get-History -Count 1).Id; \
+pub const POWERSHELL_PROMPT_HOOK: &str = "$global:__keepane_prompt = $function:prompt; \
+     $global:__keepane_hid = (Get-History -Count 1).Id; \
      function global:prompt { \
      $__ok = $global:?; \
      $__h = Get-History -Count 1; $__c = ''; \
-     if ($__h -and $__h.Id -ne $global:__wmux_hid) { $global:__wmux_hid = $__h.Id; \
-     $__c = [char]27 + ']7777;wmux-cmd;' + ([DateTimeOffset]$__h.StartExecutionTime).ToUnixTimeMilliseconds() + ';' \
+     if ($__h -and $__h.Id -ne $global:__keepane_hid) { $global:__keepane_hid = $__h.Id; \
+     $__c = [char]27 + ']7777;keepane-cmd;' + ([DateTimeOffset]$__h.StartExecutionTime).ToUnixTimeMilliseconds() + ';' \
      + ([DateTimeOffset]$__h.EndExecutionTime).ToUnixTimeMilliseconds() + ';' + [int]$__ok + [char]27 + '\\' }; \
-     $__p = if ($global:__wmux_prompt) { & $global:__wmux_prompt } else { 'PS ' + $PWD.Path + '> ' }; \
+     $__p = if ($global:__keepane_prompt) { & $global:__keepane_prompt } else { 'PS ' + $PWD.Path + '> ' }; \
      $__c + \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' + [char]27 + ']133;B' + [char]27 + '\\' }";
 
-/// `argv` with wmux's shell integration added where it applies: an
+/// `argv` with keepane's shell integration added where it applies: an
 /// interactive PowerShell (pwsh or Windows PowerShell) gets the prompt hook
 /// through `-NoExit -Command`. A PowerShell running a command or file of
 /// its own, and every other program, is left exactly as given.
@@ -1106,6 +1111,21 @@ mod tests {
             h.contains("']9;9;'") && h.contains("$PWD.ProviderPath") && h.contains("function global:prompt"),
             "{h}"
         );
+    }
+
+    /// keepane's own config first, then one under the old name (wmux, up to
+    /// 0.13.1), then tmux's.
+    #[test]
+    fn a_config_under_the_old_name_still_counts() {
+        let paths: Vec<String> = config_paths()
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .filter(|n| n.ends_with(".conf"))
+            .collect();
+        let at = |name: &str| paths.iter().position(|p| p == name).unwrap_or_else(|| panic!("{name} in {paths:?}"));
+        assert!(at(".keepane.conf") < at(".wmux.conf"), "{paths:?}");
+        assert!(at(".wmux.conf") < at(".tmux.conf"), "{paths:?}");
+        assert!(paths.iter().any(|p| p == "wmux.conf"), "~/.config/wmux/wmux.conf too: {paths:?}");
     }
 
     #[test]

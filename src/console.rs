@@ -31,7 +31,7 @@ const WINDOW_BUFFER_SIZE_EVENT: u16 = 0x0004;
 /// Write `text` to this process's console screen (`CONOUT$`), VT sequences
 /// interpreted, whatever the standard handles are: a process started into
 /// a ConPTY gets no usable stdout, only the console itself. For the helper
-/// that prints a resumed pane's saved output (`wmux __replay`).
+/// that prints a resumed pane's saved output (`keepane __replay`).
 pub fn write_to_console(text: &str) -> Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
     use windows_sys::Win32::System::Console::WriteConsoleW;
@@ -147,7 +147,7 @@ impl Console {
     }
 
     /// Raw input mode: no line editing/echo, window events, and either mouse
-    /// capture for wmux or quick-edit so the host terminal selects text.
+    /// capture for keepane or quick-edit so the host terminal selects text.
     fn raw_input_mode(&self, mouse: bool) -> u32 {
         let base = (self.saved_in
             & !(ENABLE_PROCESSED_INPUT
@@ -256,14 +256,14 @@ impl Console {
     }
 }
 
-/// `wmux show-keys`: each key as the console hands it over (key code,
-/// character, modifier flags) and the key wmux makes of it, until `q`.
+/// `keepane show-keys`: each key as the console hands it over (key code,
+/// character, modifier flags) and the key keepane makes of it, until `q`.
 /// When the prefix does nothing in some terminal, this shows whether it
 /// arrives at all, and in what form.
 pub fn show_keys() -> Result<i32> {
     let mut c = Console::open()?;
     c.enter_raw()?;
-    c.write_str("wmux show-keys: press keys (the prefix, for one); q quits.\r\n\r\n");
+    c.write_str("keepane show-keys: press keys (the prefix, for one); q quits.\r\n\r\n");
     // Raw mode draws on the alternate screen, which goes away on quitting:
     // the lines are printed again on the normal screen, to copy from.
     let mut seen = Vec::new();

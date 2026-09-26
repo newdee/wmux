@@ -1,4 +1,4 @@
-//! `wmux view FILE`: a pager for the history log, which `choose-history`
+//! `keepane view FILE`: a pager for the history log, which `choose-history`
 //! opens in a popup. It starts at the end (the newest lines), moves like
 //! `less` and vi (j/k, Space/b, g/G, `/` and `?` to search, n/N), jumps
 //! from command to command with `[` and `]` (the `── time ──` lines the log
@@ -224,7 +224,7 @@ impl View {
     }
 }
 
-/// `wmux view FILE`.
+/// `keepane view FILE`.
 pub fn run(path: &str) -> anyhow::Result<i32> {
     use crate::console::{Console, InputEvent};
     let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;

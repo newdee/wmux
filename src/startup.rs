@@ -1,4 +1,4 @@
-//! `wmux startup on|off|status`: start the server at logon and bring every
+//! `keepane startup on|off|status`: start the server at logon and bring every
 //! saved session back, so after a reboot there is nothing to do but attach.
 //!
 //! The per-user `Run` registry key rather than a scheduled task: a task with
@@ -19,7 +19,7 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// The value's name under the Run key, one per socket so two servers can
 /// both come up.
 fn value_name(socket: &str) -> String {
-    if socket == "default" { "wmux".to_string() } else { format!("wmux-{socket}") }
+    if socket == "default" { "keepane".to_string() } else { format!("keepane-{socket}") }
 }
 
 /// What runs at logon: the server directly (not a client that would start
@@ -92,21 +92,40 @@ pub fn install(socket: &str) -> Result<String> {
         bail!("cannot write the Run value (error {rc})");
     }
     Ok(format!(
-        "wmux will start at logon and restore every saved session.\n\
+        "keepane will start at logon and restore every saved session.\n\
          where: HKCU\\{RUN_KEY}\\{name}\n\
          runs:  {cmd}\n\
-         `wmux startup off` removes it; `wmux startup status` shows it."
+         `keepane startup off` removes it; `keepane startup status` shows it."
     ))
 }
 
 pub fn remove(socket: &str) -> Result<String> {
-    let name = value_name(socket);
+    remove_named(&value_name(socket))
+}
+
+/// The Run value wmux (keepane's old name, up to 0.13.1) used for `socket`.
+fn legacy_value_name(socket: &str) -> String {
+    if socket == "default" { "wmux".to_string() } else { format!("wmux-{socket}") }
+}
+
+/// The logon command an old wmux registered for `socket`, when there is one
+/// and it is ours (`is_our_old_command`), not another program's.
+pub fn legacy_status(socket: &str) -> Result<Option<String>> {
+    Ok(status_named(&legacy_value_name(socket))?.filter(|c| crate::legacy::is_our_old_command(c)))
+}
+
+/// Remove the old wmux logon command of `socket`.
+pub fn remove_legacy(socket: &str) -> Result<String> {
+    remove_named(&legacy_value_name(socket))
+}
+
+fn remove_named(name: &str) -> Result<String> {
     let Some(key) = Key::open(RUN_KEY, KEY_SET_VALUE)? else {
         return Ok(format!("{name}: not installed"));
     };
-    let rc = unsafe { RegDeleteValueW(key.0, wide(&name).as_ptr()) };
+    let rc = unsafe { RegDeleteValueW(key.0, wide(name).as_ptr()) };
     match rc {
-        0 => Ok(format!("{name}: removed; wmux will not start at logon")),
+        0 => Ok(format!("{name}: removed; keepane will not start at logon")),
         rc if rc == ERROR_FILE_NOT_FOUND => Ok(format!("{name}: not installed")),
         rc => bail!("cannot delete the Run value (error {rc})"),
     }
@@ -114,11 +133,14 @@ pub fn remove(socket: &str) -> Result<String> {
 
 /// The command that runs at logon, or None when there is none.
 pub fn status(socket: &str) -> Result<Option<String>> {
-    let name = value_name(socket);
+    status_named(&value_name(socket))
+}
+
+fn status_named(name: &str) -> Result<Option<String>> {
     let Some(key) = Key::open(RUN_KEY, KEY_QUERY_VALUE)? else { return Ok(None) };
     let mut kind = 0u32;
     let mut size = 0u32;
-    let name_w = wide(&name);
+    let name_w = wide(name);
     let rc = unsafe {
         RegQueryValueExW(key.0, name_w.as_ptr(), std::ptr::null_mut(), &mut kind, std::ptr::null_mut(), &mut size)
     };
@@ -146,7 +168,7 @@ pub fn status(socket: &str) -> Result<Option<String>> {
     Ok(Some(String::from_utf16_lossy(&buf[..end])))
 }
 
-/// `wmux startup [on|off|status]`, run on the client side: nothing here
+/// `keepane startup [on|off|status]`, run on the client side: nothing here
 /// needs a server, and the server is exactly what this is about starting.
 pub fn run(socket: &str, args: &[String]) -> Result<i32> {
     // One verb and nothing after it: a typo must not look like it worked.
@@ -168,7 +190,7 @@ pub fn run(socket: &str, args: &[String]) -> Result<i32> {
                 Ok(0)
             }
             None => {
-                println!("{}: not installed (`wmux startup on` to start at logon)", value_name(socket));
+                println!("{}: not installed (`keepane startup on` to start at logon)", value_name(socket));
                 Ok(1)
             }
         },
@@ -182,14 +204,14 @@ mod tests {
 
     #[test]
     fn names_and_command_lines() {
-        assert_eq!(value_name("default"), "wmux");
-        assert_eq!(value_name("work"), "wmux-work");
-        let c = command_line(r"C:\Program Files\wmux\wmux.exe", "default");
+        assert_eq!(value_name("default"), "keepane");
+        assert_eq!(value_name("work"), "keepane-work");
+        let c = command_line(r"C:\Program Files\keepane\keepane.exe", "default");
         // Headless conhost, the exe quoted (Program Files has a space), the
         // server entry point and the restore flag: all four or the result is
         // visible, broken, a client, or empty after a reboot.
         assert!(c.starts_with("conhost.exe --headless "), "{c}");
-        assert!(c.contains(r#""C:\Program Files\wmux\wmux.exe""#), "{c}");
+        assert!(c.contains(r#""C:\Program Files\keepane\keepane.exe""#), "{c}");
         assert!(c.ends_with("-L default __server --restore"), "{c}");
     }
 
@@ -203,11 +225,11 @@ mod tests {
 
     /// A profile with no Run key at all (a fresh user, a CI runner): opening
     /// says "none" rather than failing, creating makes it. A throwaway key
-    /// of wmux's own stands in for the real one, and is deleted after.
+    /// of keepane's own stands in for the real one, and is deleted after.
     #[test]
     fn a_missing_key_reads_as_nothing_installed_and_is_made_on_install() {
         use windows_sys::Win32::System::Registry::RegDeleteKeyW;
-        let path = format!("Software\\wmux-unit-test-{}\\Run", std::process::id());
+        let path = format!("Software\\keepane-unit-test-{}\\Run", std::process::id());
         let parent = path.rsplit_once('\\').unwrap().0.to_string();
         assert!(Key::open(&path, KEY_QUERY_VALUE).unwrap().is_none(), "nothing there yet");
         assert!(Key::open(&path, KEY_SET_VALUE).unwrap().is_none());

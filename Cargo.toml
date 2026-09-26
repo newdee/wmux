@@ -1,11 +1,11 @@
 [package]
-name = "wmux"
-version = "0.13.1"
+name = "keepane"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A tmux-style terminal multiplexer for Windows (ConPTY, PowerShell, WSL)"
 license = "MIT"
-repository = "https://github.com/newdee/wmux"
+repository = "https://github.com/newdee/keepane"
 readme = "README.md"
 
 [dependencies]
@@ -20,7 +20,7 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
 unicode-width = "0.2.2"
 vt100 = "0.16"
-# `wmux web`'s pairing code: drawn as text in the terminal, no image support.
+# `keepane web`'s pairing code: drawn as text in the terminal, no image support.
 qrcode = { version = "0.14", default-features = false }
 # WinRT toasts (the notification with a "Go to pane" button); everything
 # else Win32 goes through windows-sys.

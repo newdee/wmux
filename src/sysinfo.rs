@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn the_branch_is_read_from_the_head_file() {
-        let dir = std::env::temp_dir().join(format!("wmux-git-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-git-{}", std::process::id()));
         let repo = dir.join("repo");
         let sub = repo.join("src").join("deep");
         std::fs::create_dir_all(&sub).unwrap();

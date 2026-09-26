@@ -1,0 +1,18 @@
+{
+  "version": "0.13.1",
+  "description": "A tmux for Windows: sessions that outlive the terminal, panes, windows, and a status line.",
+  "homepage": "https://github.com/newdee/keepane",
+  "license": "MIT",
+  "url": "https://github.com/newdee/keepane/releases/download/v0.13.1/keepane-v0.13.1-windows-x86_64.zip",
+  "hash": "9959e794b0fa94231cb694825f0622d5a9f084d025ac5330b9fc10fd55972337",
+  "extract_dir": "keepane-v0.13.1-windows-x86_64",
+  "bin": "keepane.exe",
+  "checkver": "github",
+  "autoupdate": {
+    "url": "https://github.com/newdee/keepane/releases/download/v$version/keepane-v$version-windows-x86_64.zip",
+    "extract_dir": "keepane-v$version-windows-x86_64",
+    "hash": {
+      "url": "$url.sha256"
+    }
+  }
+}

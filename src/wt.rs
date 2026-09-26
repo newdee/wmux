@@ -1,4 +1,4 @@
-//! `wmux windows-terminal install|remove|status`: a "wmux" profile in the
+//! `keepane windows-terminal install|remove|status`: a "keepane" profile in the
 //! Windows Terminal dropdown that attaches to (or starts) a session.
 //!
 //! Windows Terminal reads profile *fragments* from
@@ -14,21 +14,21 @@ use std::path::{Path, PathBuf};
 /// Where Windows Terminal looks for our fragments.
 pub fn fragments_dir() -> Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
-    Ok(Path::new(&local).join("Microsoft").join("Windows Terminal").join("Fragments").join("wmux"))
+    Ok(Path::new(&local).join("Microsoft").join("Windows Terminal").join("Fragments").join("keepane"))
 }
 
 /// One profile per socket, so two servers can both have an entry.
 fn profile_name(socket: &str) -> String {
-    if socket == "default" { "wmux".to_string() } else { format!("wmux ({socket})") }
+    if socket == "default" { "keepane".to_string() } else { format!("keepane ({socket})") }
 }
 
 fn file_name(socket: &str) -> String {
-    if socket == "default" { "wmux.json".to_string() } else { format!("wmux-{socket}.json") }
+    if socket == "default" { "keepane.json".to_string() } else { format!("keepane-{socket}.json") }
 }
 
 /// A GUID that is a function of the socket name, so reinstalling keeps the
 /// profile's identity (and the user's tweaks to it) instead of adding a
-/// second "wmux" to the dropdown.
+/// second "keepane" to the dropdown.
 fn guid(socket: &str) -> String {
     // Two FNV-1a passes over the name with different seeds give 128 bits;
     // uniqueness across socket names is all that is needed, not secrecy.
@@ -51,7 +51,7 @@ fn guid(socket: &str) -> String {
 
 /// What the profile runs: attach to the session `main` on this server, or
 /// start it, as tmux users do with `tmux new -A -s main`. Every tab of the
-/// profile joins that same session; `wmux new` in it makes another.
+/// profile joins that same session; `keepane new` in it makes another.
 fn command_line(exe: &str, socket: &str) -> String {
     let sock = if socket == "default" { String::new() } else { format!(" -L {socket}") };
     format!("\"{exe}\"{sock} new-session -A -s main")
@@ -82,7 +82,7 @@ pub fn install_in(dir: &Path, socket: &str) -> Result<String> {
         "\"{}\" is in the Windows Terminal dropdown (open a new tab, or restart Windows Terminal).\n\
          where: {}\n\
          runs:  {}\n\
-         `wmux windows-terminal remove` takes it out; `wmux windows-terminal status` shows it.",
+         `keepane windows-terminal remove` takes it out; `keepane windows-terminal status` shows it.",
         profile_name(socket),
         path.display(),
         command_line(&exe, socket)
@@ -114,7 +114,7 @@ pub fn status_in(dir: &Path, socket: &str) -> Result<Option<String>> {
     Ok(v["profiles"][0]["commandline"].as_str().map(str::to_string))
 }
 
-/// `wmux windows-terminal [install|remove|status]`, run on the client side.
+/// `keepane windows-terminal [install|remove|status]`, run on the client side.
 pub fn run(socket: &str, args: &[String]) -> Result<i32> {
     // One verb and nothing after it: a typo must not look like it worked.
     if args.len() > 1 {
@@ -137,7 +137,7 @@ pub fn run(socket: &str, args: &[String]) -> Result<i32> {
             }
             None => {
                 println!(
-                    "\"{}\": not installed (`wmux windows-terminal install` adds it to the dropdown)",
+                    "\"{}\": not installed (`keepane windows-terminal install` adds it to the dropdown)",
                     profile_name(socket)
                 );
                 Ok(1)
@@ -153,10 +153,10 @@ mod tests {
 
     #[test]
     fn names_guids_and_command_lines() {
-        assert_eq!(profile_name("default"), "wmux");
-        assert_eq!(profile_name("work"), "wmux (work)");
-        assert_eq!(file_name("default"), "wmux.json");
-        assert_eq!(file_name("work"), "wmux-work.json");
+        assert_eq!(profile_name("default"), "keepane");
+        assert_eq!(profile_name("work"), "keepane (work)");
+        assert_eq!(file_name("default"), "keepane.json");
+        assert_eq!(file_name("work"), "keepane-work.json");
         // A GUID in the braces form Windows Terminal uses, stable per socket
         // and different between sockets.
         let g = guid("default");
@@ -171,18 +171,18 @@ mod tests {
             assert_eq!(g.as_bytes()[15], b'4', "{g}");
             assert!(matches!(g.as_bytes()[20], b'8' | b'9' | b'a' | b'b'), "{g}");
         }
-        let c = command_line(r"C:\Program Files\wmux\wmux.exe", "default");
-        assert_eq!(c, r#""C:\Program Files\wmux\wmux.exe" new-session -A -s main"#);
+        let c = command_line(r"C:\Program Files\keepane\keepane.exe", "default");
+        assert_eq!(c, r#""C:\Program Files\keepane\keepane.exe" new-session -A -s main"#);
         assert_eq!(command_line("w.exe", "work"), r#""w.exe" -L work new-session -A -s main"#);
     }
 
     #[test]
     fn the_fragment_is_what_windows_terminal_expects() {
-        let f = fragment(r"C:\x\wmux.exe", "default");
+        let f = fragment(r"C:\x\keepane.exe", "default");
         let p = &f["profiles"][0];
-        assert_eq!(p["name"], "wmux");
+        assert_eq!(p["name"], "keepane");
         assert_eq!(p["guid"], guid("default"));
-        assert_eq!(p["commandline"], r#""C:\x\wmux.exe" new-session -A -s main"#);
+        assert_eq!(p["commandline"], r#""C:\x\keepane.exe" new-session -A -s main"#);
         assert_eq!(p["startingDirectory"], "%USERPROFILE%");
         // Round-trips through the JSON text a fragment file holds.
         let text = serde_json::to_string_pretty(&f).unwrap();
@@ -192,26 +192,26 @@ mod tests {
 
     #[test]
     fn install_status_remove_round_trip_in_a_scratch_dir() {
-        let dir = std::env::temp_dir().join(format!("wmux-wt-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-wt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(status_in(&dir, "default").unwrap().is_none(), "no dir yet means not installed");
         let msg = install_in(&dir, "default").unwrap();
         assert!(msg.contains("new-session -A -s main"), "{msg}");
-        assert!(dir.join("wmux.json").is_file());
+        assert!(dir.join("keepane.json").is_file());
         let cmd = status_in(&dir, "default").unwrap().expect("installed");
         assert!(cmd.ends_with(" new-session -A -s main"), "{cmd}");
         // A second socket is a second file, not a rewrite of the first.
         install_in(&dir, "work").unwrap();
-        assert!(dir.join("wmux-work.json").is_file());
+        assert!(dir.join("keepane-work.json").is_file());
         assert!(status_in(&dir, "default").unwrap().is_some());
         assert!(remove_in(&dir, "default").unwrap().contains("removed"));
         assert!(status_in(&dir, "default").unwrap().is_none());
         assert!(remove_in(&dir, "default").unwrap().contains("not installed"), "removing twice is not an error");
         assert!(status_in(&dir, "work").unwrap().is_some(), "the other socket's profile stays");
         // A file that is not JSON is an error with the path in it, not a panic.
-        std::fs::write(dir.join("wmux.json"), "{ not json").unwrap();
+        std::fs::write(dir.join("keepane.json"), "{ not json").unwrap();
         let e = status_in(&dir, "default").unwrap_err().to_string();
-        assert!(e.contains("wmux.json") && e.contains("not JSON"), "{e}");
+        assert!(e.contains("keepane.json") && e.contains("not JSON"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

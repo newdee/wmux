@@ -1,4 +1,4 @@
-# vt100 0.16.2 with a wmux patch
+# vt100 0.16.2 with a keepane patch
 
 Copied verbatim from crates.io (`vt100 = "0.16.2"`, MIT licence, see LICENSE)
 and wired in through `[patch.crates-io]` in the workspace `Cargo.toml`.
@@ -14,7 +14,7 @@ character and then erasing near the right edge panics with
 `index out of bounds: the len is N but the index is N` (`row.rs:89`).
 Regression test: `server::pane::tests::shrink_through_wide_char_then_erase_does_not_panic`.
 
-wmux also adds, beside that fix (each marked `(wmux)` in the source):
+keepane also adds, beside that fix (each marked `(keepane)` in the source):
 
 - `Grid::scrollback_rows` / `Screen::scrollback_rows`: the scrollback's
   length without moving through it.
@@ -28,4 +28,4 @@ wmux also adds, beside that fix (each marked `(wmux)` in the source):
   every time, which the history log (a screenful at a time) cannot afford.
 
 Drop this directory and the `[patch]` entry once upstream has all of it,
-which, for the last four, it will not: they are wmux's own.
+which, for the last four, it will not: they are keepane's own.

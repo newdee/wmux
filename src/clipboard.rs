@@ -120,7 +120,8 @@ mod tests {
                     while Instant::now() < stop {
                         i += 1;
                         if (i + t).is_multiple_of(2) {
-                            let _ = super::set_text(&format!("wmux test {t} {i} {}", "x".repeat((i % 300) as usize)));
+                            let _ =
+                                super::set_text(&format!("keepane test {t} {i} {}", "x".repeat((i % 300) as usize)));
                         } else {
                             let _ = super::get_text();
                         }

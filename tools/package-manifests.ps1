@@ -5,14 +5,14 @@
 #   tools\package-manifests.ps1 -Version 0.5.0
 #
 # Output:
-#   packaging\winget\manifests\n\newdee\wmux\<version>\newdee.wmux.yaml
-#   packaging\winget\manifests\n\newdee\wmux\<version>\newdee.wmux.installer.yaml
-#   packaging\winget\manifests\n\newdee\wmux\<version>\newdee.wmux.locale.en-US.yaml
-#   packaging\scoop\wmux.json
+#   packaging\winget\manifests\n\newdee\keepane\<version>\newdee.keepane.yaml
+#   packaging\winget\manifests\n\newdee\keepane\<version>\newdee.keepane.installer.yaml
+#   packaging\winget\manifests\n\newdee\keepane\<version>\newdee.keepane.locale.en-US.yaml
+#   packaging\scoop\keepane.json
 #
 # The winget tree is laid out as microsoft/winget-pkgs expects, so the
 # directory can be copied into a fork as is; the scoop file installs with
-# `scoop install <raw url of wmux.json>` or goes into a bucket.
+# `scoop install <raw url of keepane.json>` or goes into a bucket.
 #
 # With -MsiPath and -ZipPath (the files just built, as in the release
 # workflow) nothing is downloaded: the hashes and the ProductCode come from
@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version,
-    [string] $Repo = "newdee/wmux",
+    [string] $Repo = "newdee/keepane",
     [string] $OutDir = (Join-Path $PSScriptRoot "..\packaging"),
     [string] $MsiPath,
     [string] $ZipPath,
@@ -30,8 +30,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $base = "https://github.com/$Repo/releases/download/v$Version"
-$msiName = "wmux-$Version-windows-x86_64.msi"
-$zipName = "wmux-v$Version-windows-x86_64.zip"
+$msiName = "keepane-$Version-windows-x86_64.msi"
+$zipName = "keepane-v$Version-windows-x86_64.zip"
 
 function Get-Sha256FromRelease([string] $asset) {
     $text = (Invoke-RestMethod "$base/${asset}.sha256").Trim()
@@ -74,7 +74,7 @@ if ($MsiPath -or $ZipPath) {
     $zipSha = Get-Sha256FromRelease $zipName
 
     # The MSI itself, for its ProductCode; checked against the published hash.
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) "wmux-manifests-$PID"
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) "keepane-manifests-$PID"
     New-Item -ItemType Directory -Force $tmp | Out-Null
     try {
         $msiPath = Join-Path $tmp $msiName
@@ -88,14 +88,14 @@ if ($MsiPath -or $ZipPath) {
 }
 if ($productCode -notmatch '^\{[0-9A-F-]{36}\}$') { throw "odd ProductCode: $productCode" }
 
-$wingetDir = Join-Path $OutDir "winget\manifests\n\newdee\wmux\$Version"
+$wingetDir = Join-Path $OutDir "winget\manifests\n\newdee\keepane\$Version"
 New-Item -ItemType Directory -Force $wingetDir | Out-Null
 $scoopDir = Join-Path $OutDir "scoop"
 New-Item -ItemType Directory -Force $scoopDir | Out-Null
 
 $versionYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
-PackageIdentifier: newdee.wmux
+PackageIdentifier: newdee.keepane
 PackageVersion: $Version
 DefaultLocale: en-US
 ManifestType: version
@@ -104,7 +104,7 @@ ManifestVersion: 1.12.0
 
 $installerYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
-PackageIdentifier: newdee.wmux
+PackageIdentifier: newdee.keepane
 PackageVersion: $Version
 InstallerType: wix
 Scope: machine
@@ -114,7 +114,7 @@ InstallModes:
 - silentWithProgress
 UpgradeBehavior: install
 Commands:
-- wmux
+- keepane
 ReleaseDate: $releaseDate
 Installers:
 - Architecture: x64
@@ -127,25 +127,25 @@ ManifestVersion: 1.12.0
 
 $localeYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
-PackageIdentifier: newdee.wmux
+PackageIdentifier: newdee.keepane
 PackageVersion: $Version
 PackageLocale: en-US
 Publisher: newdee
 PublisherUrl: https://github.com/newdee
 PublisherSupportUrl: https://github.com/$Repo/issues
-PackageName: wmux
+PackageName: keepane
 PackageUrl: https://github.com/$Repo
 License: MIT
 LicenseUrl: https://github.com/$Repo/blob/master/LICENSE
 ShortDescription: A tmux for Windows - sessions that outlive the terminal, panes, windows, and a status line.
 Description: |-
-  wmux is a terminal multiplexer for Windows in the tmux mould: a detached
+  keepane is a terminal multiplexer for Windows in the tmux mould: a detached
   server keeps your shells running when the terminal closes or the RDP
-  session drops, and `wmux attach` brings them back. Panes, windows, a
+  session drops, and `keepane attach` brings them back. Panes, windows, a
   status line, copy mode, tmux key bindings and tmux.conf syntax, plus
   sessions that survive a reboot (the layout and each pane's output are
   saved and restored).
-Moniker: wmux
+Moniker: keepane
 Tags:
 - terminal
 - multiplexer
@@ -160,9 +160,9 @@ ManifestVersion: 1.12.0
 # LF line endings and no BOM: what winget-pkgs' validation wants.
 $enc = New-Object System.Text.UTF8Encoding($false)
 foreach ($pair in @(
-    @("newdee.wmux.yaml", $versionYaml),
-    @("newdee.wmux.installer.yaml", $installerYaml),
-    @("newdee.wmux.locale.en-US.yaml", $localeYaml))) {
+    @("newdee.keepane.yaml", $versionYaml),
+    @("newdee.keepane.installer.yaml", $installerYaml),
+    @("newdee.keepane.locale.en-US.yaml", $localeYaml))) {
     [IO.File]::WriteAllText((Join-Path $wingetDir $pair[0]), ($pair[1] -replace "`r`n", "`n") + "`n", $enc)
 }
 
@@ -173,19 +173,19 @@ $scoop = [ordered]@{
     license     = "MIT"
     url         = "$base/$zipName"
     hash        = $zipSha
-    extract_dir = "wmux-v$Version-windows-x86_64"
-    bin         = "wmux.exe"
+    extract_dir = "keepane-v$Version-windows-x86_64"
+    bin         = "keepane.exe"
     checkver    = "github"
     autoupdate  = [ordered]@{
-        url         = "https://github.com/$Repo/releases/download/v`$version/wmux-v`$version-windows-x86_64.zip"
-        extract_dir = "wmux-v`$version-windows-x86_64"
+        url         = "https://github.com/$Repo/releases/download/v`$version/keepane-v`$version-windows-x86_64.zip"
+        extract_dir = "keepane-v`$version-windows-x86_64"
         hash        = [ordered]@{ url = "`$url.sha256" }
     }
 }
 $json = ($scoop | ConvertTo-Json -Depth 5) -replace "`r`n", "`n"
-[IO.File]::WriteAllText((Join-Path $scoopDir "wmux.json"), $json + "`n", $enc)
+[IO.File]::WriteAllText((Join-Path $scoopDir "keepane.json"), $json + "`n", $enc)
 
 "winget: $wingetDir"
-"scoop:  $(Join-Path $scoopDir 'wmux.json')"
+"scoop:  $(Join-Path $scoopDir 'keepane.json')"
 "msi sha256 $msiSha  product code $productCode"
 "zip sha256 $zipSha"

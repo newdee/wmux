@@ -3,7 +3,7 @@
   Re-record the demos and re-cut every picture in docs/img from them.
 
 .DESCRIPTION
-  1. tests/demo_frames.rs plays three scripted sessions into the real wmux.exe
+  1. tests/demo_frames.rs plays three scripted sessions into the real keepane.exe
      and writes each screen as JSON: f0001.json ... for the animation, and
      still-<name>.json wherever the script marks a picture.
   2. tools/render-frames.ps1 draws them as PNGs.
@@ -29,9 +29,9 @@ Set-Location (Join-Path $PSScriptRoot "..")
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "ffmpeg is not on the PATH" }
 
 $takes = @(
-    @{ Env = "WMUX_DEMO_OUT"; Test = "record_demo"; Name = "wmux-demo" },
-    @{ Env = "WMUX_DEMO_OUT2"; Test = "record_alerts"; Name = "wmux-alerts" },
-    @{ Env = "WMUX_DEMO_OUT3"; Test = "record_history"; Name = "wmux-history" }
+    @{ Env = "KEEPANE_DEMO_OUT"; Test = "record_demo"; Name = "keepane-demo" },
+    @{ Env = "KEEPANE_DEMO_OUT2"; Test = "record_alerts"; Name = "keepane-alerts" },
+    @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" }
 )
 foreach ($t in $takes) {
     $frames = Join-Path $Work "$($t.Name)-frames"

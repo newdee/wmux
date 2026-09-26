@@ -1,6 +1,6 @@
 # tmux parity checklist
 
-What tmux has, what wmux has, and what is deliberately left out. Kept next to
+What tmux has, what keepane has, and what is deliberately left out. Kept next to
 the code so "is that in yet?" has one answer.
 
 Source of truth: the tmux manual (`tmux.1`) and the tables in `cmd.c`,
@@ -13,7 +13,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 
 ## Commands
 
-| tmux | wmux | note |
+| tmux | keepane | note |
 | --- | --- | --- |
 | attach-session | yes | |
 | bind-key | yes | `-n`, `-r`, `-T root/prefix/copy-mode-vi` (`copy-mode` = `copy-mode-vi`); mouse key names accepted, no effect |
@@ -23,7 +23,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | choose-client | yes | `prefix D`; Enter detaches the client picked |
 | choose-tree | part | `-s`, `-w`; `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged, `-`/`+` (Left/Right) fold and unfold a session |
 | clear-history | yes | |
-| clear-prompt-history | no | wmux keeps no prompt history |
+| clear-prompt-history | no | keepane keeps no prompt history |
 | clock-mode | yes | `prefix t`, any key leaves |
 | command-prompt | part | `-p`, `-I`, `%%` template, Tab completes the command name, its flags, a `-t`/`-s` target, and after `set`/`show` the option name (abbreviations included) and a few-valued option's value; no `-k`, no numbered `%1` |
 | confirm-before | yes | `-p` |
@@ -34,7 +34,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | display-menu | part | `-T` title, name/key/command triples, `""` separators; always drawn over the window (no `-x`/`-y`) |
 | display-message | yes | `-p`, `-t`, formats |
 | display-panes | yes | `prefix q`, digit selects |
-| display-popup | yes | `-E`, `-C`, `-w`, `-h`, `-x`, `-y` (a column/row, `N%`, `C`, `R`/`B`), `-d`; the prefix key stays wmux's, `prefix prefix` sends it to the program in the box |
+| display-popup | yes | `-E`, `-C`, `-w`, `-h`, `-x`, `-y` (a column/row, `N%`, `C`, `R`/`B`), `-d`; the prefix key stays keepane's, `prefix prefix` sends it to the program in the box |
 | find-window | yes | `prefix f`; one hit jumps, several open the picker |
 | has-session | yes | |
 | if-shell | yes | `-F` formats and shell exit status; `-b` runs inline |
@@ -73,11 +73,11 @@ Status: **yes** = works, **part** = works with a documented limit,
 | set-buffer / show-buffer | yes | `-a`, `-b` |
 | set-environment / show-environment | yes | `-r` to remove |
 | set-hook / show-hooks | part | nine hooks |
-| set-option / show-options | part | the options wmux implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
+| set-option / show-options | part | the options keepane implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
 | set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |
 | show-messages | yes | `prefix ~`, the last 100 |
 | source-file | yes | |
-| split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t`; wmux's own `-N count` makes that many panes and tiles the window |
+| split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t`; keepane's own `-N count` makes that many panes and tiles the window |
 | start-server | part | any client starts it |
 | suspend-client | no | no SIGTSTP on Windows |
 | swap-pane | yes | `-U` / `-D`, and the `-s src -t dst` pair (across windows and sessions too) |
@@ -86,13 +86,13 @@ Status: **yes** = works, **part** = works with a documented limit,
 | unbind-key | yes | |
 | wait-for | yes | `-L`, `-U`, `-S`; a waiting client is answered when the channel is signalled |
 | start-server | yes | accepted; any command starts the server |
-| **wmux only** | | `find-text` (search what every pane printed), `choose-history` (what panes printed, kept a file per pane position per day: pick one, read it in `view`), `view FILE` (a less-like pager), `list-marks` (the commands a pane's shell reported, with their times), `undo-kill` (bring back the pane or window killed in the last `undo-kill-time` seconds, programs still running), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a wmux profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as wmux reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
+| **keepane only** | | `find-text` (search what every pane printed), `choose-history` (what panes printed, kept a file per pane position per day: pick one, read it in `view`), `view FILE` (a less-like pager), `list-marks` (the commands a pane's shell reported, with their times), `undo-kill` (bring back the pane or window killed in the last `undo-kill-time` seconds, programs still running), `jobs` (every pane: running or exited, up for how long, idle since when), `choose-jobs` (that board as a picker: go there, kill, restart), `record` (a pane's output as an asciinema file), `notify` (a desktop toast; an alert's has a Go-to-pane button), `focus-pane` (every attached client goes to a pane), `startup on/off/status` (start at logon and restore, via the user's Run key), `windows-terminal install/remove/status` (a keepane profile in the Windows Terminal dropdown, as a fragment file), `completion powershell` (a PowerShell completer to load from `$PROFILE`), `migrate` (from wmux, keepane's name up to 0.13.1: sessions, saved data, logon start, Windows Terminal profile), `restart-server` (move the running sessions to a server of this version; `kill-server -r` tells attached clients to attach again), `update [--check]` (install a newer release the way this one was installed), `version` (this program's and the server's), `show-keys` (each key as the console hands it over and as keepane reads it, for a key that does nothing), `web` (the panes on a phone: a QR code, a page that lists, shows and types into panes over the local network), `resume`, `save-session`, `restore-session`, `list-saved`, `delete-saved`, `set-cwd`, `load-plugin`, `list-plugins`, `version` (tmux has `-V`), and `choose-window` / `choose-session` as names for `choose-tree -w` / `-s` |
 
 ## Default prefix keys
 
-tmux's table, with what wmux does today.
+tmux's table, with what keepane does today.
 
-| Key | tmux | wmux |
+| Key | tmux | keepane |
 | --- | --- | --- |
 | `C-b` | send-prefix | yes |
 | `C-o` / `M-o` | rotate-window | yes |
@@ -108,16 +108,16 @@ tmux's table, with what wmux does today.
 | `,` | rename-window prompt | yes |
 | `-` | delete-buffer | yes |
 | `.` | move-window prompt | yes |
-| `/` | describe key | wmux: choose-history (`?` lists the keys) |
+| `/` | describe key | keepane: choose-history (`?` lists the keys) |
 | `0`-`9` | select-window | yes |
 | `:` | command-prompt | yes |
 | `;` | last-pane | yes |
 | `=` | choose-buffer | yes |
 | `?` | list-keys | yes |
 | `D` | choose-client | yes |
-| `B` | choose-jobs | wmux only: the task board as a picker (Enter goes there, `x` kills, `r` restarts) |
+| `B` | choose-jobs | keepane only: the task board as a picker (Enter goes there, `x` kills, `r` restarts) |
 | `E` | select-layout -E (spread) | yes |
-| `L` | switch-client -l | wmux uses `L` to resize; `:switch-client -l` works |
+| `L` | switch-client -l | keepane uses `L` to resize; `:switch-client -l` works |
 | `M` / `m` | select-pane -M / -m | yes |
 | `T` | pane title prompt | yes |
 | `[` / `PPage` | copy-mode | yes |
@@ -125,7 +125,7 @@ tmux's table, with what wmux does today.
 | `c` / `d` | new-window / detach | yes |
 | `f` | find-window | yes |
 | `i` | display-message | yes |
-| `l` | last-window | `l` is select-pane -R in wmux; `Tab` is last-window |
+| `l` | last-window | `l` is select-pane -R in keepane; `Tab` is last-window |
 | `n` / `p` | next / previous window | yes |
 | `o` | select-pane -t :.+ | yes |
 | `q` | display-panes | yes |
@@ -144,7 +144,7 @@ tmux's table, with what wmux does today.
 | `S-`arrows | refresh-client -U/-D/-L/-R | yes (5 rows / 10 columns a press, repeatable) |
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
-wmux adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
+keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
 (save / restore), `S` (synchronize-panes), `u` (undo-kill) and `C-t` (pane-timestamps) on top of that table.
 
 ## Copy mode
@@ -173,21 +173,21 @@ Missing: `copy-pipe` to a command (`copy-pipe-and-cancel` copies as
 
 ## Config file
 
-`~/.wmux.conf` first; with none, `~/.tmux.conf` or
+`~/.keepane.conf` first; with none, `~/.tmux.conf` or
 `~/.config/tmux/tmux.conf` is read as tmux would read it: `\` continues a
 line, `%if` / `%elif` / `%else` / `%endif` pick their branch by the
 condition (a format, true when it expands to something other than nothing
 or `0`; `#{==:#{host},box}` and the other comparisons work), and every line
-wmux cannot use is skipped with a note in
+keepane cannot use is skipped with a note in
 `show-messages` plus a one-line count on the first attach. `bind -T` takes
 `root`, `prefix` and `copy-mode-vi` (`copy-mode` is taken as the same
-table, wmux's copy mode being vi-style); any other table is refused rather
+table, keepane's copy mode being vi-style); any other table is refused rather
 than bound somewhere else. Mouse key names (`MouseDragEnd1Pane`,
 `WheelUpPane`, ...) are accepted and do nothing.
 
 ## Options
 
-`show-options` prints what wmux implements; anything else common in a
+`show-options` prints what keepane implements; anything else common in a
 `.tmux.conf` is accepted and ignored so an existing config still loads.
 The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `mouse`, `history-limit`, `status`, `status-position`, `status-style`,
@@ -218,12 +218,12 @@ times and flags (`session_activity` `session_last_attached` `window_activity` `w
 (`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity`
 `client_prefix`) and the server (`host` `host_short`
 `socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
-#H #F #D #h`. wmux's own, read in-process rather than through `#()`:
+#H #F #D #h`. keepane's own, read in-process rather than through `#()`:
 `cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`
 `battery_charging` `uptime` `git_branch` `pane_current_path_short`
 `pane_pid_command` (tmux users get these from plugins such as tmux-cpu
 and tmux-battery), and `pane_output_count` (how many times the pane has
-printed, which `wmux web` watches). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
+printed, which `keepane web` watches). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
 `s/a/b/:`, nestable. Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`,
 `#{?name!=value,…}`; comparisons `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}`
 `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and
@@ -234,7 +234,7 @@ Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
 `terminal-overrides`, `focus-events`, `set-clipboard`, `renumber-windows`,
 `allow-rename`, `automatic-rename`, `window-status-current-style`,
 `mode-keys`, `aggressive-resize`, `set-titles`, `set-titles-string`,
-`history-file`. wmux only: `save-history` (lines of each pane written into
+`history-file`. keepane only: `save-history` (lines of each pane written into
 the session file, colours kept; `all` for the whole scrollback), `autosave`, `restore-on-start`, `sessions-dir`,
 `plugin-path`, `pane-timestamps` (each reported command's time at the end of its
 line), `log-history`, `log-history-days`, `log-history-dir` (the history
@@ -244,13 +244,13 @@ frame flies to where the keys go otherwise), and `@user` options.
 Not a global here: tmux's per-window and per-pane option scopes. `set -w`
 and `set -p` are accepted and set the option for the server.
 
-`notify` is a wmux option: with it on, every alert also raises a desktop
+`notify` is a keepane option: with it on, every alert also raises a desktop
 notification (a tray balloon, which Windows 10 and 11 turn into a real
 notification), so a job that finishes while the terminal is behind other
 windows still reaches you. tmux has nothing like it, having no desktop to
 notify.
 
-Two things wmux adds that tmux does not have: an option name may be
+Two things keepane adds that tmux does not have: an option name may be
 abbreviated as long as it stays unambiguous (`set sync`, `set mon-act on`,
 `set w-s-f ...`, each dash-separated word taking a prefix), and an on/off
 option with no value flips (`set mouse`, `set sync`). tmux only abbreviates
@@ -272,4 +272,4 @@ line instead of ringing the terminal. Not there: `bell-action`,
 Nothing from tmux 3.5's command table is outstanding; what is left are the
 limits marked **part** above, none of them large: the `choose-tree` filter
 is a substring rather than a format, `refresh-client` has no `-C`, and the
-prefix key inside a popup stays wmux's (`prefix prefix` passes it on).
+prefix key inside a popup stays keepane's (`prefix prefix` passes it on).

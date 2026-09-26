@@ -1,4 +1,4 @@
-// One picture of `wmux web` as a phone shows it: an iPhone-sized, touch,
+// One picture of `keepane web` as a phone shows it: an iPhone-sized, touch,
 // twice-the-pixels page in the machine's Edge, taken once the page has
 // something on it. Used by tools/make-phone-shots.ps1.
 //
@@ -15,7 +15,7 @@ try {
   await page.evaluateOnNewDocument((l) => {
     Object.defineProperty(navigator, "language", { get: () => l });
   }, lang);
-  await page.evaluateOnNewDocument((on) => localStorage.setItem("wmux-detail", on ? "1" : "0"), view === "pane-detail");
+  await page.evaluateOnNewDocument((on) => localStorage.setItem("keepane-detail", on ? "1" : "0"), view === "pane-detail");
   await page.emulate({
     viewport: { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
     userAgent:

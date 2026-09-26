@@ -1,6 +1,6 @@
-//! Records a scripted wmux session and writes one JSON file per frame.
+//! Records a scripted keepane session and writes one JSON file per frame.
 //!
-//! The real `wmux.exe` runs inside a ConPTY, exactly as under Windows
+//! The real `keepane.exe` runs inside a ConPTY, exactly as under Windows
 //! Terminal; this program plays a fixed sequence of keystrokes into it, parses
 //! the VT stream it sends back and dumps the screen as coloured text runs.
 //! `installer/../tools/render-frames.ps1` turns those into PNGs, and ffmpeg
@@ -29,7 +29,7 @@ const FRAME_MS: u64 = 200;
 #[test]
 #[ignore = "recording, not an assertion; run with --ignored"]
 fn record_demo() {
-    let out_dir = std::env::var("WMUX_DEMO_OUT").unwrap_or_else(|_| "target/demo-frames".into());
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT").unwrap_or_else(|_| "target/demo-frames".into());
     let mut d = Demo::start("demo", &out_dir, "");
     let (rec, socket) = (&mut d.rec, d.socket.clone());
 
@@ -37,14 +37,14 @@ fn record_demo() {
     rec.hold(3);
 
     // It starts as one command in an ordinary terminal.
-    rec.type_line(&format!("wmux -L {socket} new -s dev"));
+    rec.type_line(&format!("keepane -L {socket} new -s dev"));
     rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
     rec.hold(4);
 
-    // Two shells side by side. Inside a pane, wmux commands need no -L.
+    // Two shells side by side. Inside a pane, keepane commands need no -L.
     rec.key("\x02%");
     rec.hold(3);
-    rec.type_line("wmux list-panes");
+    rec.type_line("keepane list-panes");
     rec.hold(5);
 
     // Three.
@@ -118,7 +118,7 @@ fn record_demo() {
     rec.still("detach");
 
     // Attach again, exactly where it was left.
-    rec.type_line(&format!("wmux -L {socket} attach"));
+    rec.type_line(&format!("keepane -L {socket} attach"));
     rec.hold(4);
     rec.key("\x020");
     rec.hold(8);
@@ -132,7 +132,7 @@ fn record_demo() {
 #[test]
 #[ignore = "recording, not an assertion; run with --ignored"]
 fn record_alerts() {
-    let out_dir = std::env::var("WMUX_DEMO_OUT2").unwrap_or_else(|_| "target/demo-frames-2".into());
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT2").unwrap_or_else(|_| "target/demo-frames-2".into());
     // The alert flags are off by default, as in tmux; this is the recording
     // of what turning them on looks like.
     let mut d = Demo::start("demo2", &out_dir, "set -g monitor-activity on\nset -g remain-on-exit on\n");
@@ -140,7 +140,7 @@ fn record_alerts() {
 
     rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
     rec.hold(2);
-    rec.type_line(&format!("wmux -L {socket} new -s ops"));
+    rec.type_line(&format!("keepane -L {socket} new -s ops"));
     rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
     rec.hold(3);
 
@@ -154,14 +154,14 @@ fn record_alerts() {
     // Walk away from it: back to window 0, carry on working.
     rec.key("\x020");
     rec.hold(3);
-    rec.type_line("wmux list-windows");
+    rec.type_line("keepane list-windows");
     rec.hold(4);
 
     // The job finishes over there: the status line grows a # on window 1,
     // and so does the listing.
     rec.wait_for("activity flag", |s| s.contents().contains("1:pwsh-#"), 30);
     rec.hold(4);
-    rec.type_line("wmux list-windows");
+    rec.type_line("keepane list-windows");
     rec.hold(6);
     rec.still("alert");
 
@@ -172,14 +172,14 @@ fn record_alerts() {
 
     // A job in a pane of its own that falls over: remain-on-exit keeps the
     // pane, what it printed, and the code it died with.
-    rec.type_line("wmux split-window -v cmd.exe /c \"echo tests failed & exit 3\"");
+    rec.type_line("keepane split-window -v cmd.exe /c \"echo tests failed & exit 3\"");
     rec.wait_for("the exit note", |s| s.contents().contains("exited with 3"), 20);
     rec.hold(7);
 
     // A popup: a program in a box over the window, gone when it is done.
     rec.key("\x02:");
     rec.hold(2);
-    rec.type_line("display-popup -w 60% -h 40% cmd.exe /c wmux list-windows");
+    rec.type_line("display-popup -w 60% -h 40% cmd.exe /c keepane list-windows");
     rec.wait_for("the popup", |s| s.contents().contains("press any key"), 20);
     rec.hold(7);
     rec.still("popup");
@@ -195,7 +195,7 @@ fn record_alerts() {
 #[test]
 #[ignore = "recording, not an assertion; run with --ignored"]
 fn record_history() {
-    let out_dir = std::env::var("WMUX_DEMO_OUT3").unwrap_or_else(|_| "target/demo-frames-3".into());
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT3").unwrap_or_else(|_| "target/demo-frames-3".into());
     let mut d = Demo::start("demo3", &out_dir, "");
     // Earlier days, so the picker shows what a few days of use leave: a
     // second session's pane over three days, another pane yesterday.
@@ -207,7 +207,7 @@ fn record_history() {
         let day = today - chrono::Days::new(days_ago);
         std::fs::write(dir.join(format!("{}.log", day.format("%Y-%m-%d"))), text).expect("history file");
     };
-    let build = "── 09:12:03 · 3m41s · ✓ ──\nPS> cargo build --release\n   Compiling wmux v0.12.0\n    \
+    let build = "── 09:12:03 · 3m41s · ✓ ──\nPS> cargo build --release\n   Compiling keepane v0.12.0\n    \
                  Finished `release` profile [optimized] target(s) in 3m 41s\n";
     seed("ops", "0.0", 1, &build.repeat(40));
     seed("ops", "0.0", 2, &build.repeat(25));
@@ -217,7 +217,7 @@ fn record_history() {
 
     rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
     rec.hold(2);
-    rec.type_line(&format!("wmux -L {socket} new -s dev"));
+    rec.type_line(&format!("keepane -L {socket} new -s dev"));
     rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
     rec.hold(3);
 
@@ -287,7 +287,7 @@ fn record_history() {
     d.finish();
 }
 
-/// Everything a recording needs: a pty running a plain shell with wmux on
+/// Everything a recording needs: a pty running a plain shell with keepane on
 /// the PATH, a scratch directory, and the frame recorder itself.
 struct Demo {
     rec: Recorder,
@@ -328,12 +328,12 @@ impl Drop for Drive {
 
 impl Demo {
     fn start(socket: &str, out_dir: &str, extra_conf: &str) -> Demo {
-        let exe = env!("CARGO_BIN_EXE_wmux").to_string();
+        let exe = env!("CARGO_BIN_EXE_keepane").to_string();
         std::fs::create_dir_all(out_dir).expect("create out dir");
         // A recording that failed half way leaves its server behind; start
         // from nothing so the take is the same every time.
         let _ = std::process::Command::new(&exe).args(["-L", socket, "kill-server"]).status();
-        let tmp = std::env::temp_dir().join(format!("wmux-{socket}-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("keepane-{socket}-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).expect("temp dir");
         let sessions = tmp.join("sessions");
         // A project to work in: a git repository (its branch is on the status
@@ -344,12 +344,12 @@ impl Demo {
         let _ = std::process::Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&project).status();
         let drive = Drive::map(&project);
 
-        // A short prompt, so the recording shows wmux rather than path names.
+        // A short prompt, so the recording shows keepane rather than path names.
         let prompt = tmp.join("prompt.ps1");
-        // No prediction and no shared history: a recording must show wmux,
+        // No prediction and no shared history: a recording must show keepane,
         // never whatever this machine's shell history happens to hold.
         // A shell started with a script of its own gets no prompt hook from
-        // wmux, so the script installs it: the panes report their commands
+        // keepane, so the script installs it: the panes report their commands
         // (`pane-timestamps`, the history log) as a plain pwsh does.
         std::fs::write(
             &prompt,
@@ -363,12 +363,12 @@ impl Demo {
                  {}\n\
                  Clear-Host\n",
                 drive.0,
-                wmux::config::POWERSHELL_PROMPT_HOOK
+                keepane::config::POWERSHELL_PROMPT_HOOK
             ),
         )
         .expect("prompt script");
         let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
-        let conf = tmp.join("wmux.conf");
+        let conf = tmp.join("keepane.conf");
         // The recordings wear the Tokyo Night theme from themes/, status line
         // and all: the branch, the directory, the machine's load, the clock.
         // The focus frame is slowed down so that the pictures, taken five
@@ -384,17 +384,17 @@ impl Demo {
 
         let pty = native_pty_system();
         let pair = pty.openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 }).expect("openpty");
-        // The recording starts in a plain shell: wmux is started from it, and
+        // The recording starts in a plain shell: keepane is started from it, and
         // detaching comes back to it.
         let mut cmd = CommandBuilder::new("pwsh.exe");
         cmd.args(["-NoLogo", "-NoProfile", "-NoExit", "-File", &prompt.to_string_lossy()]);
         let exe_dir = std::path::Path::new(&exe).parent().unwrap().to_string_lossy().into_owned();
         cmd.env("PATH", format!("{exe_dir};{}", std::env::var("PATH").unwrap_or_default()));
-        cmd.env("WMUX_SESSIONS_DIR", sessions.to_string_lossy().to_string());
-        cmd.env("WMUX_CONFIG", conf.to_string_lossy().to_string());
-        cmd.env_remove("WMUX");
-        cmd.env_remove("WMUX_PANE");
-        let child = pair.slave.spawn_command(cmd).expect("spawn wmux");
+        cmd.env("KEEPANE_SESSIONS_DIR", sessions.to_string_lossy().to_string());
+        cmd.env("KEEPANE_CONFIG", conf.to_string_lossy().to_string());
+        cmd.env_remove("KEEPANE");
+        cmd.env_remove("KEEPANE_PANE");
+        let child = pair.slave.spawn_command(cmd).expect("spawn keepane");
         drop(pair.slave);
 
         let mut reader = pair.master.try_clone_reader().expect("reader");
@@ -428,7 +428,7 @@ impl Demo {
     fn finish(mut self) {
         let _ = std::process::Command::new(&self.exe)
             .args(["-L", &self.socket, "kill-server"])
-            .env("WMUX_SESSIONS_DIR", self.tmp.join("sessions").to_string_lossy().to_string())
+            .env("KEEPANE_SESSIONS_DIR", self.tmp.join("sessions").to_string_lossy().to_string())
             .status();
         let _ = self.rec.child.kill();
         let _ = std::fs::remove_dir_all(&self.tmp);

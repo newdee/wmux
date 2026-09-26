@@ -1,4 +1,4 @@
-# Example wmux configuration. Copy to %USERPROFILE%\.wmux.conf and edit.
+# Example keepane configuration. Copy to %USERPROFILE%\.keepane.conf and edit.
 # Syntax is the tmux subset: one command per line, '#' starts a comment.
 
 # Prefix key (default C-b).
@@ -33,7 +33,7 @@ bind -n M-Right next-window
 bind W new-window -n wsl wsl.exe
 
 # reload this file
-bind r source-file ~/.wmux.conf
+bind r source-file ~/.keepane.conf
 
 # status line formats (tmux syntax; #() runs every status-interval seconds)
 set -g status-left "#[bold][#S] "
@@ -52,12 +52,12 @@ set -g monitor-bell on
 # keep a pane whose program exited, so a job that died leaves its output
 # set -g remain-on-exit on
 
-# resume after a reboot: sessions autosave; `wmux resume [name]` brings them back
+# resume after a reboot: sessions autosave; `keepane resume [name]` brings them back
 set -g autosave on
 set -g save-history 500           # lines of each pane restored with the session (0: none, all: the whole scrollback)
 # set -g restore-on-start on      # a fresh server restores everything by itself
-# set -g sessions-dir ~/.wmux/sessions
+# set -g sessions-dir ~/.keepane/sessions
 
-# plugins: directories under plugin-path holding <name>.wmux
-# set -g plugin-path ~/.wmux/plugins
+# plugins: directories under plugin-path holding <name>.keepane
+# set -g plugin-path ~/.keepane/plugins
 # set -g @plugin agent-status

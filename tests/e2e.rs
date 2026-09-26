@@ -1,11 +1,13 @@
 //! End-to-end tests: run the server in-process, talk to it over the named
 //! pipe exactly like the real client, and check the rendered frames.
 
+use keepane::ipc::{
+    ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame,
+};
+use keepane::keys::{LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_ESCAPE, VK_RETURN};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
-use wmux::ipc::{ClientMsg, KeyRecord, MouseRecord, PROTOCOL_VERSION, ServerMsg, pipe_name, read_frame, write_frame};
-use wmux::keys::{LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, SHIFT_PRESSED, VK_ESCAPE, VK_RETURN};
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -23,33 +25,33 @@ impl Drop for Harness {
 }
 
 /// The history log of every server in this process goes to a directory of
-/// the test run's own, never the real one (`WMUX_HISTORY_DIR` is read when
+/// the test run's own, never the real one (`KEEPANE_HISTORY_DIR` is read when
 /// a pane first logs, long after this). One directory for every run, not
 /// one per run: the servers' own clearing out of old days keeps it small.
 fn keep_history_out() {
-    let dir = std::env::temp_dir().join("wmux-test-history");
-    unsafe { std::env::set_var("WMUX_HISTORY_DIR", dir) };
+    let dir = std::env::temp_dir().join("keepane-test-history");
+    unsafe { std::env::set_var("KEEPANE_HISTORY_DIR", dir) };
 }
 
 impl Harness {
     async fn start(name: &str) -> Harness {
         // No toasts from tests: a toast registers the running binary as the
-        // wmux:// handler on the developer's machine.
-        unsafe { std::env::set_var("WMUX_NO_TOAST", "1") };
-        // The replay helper is wmux.exe; this test binary is not it.
-        unsafe { std::env::set_var("WMUX_EXE", env!("CARGO_BIN_EXE_wmux")) };
+        // keepane:// handler on the developer's machine.
+        unsafe { std::env::set_var("KEEPANE_NO_TOAST", "1") };
+        // The replay helper is keepane.exe; this test binary is not it.
+        unsafe { std::env::set_var("KEEPANE_EXE", env!("CARGO_BIN_EXE_keepane")) };
         keep_history_out();
         let socket = format!("test-{name}-{}", std::process::id());
         let s = socket.clone();
-        // An empty config, not the machine's `~/.wmux.conf`: a theme there
+        // An empty config, not the machine's `~/.keepane.conf`: a theme there
         // changes the status line these tests read.
-        let config = std::env::temp_dir().join(format!("wmux-test-empty-{}.conf", std::process::id()));
+        let config = std::env::temp_dir().join(format!("keepane-test-empty-{}.conf", std::process::id()));
         if !config.exists() {
             std::fs::write(&config, "").unwrap();
         }
-        let options = wmux::server::RunOptions { force_restore: false, config: Some(config) };
+        let options = keepane::server::RunOptions { force_restore: false, config: Some(config) };
         let server = tokio::spawn(async move {
-            if let Err(e) = wmux::server::run_with(s, options).await {
+            if let Err(e) = keepane::server::run_with(s, options).await {
                 panic!("server: {e:#}");
             }
         });
@@ -60,10 +62,10 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // Autosave must never touch the real sessions directory from a test.
-        let dir = std::env::temp_dir().join(format!("wmux-test-sessions-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-test-sessions-{}-{name}", std::process::id()));
         let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
         // Make every implicitly spawned pane a predictable cmd.exe prompt.
-        let (code, _, err) = h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt wmux$g"]).await;
+        let (code, _, err) = h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt keepane$g"]).await;
         assert_eq!(code, 0, "{err}");
         let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
         assert_eq!(code, 0, "{err}");
@@ -317,24 +319,24 @@ async fn cli_lifecycle() {
 async fn attach_type_split_detach() {
     let h = Harness::start("attach").await;
     let mut c = h.connect().await;
-    let session = c.attach(&["new", "-s", "w", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let session = c.attach(&["new", "-s", "w", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     assert_eq!(session, "w");
 
     // Status line at the bottom names the session and window.
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let status = c.row(ROWS - 1);
     assert!(status.starts_with("[w] 0:cmd*"), "status: {status:?}");
 
     // Typing reaches the shell via win32-input-mode.
-    c.type_str("echo hello-from-wmux").await;
+    c.type_str("echo hello-from-keepane").await;
     c.enter().await;
-    c.wait_for("echo output", |s| s.contents().matches("hello-from-wmux").count() >= 2).await;
+    c.wait_for("echo output", |s| s.contents().matches("hello-from-keepane").count() >= 2).await;
 
     // Split: a vertical border appears and both halves get a prompt.
     c.prefix('%').await;
     c.wait_for("split border", |s| (0..ROWS - 1).all(|y| s.cell(y, COLS / 2).is_some_and(|c| c.contents() == "│")))
         .await;
-    c.wait_for("second prompt", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("second prompt", |s| s.contents().matches("keepane>").count() >= 2).await;
 
     // New window: status shows two windows, second is current.
     c.prefix('c').await;
@@ -365,7 +367,7 @@ async fn attach_type_split_detach() {
     c.prefix(':').await;
     c.type_str("split-window -v -d -b").await;
     c.enter().await;
-    c.wait_for("three panes", |s| s.contents().matches("wmux>").count() >= 3).await;
+    c.wait_for("three panes", |s| s.contents().matches("keepane>").count() >= 3).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "w"]).await;
     // The new pane is index 0 (before) and the previously active pane stays active.
     let lines: Vec<&str> = out.lines().collect();
@@ -385,7 +387,7 @@ async fn attach_type_split_detach() {
     c.wait_for("renamed via ,", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:via-comma*")).await;
 
     // A multi-line error (bad source-file) is shown as an overlay, not flattened.
-    let bad = std::env::temp_dir().join(format!("wmux-bad-{}.conf", std::process::id()));
+    let bad = std::env::temp_dir().join(format!("keepane-bad-{}.conf", std::process::id()));
     std::fs::write(&bad, "set -g mouse maybe\nfrobnicate\n").unwrap();
     c.prefix(':').await;
     c.type_str(&format!("source-file {}", bad.display())).await;
@@ -443,7 +445,7 @@ async fn attach_type_split_detach() {
     loop {
         let (code, out, _) = h.cli(&["capture-pane", "-p", "-t", "w"]).await;
         assert_eq!(code, 0);
-        if out.contains("rem literal-Enter-word") && out.ends_with("wmux>") {
+        if out.contains("rem literal-Enter-word") && out.ends_with("keepane>") {
             break;
         }
         assert!(Instant::now() < deadline, "capture-pane: {out:?}");
@@ -453,7 +455,7 @@ async fn attach_type_split_detach() {
     // Re-attach: full redraw restores the view; the literal send-keys text is there.
     let mut c2 = h.connect().await;
     c2.attach(&["attach", "-t", "w"]).await;
-    c2.wait_for("restored prompt", |s| s.contents().contains("wmux>")).await;
+    c2.wait_for("restored prompt", |s| s.contents().contains("keepane>")).await;
     c2.wait_for("literal text", |s| s.contents().contains("literal-Enter-word")).await;
     // Same-session CLI command from outside while attached shows up as a message.
     let (code, _, _) = h.cli(&["send-keys", "-t", "w", "echo via-send-keys", "Enter"]).await;
@@ -470,8 +472,8 @@ async fn attach_type_split_detach() {
 async fn pane_exit_closes_window_and_session() {
     let h = Harness::start("exit").await;
     let mut c = h.connect().await;
-    c.attach(&["new", "-s", "x", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.attach(&["new", "-s", "x", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('"').await;
     c.wait_for("horizontal border", |s| {
         (0..COLS).all(|x| {
@@ -495,9 +497,9 @@ async fn pane_exit_closes_window_and_session() {
 async fn mouse_selects_pane_and_copy_mode_scrolls() {
     let h = Harness::start("mouse").await;
     let mut c = h.connect().await;
-    let (_, mouse) = c.attach_full(&["new", "-s", "m", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let (_, mouse) = c.attach_full(&["new", "-s", "m", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     assert!(mouse, "mouse is on by default");
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Toggling the option reaches the attached client's console.
     let (code, _, _) = h.cli(&["set", "-g", "mouse", "off"]).await;
     assert_eq!(code, 0);
@@ -506,7 +508,7 @@ async fn mouse_selects_pane_and_copy_mode_scrolls() {
     assert_eq!(code, 0);
     assert!(c.wait_set_mouse().await);
     c.prefix('%').await;
-    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     // Right pane is active after the split (green border on the right side).
     // Click in the left pane, then type: text must land on the left.
     c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: 1, ctrl: 0, flags: 0 })).await;
@@ -535,8 +537,8 @@ async fn mouse_selects_pane_and_copy_mode_scrolls() {
 async fn resize_and_two_clients() {
     let h = Harness::start("resize").await;
     let mut a = h.connect().await;
-    a.attach(&["new", "-s", "r", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
-    a.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    a.attach(&["new", "-s", "r", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    a.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Shrink the client: the status line moves up.
     a.send(ClientMsg::Resize { cols: 60, rows: 12 }).await;
     a.screen = vt100::Parser::new(12, 60, 0);
@@ -549,7 +551,7 @@ async fn resize_and_two_clients() {
     b.attach(&["attach", "-d", "-t", "r"]).await;
     let reason = a.wait_detached().await;
     assert_eq!(reason, "detached (attach -d)");
-    b.wait_for("prompt on b", |s| s.contents().contains("wmux>")).await;
+    b.wait_for("prompt on b", |s| s.contents().contains("keepane>")).await;
     let (_, out, _) = h.cli(&["ls"]).await;
     assert!(out.contains("[80x24]") && out.contains("(attached)"), "{out}");
     h.cli(&["kill-server"]).await;
@@ -558,12 +560,12 @@ async fn resize_and_two_clients() {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugins_hooks_status_formats_and_run_shell() {
     let h = Harness::start("plugin").await;
-    // A plugin directory: <plugin-path>/demo/demo.wmux
-    let root = std::env::temp_dir().join(format!("wmux-plugins-{}", std::process::id()));
+    // A plugin directory: <plugin-path>/demo/demo.keepane
+    let root = std::env::temp_dir().join(format!("keepane-plugins-{}", std::process::id()));
     let dir = root.join("demo");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
-        dir.join("demo.wmux"),
+        dir.join("demo.keepane"),
         "set -g status-right \"#[fg=red]#(pwsh -NoProfile -Command Write-Output plugged)#[default] %H\"\n\
          set -g status-interval 1\n\
          bind P run-shell \"pwsh -NoProfile -Command Write-Output hello-from-plugin\"\n\
@@ -572,7 +574,7 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     )
     .unwrap();
     // Declared the tmux way, from a config file.
-    let conf = root.join("wmux.conf");
+    let conf = root.join("keepane.conf");
     std::fs::write(&conf, format!("set -g plugin-path \"{}\"\nset -g @plugin demo\n", root.display())).unwrap();
     let (code, _, err) = h.cli(&["source-file", &conf.to_string_lossy()]).await;
     assert_eq!(code, 0, "{err}");
@@ -582,7 +584,7 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     assert!(out.contains("after-new-window \"rename-window hooked\""), "{out}");
     // show-hooks output is valid command syntax: feeding it back reproduces the hook.
     let line = out.lines().find(|l| l.starts_with("after-new-window")).unwrap();
-    let words = wmux::command::tokenize(line).unwrap();
+    let words = keepane::command::tokenize(line).unwrap();
     assert_eq!(words, vec!["after-new-window", "rename-window hooked"]);
     let (code, _, err) = h.cli(&["load-plugin", "nope"]).await;
     assert_eq!(code, 1);
@@ -614,8 +616,8 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     let (code, _, err) = h.cli(&["run-shell", "pwsh -NoProfile -Command exit 3"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("exited with 3"), "{err}");
-    // WMUX is set for the child, so plugin scripts can call back.
-    let (_, out, _) = h.cli(&["run-shell", "pwsh -NoProfile -Command Write-Output $env:WMUX"]).await;
+    // KEEPANE is set for the child, so plugin scripts can call back.
+    let (_, out, _) = h.cli(&["run-shell", "pwsh -NoProfile -Command Write-Output $env:KEEPANE"]).await;
     assert_eq!(out.trim(), h.socket);
 
     // Attached: the #(command) piece shows up on the status line (styled),
@@ -623,7 +625,7 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     // new windows.
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "p"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.wait_for("status #() piece", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("plugged")).await;
     let sr = c.screen.screen();
     let row = ROWS - 1;
@@ -644,7 +646,7 @@ async fn plugins_hooks_status_formats_and_run_shell() {
 #[tokio::test(flavor = "multi_thread")]
 async fn save_and_resume_sessions() {
     let h = Harness::start("resume").await;
-    let dir = std::env::temp_dir().join(format!("wmux-sessions-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("keepane-sessions-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
     assert_eq!(code, 0, "{err}");
@@ -747,7 +749,7 @@ async fn save_and_resume_sessions() {
     assert_eq!(code, 1);
     assert!(err.contains("not a directory"), "{err}");
     // Relative directories resolve against the client's cwd (temp_dir here).
-    let sub = std::env::temp_dir().join(format!("wmux-rel-{}", std::process::id()));
+    let sub = std::env::temp_dir().join(format!("keepane-rel-{}", std::process::id()));
     std::fs::create_dir_all(&sub).unwrap();
     let rel = sub.file_name().unwrap().to_string_lossy().into_owned();
     let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.0", &rel]).await;
@@ -780,7 +782,7 @@ async fn save_and_resume_sessions() {
     // ...and all of that lands in the saved file.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let f = wmux::resurrect::SavedFile::load(&wmux::resurrect::find(&dir, "work").unwrap()).unwrap();
+        let f = keepane::resurrect::SavedFile::load(&keepane::resurrect::find(&dir, "work").unwrap()).unwrap();
         let cwds: Vec<Option<String>> = f.session.windows[0].layout.panes().iter().map(|p| p.cwd.clone()).collect();
         if cwds[0].as_deref() == Some("C:\\Users") && cwds[1].as_deref() == Some("C:\\Windows") {
             break;
@@ -793,8 +795,8 @@ async fn save_and_resume_sessions() {
     h.cli(&["rename-window", "-t", "work:1", "renamed-by-autosave"]).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let path = wmux::resurrect::find(&dir, "work").unwrap();
-        let f = wmux::resurrect::SavedFile::load(&path).unwrap();
+        let path = keepane::resurrect::find(&dir, "work").unwrap();
+        let f = keepane::resurrect::SavedFile::load(&path).unwrap();
         if f.session.windows.iter().any(|w| w.name == "renamed-by-autosave") {
             break;
         }
@@ -810,9 +812,9 @@ async fn vim_keys_and_synchronize_panes() {
     let h = Harness::start("vim").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "v"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('%').await; // left | right, right active
-    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     // prefix h -> left pane active, prefix l -> right again.
     c.prefix('h').await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
@@ -854,13 +856,13 @@ async fn choose_tree_picker() {
     let h = Harness::start("choose").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "a"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('c').await;
     c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
     let (code, _, err) = h.cli(&["new", "-d", "-s", "b"]).await;
     assert_eq!(code, 0, "{err}");
     // The shell in the detached session must be up before its keystrokes matter.
-    h.wait_capture("b:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("b:0", "shell prompt", |t| t.contains("keepane>")).await;
 
     // prefix w: every session expanded, cursor on the current window (item 3 of 5).
     c.prefix('w').await;
@@ -936,7 +938,7 @@ async fn choose_tree_picker() {
     c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
     // Nothing the picker consumed reached the shell: one untouched prompt.
     let out = h.cli(&["capture-pane", "-p", "-t", "b:0"]).await.1;
-    assert_eq!(out.trim(), "wmux>", "picker keys leaked into the pane: {out:?}");
+    assert_eq!(out.trim(), "keepane>", "picker keys leaked into the pane: {out:?}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -949,7 +951,7 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     h.cli(&["set", "-g", "status", "off"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "many"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     for _ in 0..29 {
         let (code, _, err) = h.cli(&["new-window", "-d", "-t", "many"]).await;
         assert_eq!(code, 0, "{err}");
@@ -993,7 +995,7 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
     let h = Harness::start("choose-edge").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "会话", "-n", "编辑器"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let (code, _, err) = h.cli(&["new", "-d", "-s", "gone"]).await;
     assert_eq!(code, 0, "{err}");
 
@@ -1038,7 +1040,7 @@ async fn copy_mode_vi_motions_and_modes() {
     let h = Harness::start("motions").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "v"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.type_str("echo alpha beta gamma delta").await;
     c.enter().await;
     c.wait_for("output", |s| s.contents().contains("alpha beta gamma delta")).await;
@@ -1106,7 +1108,7 @@ async fn clock_conditionals_and_client_commands() {
     let h = Harness::start("clock").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "c1"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
     // prefix t draws a clock; any key puts it away.
     c.prefix('t').await;
@@ -1158,7 +1160,7 @@ async fn clock_conditionals_and_client_commands() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_small_tmux_commands() {
     let h = Harness::start("small").await;
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "a", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "a", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     assert_eq!(code, 0, "{err}");
     h.cli(&["split-window", "-h", "-t", "a"]).await;
     h.cli(&["split-window", "-v", "-t", "a"]).await;
@@ -1198,17 +1200,17 @@ async fn the_small_tmux_commands() {
     assert_eq!(out.trim(), "no clients attached", "{out}");
 
     // The environment new panes get.
-    h.cli(&["set-environment", "WMUX_TEST_VAR", "hello"]).await;
+    h.cli(&["set-environment", "KEEPANE_TEST_VAR", "hello"]).await;
     let (_, out, _) = h.cli(&["show-environment"]).await;
-    assert!(out.contains("WMUX_TEST_VAR=hello"), "{out}");
-    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "a", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    assert!(out.contains("KEEPANE_TEST_VAR=hello"), "{out}");
+    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "a", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     assert_eq!(code, 0, "{err}");
-    h.cli(&["send-keys", "-t", "a:1", "echo %WMUX_TEST_VAR%", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "a:1", "echo %KEEPANE_TEST_VAR%", "Enter"]).await;
     let pane = h.wait_capture("a:1", "the variable", |t| t.contains("hello")).await;
     assert!(pane.contains("hello"), "{pane}");
-    h.cli(&["set-environment", "-r", "WMUX_TEST_VAR"]).await;
+    h.cli(&["set-environment", "-r", "KEEPANE_TEST_VAR"]).await;
     let (_, out, _) = h.cli(&["show-environment"]).await;
-    assert!(!out.contains("WMUX_TEST_VAR"), "{out}");
+    assert!(!out.contains("KEEPANE_TEST_VAR"), "{out}");
 
     // respawn-pane restarts a live pane only with -k.
     let (code, _, err) = h.cli(&["respawn-pane", "-t", "a:1"]).await;
@@ -1218,7 +1220,8 @@ async fn the_small_tmux_commands() {
     h.wait_capture("a:1", "the marker", |t| t.contains("before-respawn")).await;
     let (code, _, err) = h.cli(&["respawn-pane", "-k", "-t", "a:1"]).await;
     assert_eq!(code, 0, "{err}");
-    let pane = h.wait_capture("a:1", "a fresh shell", |t| !t.contains("before-respawn") && t.contains("wmux>")).await;
+    let pane =
+        h.wait_capture("a:1", "a fresh shell", |t| !t.contains("before-respawn") && t.contains("keepane>")).await;
     assert!(!pane.contains("before-respawn"), "the pane started over: {pane}");
     h.cli(&["kill-server"]).await;
 }
@@ -1226,16 +1229,16 @@ async fn the_small_tmux_commands() {
 #[tokio::test(flavor = "multi_thread")]
 async fn paste_buffers() {
     let h = Harness::start("buffers").await;
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "b", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "b", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     assert_eq!(code, 0, "{err}");
 
     let (_, out, _) = h.cli(&["list-buffers"]).await;
     assert_eq!(out.trim(), "no buffers");
-    h.cli(&["set-buffer", "hello from wmux"]).await;
+    h.cli(&["set-buffer", "hello from keepane"]).await;
     h.cli(&["set-buffer", "-b", "named", "second buffer"]).await;
     let (_, out, _) = h.cli(&["list-buffers"]).await;
     assert!(out.contains("named: 13 bytes: second buffer"), "{out}");
-    assert!(out.contains("buffer0: 15 bytes: hello from wmux"), "{out}");
+    assert!(out.contains("buffer0: 18 bytes: hello from keepane"), "{out}");
     let (_, out, _) = h.cli(&["show-buffer", "-b", "named"]).await;
     assert_eq!(out.trim(), "second buffer");
     // No -b: the newest buffer.
@@ -1248,7 +1251,7 @@ async fn paste_buffers() {
     assert_eq!(out.trim(), "second buffer and more");
 
     // Buffers go to and come from files.
-    let file = std::env::temp_dir().join(format!("wmux-buffer-{}.txt", std::process::id()));
+    let file = std::env::temp_dir().join(format!("keepane-buffer-{}.txt", std::process::id()));
     let (code, _, err) = h.cli(&["save-buffer", "-b", "named", &file.to_string_lossy()]).await;
     assert_eq!(code, 0, "{err}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "second buffer and more");
@@ -1279,9 +1282,9 @@ async fn paste_buffers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn join_pane_marks_and_exact_sizes() {
     let h = Harness::start("join").await;
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "j", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "j", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     assert_eq!(code, 0, "{err}");
-    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     async fn panes(h: &Harness, w: &str) -> usize {
         let (_, out, _) = h.cli(&["list-panes", "-t", w]).await;
         out.lines().count()
@@ -1297,7 +1300,7 @@ async fn join_pane_marks_and_exact_sizes() {
     assert_eq!(out.lines().count(), 1, "the empty window went away: {out}");
 
     // A marked pane is what join-pane takes when there is no -s.
-    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt wmux$g"]).await;
+    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
     let (code, _, err) = h.cli(&["select-pane", "-m", "-t", "j:1"]).await;
     assert_eq!(code, 0, "{err}");
     let (code, _, err) = h.cli(&["join-pane", "-v", "-t", "j:0"]).await;
@@ -1387,7 +1390,7 @@ async fn layouts_and_pane_numbers() {
     let h = Harness::start("layout").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "g"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     for _ in 0..3 {
         h.cli(&["split-window", "-h", "-t", "g"]).await;
     }
@@ -1429,7 +1432,7 @@ async fn copy_mode_search_finds_scrolled_off_lines() {
     let h = Harness::start("search").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "f"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // More output than fits, so the early lines are only in the scrollback.
     c.type_str("for /l %i in (1,1,60) do @echo marker-%i").await;
     c.enter().await;
@@ -1491,12 +1494,12 @@ async fn repeatable_keys_chain_without_the_prefix() {
     let h = Harness::start("repeat").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "r"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Three panes side by side: 0 | 1 | 2, with 2 active.
     c.prefix('%').await;
-    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     c.prefix('%').await;
-    c.wait_for("split again", |s| s.contents().matches("wmux>").count() >= 3).await;
+    c.wait_for("split again", |s| s.contents().matches("keepane>").count() >= 3).await;
     let active = |out: &str| out.lines().position(|l| l.contains("(active)")).unwrap();
     let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
     assert_eq!(active(&out), 2, "{out}");
@@ -1538,12 +1541,12 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     let h = Harness::start("anim").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "a"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Slow enough to be caught between two looks at the screen.
     h.cli(&["set", "-g", "animation-time", "1500"]).await;
     let corners = |s: &vt100::Screen| s.contents().matches(['╭', '╮', '╰', '╯']).count();
     c.prefix('%').await;
-    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     // It moves: frame after frame while it lasts, not one now and then.
     c.prefix('h').await;
     let (t0, mut frames) = (Instant::now(), 0);
@@ -1595,7 +1598,7 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
         assert_eq!(corners(c.screen.screen()), 0, "no frame with animation off");
     }
     assert!(frames > 0, "the window did change");
-    assert!(c.screen.screen().contents().matches("wmux>").count() >= 2, "back on the split window");
+    assert!(c.screen.screen().contents().matches("keepane>").count() >= 2, "back on the split window");
     h.cli(&["kill-server"]).await;
 }
 
@@ -1608,7 +1611,7 @@ async fn a_zoom_in_motion_survives_what_happens_meanwhile() {
     let h = Harness::start("anim-edge").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "e"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     h.cli(&["set", "-g", "animation-time", "2000"]).await;
     h.cli(&["set", "-g", "pane-border-status", "top"]).await;
     h.cli(&["split-window", "-h", "-t", "e"]).await;
@@ -1637,7 +1640,7 @@ async fn a_zoom_in_motion_survives_what_happens_meanwhile() {
     c.prefix('z').await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
-    c.wait_for("settled at 80x24", |s| corners(s) == 0 && s.contents().contains("wmux>")).await;
+    c.wait_for("settled at 80x24", |s| corners(s) == 0 && s.contents().contains("keepane>")).await;
     assert_eq!(h.cli(&["display-message", "-p", "ok"]).await.1.trim(), "ok", "the server still answers");
     h.cli(&["kill-server"]).await;
 }
@@ -1647,9 +1650,9 @@ async fn zoomed_pane_still_navigates_by_direction() {
     let h = Harness::start("zoom-nav").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "z"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('%').await; // left | right, the right one active
-    c.wait_for("split", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     c.prefix('z').await; // zoom the right pane
     c.wait_for("Z flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*Z")).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
@@ -1758,7 +1761,7 @@ async fn send_keys_dash_x_drives_copy_mode() {
     let h = Harness::start("sendx").await;
     let (code, _, err) = h.cli(&["new", "-d", "-s", "x"]).await;
     assert_eq!(code, 0, "{err}");
-    h.wait_capture("x:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("x:0", "shell prompt", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "x:0", "echo alpha beta gamma", "Enter"]).await;
     h.wait_capture("x:0", "echo output", |t| t.matches("alpha beta gamma").count() >= 2).await;
 
@@ -1791,7 +1794,7 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     // A second session keeps the server alive while "r" is killed below.
     h.cli(&["new", "-d", "-s", "keeper"]).await;
     h.cli(&["new", "-d", "-s", "r"]).await;
-    h.wait_capture("r:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("r:0", "shell prompt", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "r:0", "echo keepme-42", "Enter"]).await;
     // The output line itself, not the typed command that also says it.
     h.wait_capture("r:0", "output", |t| t.lines().any(|l| l.trim() == "keepme-42")).await;
@@ -1815,8 +1818,8 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     // The replayed history holds the prompts that were saved; the shell is
     // up when one more appears. Typing before that can be lost while the
     // shell starts.
-    let saved_prompts = file.matches("wmux>").count();
-    h.wait_capture("r:0", "the restored shell", |t| t.matches("wmux>").count() > saved_prompts).await;
+    let saved_prompts = file.matches("keepane>").count();
+    h.wait_capture("r:0", "the restored shell", |t| t.matches("keepane>").count() > saved_prompts).await;
 
     // The shell exits; with remain-on-exit the pane, the window and the
     // session all stay, and the pane says what happened.
@@ -1835,14 +1838,14 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     // The old text (prompts included) may still be on the screen: the new
     // shell is up when the last line is a prompt again, not the exit note.
     h.wait_capture("r:0", "a fresh prompt", |t| {
-        t.lines().rev().find(|l| !l.trim().is_empty()).is_some_and(|l| l.trim() == "wmux>")
+        t.lines().rev().find(|l| !l.trim().is_empty()).is_some_and(|l| l.trim() == "keepane>")
     })
     .await;
-    // ...with the pane environment a new pane gets, so `wmux` inside it
+    // ...with the pane environment a new pane gets, so `keepane` inside it
     // still talks to this server (respawn used to pass set-environment only).
-    h.cli(&["send-keys", "-t", "r:0", "echo WMUX=%WMUX% PANE=%WMUX_PANE%", "Enter"]).await;
-    // The typed line still says %WMUX%; the output line has the real values.
-    let want = format!("WMUX={} PANE=", h.socket);
+    h.cli(&["send-keys", "-t", "r:0", "echo KEEPANE=%KEEPANE% PANE=%KEEPANE_PANE%", "Enter"]).await;
+    // The typed line still says %KEEPANE%; the output line has the real values.
+    let want = format!("KEEPANE={} PANE=", h.socket);
     h.wait_capture("r:0", "the socket name and pane id from inside", |t| {
         t.lines().any(|l| l.strip_prefix(&want).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())))
     })
@@ -1889,10 +1892,10 @@ async fn choose_client_detaches_the_one_picked() {
     let h = Harness::start("chooseclient").await;
     let mut a = h.connect().await;
     a.attach(&["new", "-s", "c"]).await;
-    a.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    a.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let mut b = h.connect().await;
     b.attach(&["attach", "-t", "c"]).await;
-    b.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    b.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
     a.prefix('D').await;
     a.wait_for("client list", |s| {
@@ -1916,8 +1919,8 @@ async fn choose_client_detaches_the_one_picked() {
 async fn pipe_pane_copies_pane_output_into_a_command() {
     let h = Harness::start("pipe").await;
     h.cli(&["new", "-d", "-s", "p"]).await;
-    h.wait_capture("p:0", "shell prompt", |t| t.contains("wmux>")).await;
-    let out_file = std::env::temp_dir().join(format!("wmux-pipe-{}.txt", std::process::id()));
+    h.wait_capture("p:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let out_file = std::env::temp_dir().join(format!("keepane-pipe-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&out_file);
     let cmd = format!("$input | Set-Content -Path '{}'", out_file.display());
     let (code, _, err) = h.cli(&["pipe-pane", "-t", "p:0", &cmd]).await;
@@ -1985,7 +1988,7 @@ async fn display_menu_runs_an_entry_by_key_and_by_enter() {
     let h = Harness::start("menu").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "m"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
     // prefix > is the pane menu; `h` splits the window horizontally.
     c.prefix('>').await;
@@ -1994,7 +1997,7 @@ async fn display_menu_runs_an_entry_by_key_and_by_enter() {
     assert!(text.contains("pane 0"), "the title is shown: {text}");
     assert!(text.contains("(x) Kill"), "{text}");
     c.type_str("h").await;
-    c.wait_for("two panes", |s| s.contents().matches("wmux>").count() >= 2).await;
+    c.wait_for("two panes", |s| s.contents().matches("keepane>").count() >= 2).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "m:0"]).await;
     assert_eq!(out.lines().count(), 2, "{out}");
 
@@ -2029,7 +2032,7 @@ async fn display_popup_takes_the_keys_and_closes_with_its_command() {
     let h = Harness::start("popup").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "pop"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
     c.prefix(':').await;
     c.type_str("display-popup -E cmd.exe /q /k \"prompt pip$g\"").await;
@@ -2062,10 +2065,10 @@ async fn alerts_flag_background_windows() {
     assert_eq!(code, 0, "{err}");
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "al"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('c').await;
     c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
-    h.wait_capture("al:1", "second shell", |t| t.contains("wmux>")).await;
+    h.wait_capture("al:1", "second shell", |t| t.contains("keepane>")).await;
 
     // Output in the window nobody is looking at raises the activity flag.
     h.cli(&["send-keys", "-t", "al:0", "echo background-noise", "Enter"]).await;
@@ -2093,7 +2096,7 @@ async fn alerts_flag_background_windows() {
     // with no client to do the looking.
     h.cli(&["new", "-d", "-s", "far"]).await;
     h.cli(&["new-window", "-t", "far"]).await;
-    h.wait_capture("far:1", "second shell", |t| t.contains("wmux>")).await;
+    h.wait_capture("far:1", "second shell", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "far:0", "echo quiet-noise", "Enter"]).await;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -2122,7 +2125,7 @@ async fn alerts_flag_background_windows() {
 async fn spread_layout_and_capture_with_colours() {
     let h = Harness::start("spread").await;
     h.cli(&["new", "-d", "-s", "sp"]).await;
-    h.wait_capture("sp:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("sp:0", "shell prompt", |t| t.contains("keepane>")).await;
     h.cli(&["split-window", "-h", "-d", "-t", "sp:0"]).await;
     let (code, _, err) = h.cli(&["resize-pane", "-t", "sp:0.0", "-x", "60"]).await;
     assert_eq!(code, 0, "{err}");
@@ -2158,7 +2161,7 @@ async fn menus_and_popups_survive_degenerate_sizes() {
     let h = Harness::start("degenerate").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "d"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
     // A menu with nothing that can be picked: Enter does nothing, Escape
     // closes it, and the pane behind is untouched.
@@ -2207,7 +2210,7 @@ async fn menus_and_popups_survive_degenerate_sizes() {
     c.enter().await;
     // Either the popup survived the squeeze (and took the keys) or it was
     // dropped (and the pane took them); both are fine, a panic is not.
-    h.wait_capture("d:0", "the session still works", |t| t.contains("wmux>")).await;
+    h.wait_capture("d:0", "the session still works", |t| t.contains("keepane>")).await;
 
     // -C from a script closes the popup the user is looking at, and doing it
     // again with none open is not an error.
@@ -2225,7 +2228,7 @@ async fn menus_and_popups_survive_degenerate_sizes() {
 async fn degenerate_targets_for_the_new_commands() {
     let h = Harness::start("degen2").await;
     h.cli(&["new", "-d", "-s", "one"]).await;
-    h.wait_capture("one:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("one:0", "shell prompt", |t| t.contains("keepane>")).await;
 
     // select-layout -E needs something beside the pane.
     let (code, _, err) = h.cli(&["select-layout", "-E", "-t", "one:0"]).await;
@@ -2285,7 +2288,7 @@ async fn degenerate_targets_for_the_new_commands() {
 async fn option_names_take_abbreviations_and_flip() {
     let h = Harness::start("optnames").await;
     h.cli(&["new", "-d", "-s", "o"]).await;
-    h.wait_capture("o:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("o:0", "shell prompt", |t| t.contains("keepane>")).await;
 
     // `set sync` is `set synchronize-panes`, and no value flips it.
     assert_eq!(h.cli(&["show", "-gv", "sync"]).await.1.trim(), "off");
@@ -2325,7 +2328,7 @@ async fn option_names_take_abbreviations_and_flip() {
     // Inside a session the `:` prompt takes the same short names.
     let mut c = h.connect().await;
     c.attach(&["attach", "-t", "o"]).await;
-    c.wait_for("attached", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("attached", |s| s.contents().contains("keepane>")).await;
     c.prefix(':').await;
     c.type_str("set sync").await;
     c.enter().await;
@@ -2337,11 +2340,11 @@ async fn option_names_take_abbreviations_and_flip() {
 async fn find_text_looks_through_every_pane() {
     let h = Harness::start("findtext").await;
     h.cli(&["new", "-d", "-s", "ft"]).await;
-    h.wait_capture("ft:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("ft:0", "shell prompt", |t| t.contains("keepane>")).await;
     h.cli(&["split-window", "-d", "-t", "ft:0"]).await;
-    h.wait_capture("ft:0.1", "second shell", |t| t.contains("wmux>")).await;
+    h.wait_capture("ft:0.1", "second shell", |t| t.contains("keepane>")).await;
     h.cli(&["new-window", "-d", "-t", "ft", "-n", "build"]).await;
-    h.wait_capture("ft:1", "third shell", |t| t.contains("wmux>")).await;
+    h.wait_capture("ft:1", "third shell", |t| t.contains("keepane>")).await;
 
     h.cli(&["send-keys", "-t", "ft:0.0", "echo REDIS-TIMEOUT-here", "Enter"]).await;
     h.cli(&["send-keys", "-t", "ft:0.1", "echo nothing-to-see", "Enter"]).await;
@@ -2398,8 +2401,8 @@ async fn find_text_looks_through_every_pane() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     // A config as people actually have them: TPM, copy-mode-vi bindings, a
-    // %if block, continuation lines, options tmux has and wmux does not.
-    let dir = std::env::temp_dir().join(format!("wmux-tmuxconf-{}", std::process::id()));
+    // %if block, continuation lines, options tmux has and keepane does not.
+    let dir = std::env::temp_dir().join(format!("keepane-tmuxconf-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let conf = dir.join("tmux.conf");
     std::fs::write(
@@ -2432,9 +2435,9 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     keep_history_out();
     let socket = format!("test-tmuxconf-{}", std::process::id());
     let s = socket.clone();
-    let options = wmux::server::RunOptions { force_restore: false, config: Some(conf.clone()) };
+    let options = keepane::server::RunOptions { force_restore: false, config: Some(conf.clone()) };
     let server = tokio::spawn(async move {
-        if let Err(e) = wmux::server::run_with(s, options).await {
+        if let Err(e) = keepane::server::run_with(s, options).await {
             panic!("server: {e:#}");
         }
     });
@@ -2445,12 +2448,12 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
-    h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt wmux$g"]).await;
+    h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt keepane$g"]).await;
     // Autosave must never touch the real sessions directory from a test.
     h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
     h.cli(&["new", "-d", "-s", "t"]).await;
 
-    // What wmux understands is applied...
+    // What keepane understands is applied...
     assert_eq!(h.cli(&["show", "-gv", "prefix"]).await.1.trim(), "C-a");
     assert_eq!(h.cli(&["show", "-gv", "mouse"]).await.1.trim(), "on");
     assert_eq!(h.cli(&["show", "-gv", "base-index"]).await.1.trim(), "1");
@@ -2482,7 +2485,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     c.attach(&["attach", "-t", "t"]).await;
     c.wait_for("the one-line summary", |s| {
         let t = s.contents();
-        t.contains("tmux.conf:") && t.contains("lines wmux could not use were skipped")
+        t.contains("tmux.conf:") && t.contains("lines keepane could not use were skipped")
     })
     .await;
     assert!(!c.text().contains("@plugin"), "the details stay in show-messages: {}", c.text());
@@ -2519,8 +2522,8 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
 async fn record_writes_an_asciinema_file() {
     let h = Harness::start("record").await;
     h.cli(&["new", "-d", "-s", "r"]).await;
-    h.wait_capture("r:0", "shell prompt", |t| t.contains("wmux>")).await;
-    let cast = std::env::temp_dir().join(format!("wmux-record-{}.cast", std::process::id()));
+    h.wait_capture("r:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let cast = std::env::temp_dir().join(format!("keepane-record-{}.cast", std::process::id()));
     let _ = std::fs::remove_file(&cast);
 
     let (code, _, err) = h.cli(&["record", "-t", "r:0"]).await;
@@ -2572,16 +2575,16 @@ async fn pane_border_status_reserves_a_row_for_its_text() {
     let h = Harness::start("borderstatus").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "b"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // cmd.exe starts with a blank line, so the prompt is on row 1; with a
     // top border line it moves to row 2 and row 0 becomes the label.
-    let prompt_row = c.screen.screen().rows(0, COLS).position(|r| r.contains("wmux>")).unwrap();
+    let prompt_row = c.screen.screen().rows(0, COLS).position(|r| r.contains("keepane>")).unwrap();
 
     // top: the first row becomes the border text, the pane moves down one.
     h.cli(&["set", "-g", "pane-border-status", "top"]).await;
     c.wait_for("border text on top", |s| {
         let r0 = s.rows(0, COLS).next().unwrap();
-        r0.contains("0:") && s.rows(0, COLS).nth(prompt_row + 1).unwrap().contains("wmux>")
+        r0.contains("0:") && s.rows(0, COLS).nth(prompt_row + 1).unwrap().contains("keepane>")
     })
     .await;
     // The format is a format: pane variables and modifiers work in it.
@@ -2603,7 +2606,7 @@ async fn pane_border_status_reserves_a_row_for_its_text() {
     // bottom: the row just above the status line.
     h.cli(&["set", "-g", "pane-border-status", "bottom"]).await;
     c.wait_for("border text at the bottom", |s| {
-        s.rows(0, COLS).nth(prompt_row).unwrap().contains("wmux>")
+        s.rows(0, COLS).nth(prompt_row).unwrap().contains("keepane>")
             && s.rows(0, COLS).nth(ROWS as usize - 2).unwrap().matches("] ").count() == 2
     })
     .await;
@@ -2620,7 +2623,7 @@ async fn pane_border_status_reserves_a_row_for_its_text() {
 async fn format_variables_answer_from_the_live_tree() {
     let h = Harness::start("formats").await;
     h.cli(&["new", "-d", "-s", "fmt"]).await;
-    h.wait_capture("fmt:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("fmt:0", "shell prompt", |t| t.contains("keepane>")).await;
     h.cli(&["split-window", "-d", "-t", "fmt:0"]).await;
     // A pane's path is what the shell announced or set-cwd recorded.
     let dir = std::env::temp_dir();
@@ -2663,7 +2666,7 @@ fn _assert_traits<T: AsyncRead + AsyncWrite>() {}
 async fn save_history_all_keeps_the_whole_scrollback_with_colours() {
     let h = Harness::start("savehist").await;
     h.cli(&["new", "-d", "-s", "h"]).await;
-    h.wait_capture("h:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("h:0", "shell prompt", |t| t.contains("keepane>")).await;
     // A coloured prompt, then more lines than the screen holds.
     h.cli(&["send-keys", "-t", "h:0", "prompt $e[31mred$e[0m$g", "Enter"]).await;
     h.cli(&["send-keys", "-t", "h:0", "for /l %i in (1,1,60) do @echo scroll-line-%i", "Enter"]).await;
@@ -2702,13 +2705,13 @@ async fn save_history_all_keeps_the_whole_scrollback_with_colours() {
     let (code, _, err) = h.cli(&["resume", "h"]).await;
     assert_eq!(code, 0, "{err}");
     // The saved output is printed back first and the shell starts after
-    // it, so the new shell's prompt (plain "wmux>", the saved one is red)
+    // it, so the new shell's prompt (plain "keepane>", the saved one is red)
     // is the last line once everything is in.
     let deadline = Instant::now() + Duration::from_secs(15);
     let out = loop {
         let (_, out, _) = h.cli(&["capture-pane", "-p", "-e", "-S", "-", "-t", "h:0"]).await;
         let last = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
-        if last.trim_end() == "wmux>" && out.lines().any(|l| l.trim_end() == "scroll-line-1") {
+        if last.trim_end() == "keepane>" && out.lines().any(|l| l.trim_end() == "scroll-line-1") {
             break out;
         }
         assert!(Instant::now() < deadline, "restored scrollback then a fresh prompt: {out}");
@@ -2818,7 +2821,7 @@ async fn status_justify_and_separator_move_the_window_list() {
     h.cli(&["set", "-g", "status-right", "\"#T\" %H:%M"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "j", "-n", "aa"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     h.cli(&["new-window", "-d", "-t", "j", "-n", "bb"]).await;
     let status = |s: &vt100::Screen| s.rows(0, COLS).last().unwrap();
     // The separator goes between the labels, the list starts after "[j] ".
@@ -3106,7 +3109,7 @@ async fn http(addr: std::net::SocketAddr, method: &str, path: &str, key: &str, b
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: phone\r\nX-Wmux-Key: {key}\r\nContent-Length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: phone\r\nX-Keepane-Key: {key}\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     s.write_all(req.as_bytes()).await.unwrap();
@@ -3117,24 +3120,24 @@ async fn http(addr: std::net::SocketAddr, method: &str, path: &str, key: &str, b
     (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
 }
 
-/// `wmux web` end to end over real HTTP: the key is asked for, the list
+/// `keepane web` end to end over real HTTP: the key is asked for, the list
 /// names the panes, text typed on the phone runs in the pane (`-` first
 /// included), the screen comes back with it, and the + menu splits.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_phone_page_lists_shows_types_and_splits() {
     let h = Harness::start("web").await;
     h.cli(&["new", "-d", "-s", "w"]).await;
-    h.wait_capture("w:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("w:0", "shell prompt", |t| t.contains("keepane>")).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = std::sync::Arc::new(wmux::web::State::new(&h.socket, "k3y-for-the-test", false, false));
-    tokio::spawn(wmux::web::serve(listener, state));
+    let state = std::sync::Arc::new(keepane::web::State::new(&h.socket, "k3y-for-the-test", false, false));
+    tokio::spawn(keepane::web::serve(listener, state));
     let key = "k3y-for-the-test";
 
     assert_eq!(http(addr, "GET", "/api/panes", "wrong", "").await.0, 401);
     let (code, page) = http(addr, "GET", "/", "", "").await;
     assert_eq!(code, 200);
-    assert!(page.contains("<title>wmux</title>"));
+    assert!(page.contains("<title>keepane</title>"));
     let (code, list) = http(addr, "GET", "/api/panes", key, "").await;
     assert_eq!(code, 200, "{list}");
     assert!(list.contains("\"session\":\"w\""), "{list}");
@@ -3153,7 +3156,7 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     // The + menu; the new pane starts in the directory of the pane it came
     // from, not where the web client runs.
     h.cli(&["send-keys", "-t", "w:0", "cd /d C:\\Windows", "Enter"]).await;
-    h.wait_capture("w:0", "the cd", |t| t.contains("C:\\Windows>") || t.lines().any(|l| l.trim() == "wmux>")).await;
+    h.wait_capture("w:0", "the cd", |t| t.contains("C:\\Windows>") || t.lines().any(|l| l.trim() == "keepane>")).await;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !h.cli(&["list-panes", "-t", "w"]).await.1.to_ascii_lowercase().contains("[c:\\windows]") {
         assert!(Instant::now() < deadline, "the pane never reported its new directory");
@@ -3169,7 +3172,7 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     h.cli(&["kill-server"]).await;
 }
 
-/// `wmux web` pushes a watched pane's screen when it changes, says when the
+/// `keepane web` pushes a watched pane's screen when it changes, says when the
 /// pane is gone, and the list carries each window's alert marks.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
@@ -3178,12 +3181,15 @@ async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
     h.cli(&["set", "-g", "monitor-activity", "on"]).await;
     h.cli(&["new", "-d", "-s", "p"]).await;
     h.cli(&["new-window", "-d", "-t", "p"]).await;
-    h.wait_capture("p:0", "shell prompt", |t| t.contains("wmux>")).await;
-    h.wait_capture("p:1", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("p:0", "shell prompt", |t| t.contains("keepane>")).await;
+    h.wait_capture("p:1", "shell prompt", |t| t.contains("keepane>")).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let key = "push-test-key";
-    tokio::spawn(wmux::web::serve(listener, std::sync::Arc::new(wmux::web::State::new(&h.socket, key, false, false))));
+    tokio::spawn(keepane::web::serve(
+        listener,
+        std::sync::Arc::new(keepane::web::State::new(&h.socket, key, false, false)),
+    ));
     let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
     let ids: Vec<String> = list.split("\"id\":\"%").skip(1).map(|s| s.split('"').next().unwrap().to_string()).collect();
     assert_eq!(ids.len(), 2, "{list}");
@@ -3191,14 +3197,18 @@ async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
 
     // Watching needs the key too.
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    s.write_all(format!("GET /api/watch?pane={front} HTTP/1.1\r\nX-Wmux-Key: nope\r\n\r\n").as_bytes()).await.unwrap();
+    s.write_all(format!("GET /api/watch?pane={front} HTTP/1.1\r\nX-Keepane-Key: nope\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
     let mut refused = String::new();
     s.read_to_string(&mut refused).await.unwrap();
     assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
 
     // The stream opens with the screen as it is.
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    s.write_all(format!("GET /api/watch?pane={front} HTTP/1.1\r\nX-Wmux-Key: {key}\r\n\r\n").as_bytes()).await.unwrap();
+    s.write_all(format!("GET /api/watch?pane={front} HTTP/1.1\r\nX-Keepane-Key: {key}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
     let mut got = String::new();
     let mut buf = [0u8; 8192];
     let mut read_until =
@@ -3216,7 +3226,7 @@ async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
         };
     read_until(&mut s, &mut got, "the first screen", &|g| g.contains("text/event-stream") && g.contains("data: "))
         .await;
-    assert!(got.contains("wmux>"), "{got}");
+    assert!(got.contains("keepane>"), "{got}");
 
     // Something typed shows up without asking again, and soon.
     let sent = Instant::now();
@@ -3252,7 +3262,7 @@ async fn the_prefix_as_a_bare_byte_still_works() {
     let h = Harness::start("bareprefix").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "bp"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let bare = |ch: u16| KeyRecord { down: true, repeat: 1, vk: 0, sc: 0, ch, ctrl: 0 };
     c.send(ClientMsg::Key(bare(0x02))).await;
     c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(0x02) })).await;
@@ -3274,7 +3284,7 @@ async fn the_copy_mode_vi_table_binds_keys_in_copy_mode() {
         "bind-key -T copy-mode-vi MouseDragEnd1Pane send -X copy-selection-and-cancel",
         "unbind -T copy-mode-vi MouseDown1Pane",
     ] {
-        let argv: Vec<String> = wmux::command::tokenize(line).unwrap();
+        let argv: Vec<String> = keepane::command::tokenize(line).unwrap();
         let args: Vec<&str> = argv.iter().map(String::as_str).collect();
         let (code, _, err) = h.cli(&args).await;
         assert_eq!(code, 0, "{line}: {err}");
@@ -3286,19 +3296,19 @@ async fn the_copy_mode_vi_table_binds_keys_in_copy_mode() {
     );
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "ct"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let in_copy = |s: &vt100::Screen| s.rows(0, COLS).next().unwrap().contains("[0/");
     // Outside copy mode, i is just typed.
     c.type_str("i").await;
-    c.wait_for("i typed into the shell", |s| s.contents().contains("wmux>i")).await;
+    c.wait_for("i typed into the shell", |s| s.contents().contains("keepane>i")).await;
     c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its line
-    c.wait_for("the line cleared", |s| !s.contents().contains("wmux>i")).await;
+    c.wait_for("the line cleared", |s| !s.contents().contains("keepane>i")).await;
     // In copy mode, i is bound: it leaves copy mode.
     c.prefix('[').await;
     c.wait_for("copy mode", in_copy).await;
     c.type_str("i").await;
     c.wait_for("i left copy mode", |s| !in_copy(s)).await;
-    assert!(!c.text().contains("wmux>i"), "i did not reach the shell: {}", c.text());
+    assert!(!c.text().contains("keepane>i"), "i did not reach the shell: {}", c.text());
     // Any command can be bound, not only send -X.
     c.prefix('[').await;
     c.wait_for("copy mode", in_copy).await;
@@ -3333,7 +3343,7 @@ async fn the_machine_variables_answer_without_a_command() {
     let h = Harness::start("sysvars").await;
     let repo = env!("CARGO_MANIFEST_DIR");
     h.cli(&["new", "-d", "-s", "sv", "-c", repo]).await;
-    h.wait_capture("sv:0", "prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("sv:0", "prompt", |t| t.contains("keepane>")).await;
     let hr = &h;
     let ask =
         |f: &'static str| async move { hr.cli(&["display-message", "-p", "-t", "sv:0", f]).await.1.trim().to_string() };
@@ -3401,10 +3411,10 @@ async fn the_wheel_selects_the_pane_it_scrolls_and_the_prefix_twice_pages_up() {
     let h = Harness::start("wheelsel").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "ws"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // A second pane on the right, which becomes active; fill the LEFT one.
     h.cli(&["split-window", "-h", "-t", "ws:0"]).await;
-    h.wait_capture("ws:0.1", "right prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("ws:0.1", "right prompt", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "ws:0.0", "for /l %i in (1,1,60) do @echo left-%i", "Enter"]).await;
     h.wait_capture("ws:0.0", "left filled", |t| t.contains("left-60")).await;
     assert_eq!(h.cli(&["display-message", "-p", "-t", "ws:0", "#{pane_index}"]).await.1.trim(), "1", "right is active");
@@ -3439,32 +3449,32 @@ async fn the_wheel_selects_the_pane_it_scrolls_and_the_prefix_twice_pages_up() {
 }
 
 /// A right click pastes the clipboard into the pane, the way the terminal
-/// itself would were the mouse not wmux's; from copy mode too, which it
+/// itself would were the mouse not keepane's; from copy mode too, which it
 /// leaves first.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_right_click_pastes_the_clipboard() {
     // The Windows clipboard is shared with everything else on the machine;
     // a runner without one (a service session) cannot run this.
-    if wmux::clipboard::set_text("echo pasted-by-right-click").is_err() {
+    if keepane::clipboard::set_text("echo pasted-by-right-click").is_err() {
         eprintln!("no clipboard here; skipping");
         return;
     }
     let h = Harness::start("rclick").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "rc"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Other tests copy text in parallel and the clipboard is one for the
     // whole machine, so what lands may be theirs: set, click, look, and
     // try again (after clearing cmd's line) when it was something else.
     // The clipboard may be busy for a moment as well.
     async fn set_clipboard(text: &str) {
-        let mut set = wmux::clipboard::set_text(text);
+        let mut set = keepane::clipboard::set_text(text);
         for _ in 0..20 {
             if set.is_ok() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-            set = wmux::clipboard::set_text(text);
+            set = keepane::clipboard::set_text(text);
         }
         set.expect("the clipboard stayed busy");
     }
@@ -3474,7 +3484,7 @@ async fn a_right_click_pastes_the_clipboard() {
             // Right button down and up (bit 2 of the buttons mask).
             c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 2, ctrl: 0, flags: 0 })).await;
             c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 0, ctrl: 0, flags: 0 })).await;
-            let want = format!("wmux>{text}");
+            let want = format!("keepane>{text}");
             let seen =
                 tokio::time::timeout(Duration::from_secs(2), c.wait_for("the paste", |s| s.contents().contains(&want)));
             if seen.await.is_ok() {
@@ -3510,14 +3520,14 @@ async fn a_right_click_pastes_the_clipboard() {
 
 /// Tab at the `:` prompt completes a command name (one candidate typed in
 /// whole, several typed as far as they agree and shown in the label) and
-/// a target after -t; `wmux completion powershell` prints the shell's
+/// a target after -t; `keepane completion powershell` prints the shell's
 /// completer with every command in it.
 #[tokio::test(flavor = "multi_thread")]
 async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     let h = Harness::start("complete").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "alpha"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     h.cli(&["new", "-d", "-s", "beta", "-n", "build"]).await;
     let status = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default();
     // One candidate: typed in whole, with a space after it.
@@ -3596,12 +3606,12 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     c.key(VK_ESCAPE, '\x1b', 0).await;
     // The shell completer is a script listing every command and the flags.
     let out =
-        std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["completion", "powershell"]).output().unwrap();
+        std::process::Command::new(env!("CARGO_BIN_EXE_keepane")).args(["completion", "powershell"]).output().unwrap();
     let script = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(script.contains("Register-ArgumentCompleter -Native -CommandName wmux"), "{script}");
+    assert!(script.contains("Register-ArgumentCompleter -Native -CommandName keepane"), "{script}");
     assert!(script.contains("'split-window'") && script.contains("'completion'"), "{script}");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_wmux")).args(["completion", "bash"]).output().unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_keepane")).args(["completion", "bash"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no script for 'bash'"));
     h.cli(&["kill-server"]).await;
@@ -3617,12 +3627,12 @@ async fn a_small_client_has_its_own_view_of_a_big_window() {
     h.cli(&["set", "-g", "window-size", "largest"]).await;
     let mut big = h.connect().await;
     big.attach(&["new", "-s", "vp"]).await;
-    big.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    big.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let mut small = h.connect().await;
     small.attach(&["attach", "-t", "vp"]).await;
     small.screen = vt100::Parser::new(12, 40, 0);
     small.send(ClientMsg::Resize { cols: 40, rows: 12 }).await;
-    small.wait_for("small prompt", |s| s.contents().contains("wmux>")).await;
+    small.wait_for("small prompt", |s| s.contents().contains("keepane>")).await;
     // The session stays 80x24 (largest): the small client shows 40 columns.
     assert_eq!(
         h.cli(&["display-message", "-p", "-t", "vp:0", "#{window_width}x#{window_height}"]).await.1.trim(),
@@ -3659,11 +3669,10 @@ async fn a_small_client_has_its_own_view_of_a_big_window() {
     small
         .wait_for("follows the cursor", |s| {
             let t = s.contents();
-            // The cursor sat at column 5 (after "wmux>") or, when cmd had
-            // echoed the x before the render, at 6: the view moved to it.
-            t.lines().any(|l| {
-                l.starts_with("56789abcdefghijklmnopqrstuvwxyz") || l.starts_with("6789abcdefghijklmnopqrstuvwxyz")
-            })
+            // The cursor sat at column 8 (after "keepane>") or, when cmd had
+            // echoed the x before the render, at 9: the view moved to it.
+            t.lines()
+                .any(|l| l.starts_with("89abcdefghijklmnopqrstuvwxyz") || l.starts_with("9abcdefghijklmnopqrstuvwxyz"))
         })
         .await;
     // S-Right is bound to a pan of 10; the bindings survive list-keys.
@@ -3704,7 +3713,7 @@ async fn the_last_small_tmux_gaps_are_closed() {
     assert!(wb.lines().any(|l| l.starts_with("0: a1*")) && wb.lines().any(|l| l.starts_with("1: b1 ")), "{wb}");
     assert_eq!(h.cli(&["list-panes", "-a"]).await.1.lines().count(), 4);
     // pipe-pane -I: what the command prints is typed into the pane.
-    h.wait_capture("a:0", "prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("a:0", "prompt", |t| t.contains("keepane>")).await;
     let (code, _, err) = h.cli(&["pipe-pane", "-I", "-t", "a:0", "cmd.exe /c echo echo typed-by-the-pipe"]).await;
     assert_eq!(code, 0, "{err}");
     h.wait_capture("a:0", "the piped input ran", |t| t.matches("typed-by-the-pipe").count() >= 2).await;
@@ -3727,7 +3736,7 @@ async fn the_last_small_tmux_gaps_are_closed() {
     // reading one key sees the prefix (C-b is 2).
     let mut c = h.connect().await;
     c.attach(&["attach", "-t", "b"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix(':').await;
     c.type_str("display-popup -E cmd.exe /q /k \"prompt pip$g\"").await;
     c.enter().await;
@@ -3822,7 +3831,7 @@ async fn the_smaller_tmux_gaps_are_closed() {
     // display-popup -x/-y: the box's corner is where it was asked to be.
     let mut c = h.connect().await;
     c.attach(&["attach", "-t", "other"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix(':').await;
     c.type_str("display-popup -x 0 -y 0 -w 20 -h 5 -E cmd.exe /q /k \"prompt pip$g\"").await;
     c.enter().await;
@@ -3853,7 +3862,7 @@ async fn a_shutdown_saves_every_session_first() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_QUERYENDSESSION};
     let h = Harness::start("endsession").await;
     h.cli(&["new", "-d", "-s", "bye"]).await;
-    h.wait_capture("bye:0", "prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("bye:0", "prompt", |t| t.contains("keepane>")).await;
     let file = || {
         std::fs::read_dir(&h.sessions_dir)
             .ok()
@@ -3878,7 +3887,7 @@ async fn a_shutdown_saves_every_session_first() {
     assert!(!file().contains("typed-just-before-shutdown"), "not saved yet: {}", file());
     let deadline = Instant::now() + Duration::from_secs(5);
     let hwnd = loop {
-        if let Some(w) = wmux::shutdown::window(&h.socket) {
+        if let Some(w) = keepane::shutdown::window(&h.socket) {
             break w as usize; // a handle is a number; usize crosses threads
         }
         assert!(Instant::now() < deadline, "the server's shutdown window never came up");
@@ -3912,7 +3921,7 @@ async fn window_size_picks_which_client_sizes_the_session() {
     }
     let mut big = h.connect().await;
     big.attach(&["new", "-s", "sz"]).await;
-    big.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    big.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     assert_eq!(size(&h).await, "80x24");
     let mut small = h.connect().await;
     small.attach(&["attach", "-t", "sz"]).await;
@@ -3990,10 +3999,10 @@ async fn choose_tree_filters_and_tags() {
     let h = Harness::start("treetags").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "alpha"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     h.cli(&["new-window", "-d", "-t", "alpha", "-n", "beta"]).await;
     h.cli(&["new", "-d", "-s", "gamma"]).await;
-    h.wait_capture("gamma:0", "shell prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("gamma:0", "shell prompt", |t| t.contains("keepane>")).await;
     c.prefix('w').await;
     // The cursor starts on the current window, alpha:0 (line 2 of 5).
     c.wait_for("picker", |s| s.contents().contains("[2/5] j/k move")).await;
@@ -4065,7 +4074,7 @@ async fn choose_jobs_is_the_board_you_can_act_on() {
     h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "j"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     h.cli(&["new-window", "-d", "-t", "j", "-n", "dies", "cmd.exe", "/c", "exit", "4"]).await;
     h.cli(&["new", "-d", "-s", "other"]).await;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -4116,8 +4125,8 @@ async fn choose_jobs_is_the_board_you_can_act_on() {
     })
     .await;
     // Nothing leaked into a shell (once its prompt is there to see).
-    let out = h.wait_capture("other:0", "other's prompt", |t| t.contains("wmux>")).await;
-    assert_eq!(out.trim(), "wmux>", "picker keys leaked into the pane: {out:?}");
+    let out = h.wait_capture("other:0", "other's prompt", |t| t.contains("keepane>")).await;
+    assert_eq!(out.trim(), "keepane>", "picker keys leaked into the pane: {out:?}");
     // From a script there is no client to draw it for.
     let (code, _, err) = h.cli(&["choose-jobs"]).await;
     assert_eq!(code, 1);
@@ -4130,7 +4139,7 @@ async fn choose_jobs_edges() {
     let h = Harness::start("choosejobs2").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "e"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     for _ in 0..11 {
         h.cli(&["new-window", "-d", "-t", "e"]).await;
     }
@@ -4155,7 +4164,7 @@ async fn choose_jobs_edges() {
     c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
     // Keys never reached the shell.
     let out = h.cli(&["capture-pane", "-p", "-t", "e:0"]).await.1;
-    assert_eq!(out.trim(), "wmux>", "{out:?}");
+    assert_eq!(out.trim(), "keepane>", "{out:?}");
     // The binding is an ordinary one: rebound and unbound like any other.
     h.cli(&["unbind-key", "B"]).await;
     let (_, keys, _) = h.cli(&["list-keys"]).await;
@@ -4179,7 +4188,7 @@ async fn focus_pane_brings_every_attached_client_to_that_pane() {
     assert!(err.contains("no client attached"), "{err}");
     let mut c = h.connect().await;
     c.attach(&["attach", "-t", "a"]).await;
-    c.wait_for("prompt", |s| s.contents().contains("wmux>")).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     h.cli(&["new", "-d", "-s", "b", "-n", "target"]).await;
     h.cli(&["split-window", "-d", "-t", "b:0"]).await;
     let (_, ids, _) = h.cli(&["jobs", "-t", "b:0", "-F", "#{pane_id}"]).await;
@@ -4209,7 +4218,7 @@ async fn a_pane_knows_where_its_shell_went() {
     let (code, _, err) = h.cli(&["new", "-d", "-s", "cw", "pwsh.exe", "-NoLogo"]).await;
     assert_eq!(code, 0, "{err}");
     h.wait_capture("cw:0", "a pwsh prompt", |t| t.contains("PS ")).await;
-    // PowerShell, no profile of the user's: the prompt hook wmux gives it
+    // PowerShell, no profile of the user's: the prompt hook keepane gives it
     // reports every cd through OSC 9;9.
     h.cli(&["send-keys", "-t", "cw:0", "cd C:\\Windows", "Enter"]).await;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -4227,7 +4236,7 @@ async fn a_pane_knows_where_its_shell_went() {
     assert!(screen.contains("PS C:\\Windows>"), "{screen}");
     // cmd.exe says nothing; its process's own directory is read instead.
     h.cli(&["new-window", "-d", "-t", "cw", "-n", "c"]).await;
-    h.wait_capture("cw:1", "cmd prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("cw:1", "cmd prompt", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "cw:1", "cd /d C:\\Windows\\System32", "Enter"]).await;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -4258,7 +4267,7 @@ async fn a_resumed_pane_keeps_its_history_through_a_resize() {
     let h = Harness::start("resizeresume").await;
     h.cli(&["new", "-d", "-s", "keeper"]).await;
     h.cli(&["new", "-d", "-s", "r"]).await;
-    h.wait_capture("r:0", "prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("r:0", "prompt", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "r:0", "for /l %i in (1,1,40) do @echo keep-%i", "Enter"]).await;
     h.wait_capture("r:0", "the last line", |t| t.contains("keep-40")).await;
     h.cli(&["save-session", "-t", "r"]).await;
@@ -4270,7 +4279,7 @@ async fn a_resumed_pane_keeps_its_history_through_a_resize() {
         let (_, out, _) = h.cli(&["capture-pane", "-p", "-S", "-", "-t", "r:0"]).await;
         let n = out.lines().filter(|l| l.trim_end().starts_with("keep-")).count();
         let last = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
-        if n == 40 && last.trim_end() == "wmux>" {
+        if n == 40 && last.trim_end() == "keepane>" {
             break;
         }
         assert!(Instant::now() < deadline, "{n} keep-lines, last {last:?}: {out}");
@@ -4293,7 +4302,7 @@ async fn a_resumed_pane_keeps_its_history_through_a_resize() {
 async fn capture_pane_dash_j_joins_wrapped_lines() {
     let h = Harness::start("joinlines").await;
     h.cli(&["new", "-d", "-s", "j", "-x", "30", "-y", "10"]).await;
-    h.wait_capture("j:0", "prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("j:0", "prompt", |t| t.contains("keepane>")).await;
     // 50 x's in a 30-column pane: two screen rows, one line.
     let long = "x".repeat(50);
     h.cli(&["send-keys", "-t", "j:0", &format!("echo {long}"), "Enter"]).await;
@@ -4308,7 +4317,7 @@ async fn capture_pane_dash_j_joins_wrapped_lines() {
     assert!(joined.lines().any(|l| l.trim_end() == long), "joined back: {joined}");
     assert!(!joined.lines().any(|l| l.trim_end() == "x".repeat(20)), "{joined}");
     // The typed command wrapped too (prompt + 55 chars), and comes back whole.
-    assert!(joined.lines().any(|l| l.trim_end() == format!("wmux>echo {long}")), "{joined}");
+    assert!(joined.lines().any(|l| l.trim_end() == format!("keepane>echo {long}")), "{joined}");
     // -J and -e together: the reset goes at the end of the joined line only.
     let (_, coloured, _) = h.cli(&["capture-pane", "-p", "-J", "-e", "-S", "-", "-t", "j:0"]).await;
     assert!(coloured.lines().any(|l| l.trim_end().trim_end_matches("\x1b[0m") == long), "{coloured:?}");
@@ -4319,7 +4328,7 @@ async fn capture_pane_dash_j_joins_wrapped_lines() {
 async fn the_newer_variables_come_from_the_live_tree() {
     let h = Harness::start("morevars").await;
     h.cli(&["new", "-d", "-s", "v"]).await;
-    h.wait_capture("v:0", "prompt", |t| t.contains("wmux>")).await;
+    h.wait_capture("v:0", "prompt", |t| t.contains("keepane>")).await;
     h.cli(&["split-window", "-d", "-t", "v:0"]).await;
     h.cli(&["new-window", "-d", "-t", "v"]).await;
     let ask = |t: &'static str, f: &'static str| {
@@ -4361,8 +4370,8 @@ async fn the_newer_variables_come_from_the_live_tree() {
     assert_eq!(code, 1);
     assert!(err.contains("checksum"), "{err}");
     // The cursor sits after the prompt; the scrollback grows with output.
-    h.wait_capture("v:1", "prompt", |t| t.contains("wmux>")).await;
-    assert_eq!(ask("v:1", "#{cursor_x},#{history_size},#{history_limit}").await, "5,0,5000");
+    h.wait_capture("v:1", "prompt", |t| t.contains("keepane>")).await;
+    assert_eq!(ask("v:1", "#{cursor_x},#{history_size},#{history_limit}").await, "8,0,5000");
     h.cli(&["send-keys", "-t", "v:1", "for /l %i in (1,1,40) do @echo hs-%i", "Enter"]).await;
     h.wait_capture("v:1", "the loop", |t| t.contains("hs-40")).await;
     let n: usize = ask("v:1", "#{history_size}").await.parse().unwrap();

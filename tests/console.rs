@@ -1,4 +1,4 @@
-//! Runs the real `wmux.exe` client inside a ConPTY, so the console code path
+//! Runs the real `keepane.exe` client inside a ConPTY, so the console code path
 //! (raw mode, ReadConsoleInputW, WriteConsoleW, alternate screen) is exercised
 //! exactly as under Windows Terminal.
 
@@ -10,15 +10,15 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 fn sessions_dir() -> String {
-    std::env::temp_dir().join(format!("wmux-console-sessions-{}", std::process::id())).to_string_lossy().into_owned()
+    std::env::temp_dir().join(format!("keepane-console-sessions-{}", std::process::id())).to_string_lossy().into_owned()
 }
 
 /// An empty config file for the servers these tests start, so what they
-/// check does not depend on the machine's own `~/.wmux.conf` (a theme there
+/// check does not depend on the machine's own `~/.keepane.conf` (a theme there
 /// changes the status line they look for). The first config file that
 /// exists wins, so this has to be a file, not a path to nothing.
 fn empty_config() -> String {
-    let p = std::env::temp_dir().join(format!("wmux-console-empty-{}.conf", std::process::id()));
+    let p = std::env::temp_dir().join(format!("keepane-console-empty-{}.conf", std::process::id()));
     if !p.exists() {
         std::fs::write(&p, "").unwrap();
     }
@@ -26,10 +26,10 @@ fn empty_config() -> String {
 }
 
 /// The real client binary with the test environment.
-fn wmux() -> std::process::Command {
-    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_wmux"));
-    c.env("WMUX_SESSIONS_DIR", sessions_dir());
-    c.env("WMUX_CONFIG", empty_config());
+fn keepane() -> std::process::Command {
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_keepane"));
+    c.env("KEEPANE_SESSIONS_DIR", sessions_dir());
+    c.env("KEEPANE_CONFIG", empty_config());
     c
 }
 
@@ -41,7 +41,7 @@ struct Term {
     raw: Vec<u8>,
     /// The `-L` socket the client was started with: its server is stopped
     /// when the test ends, passing or not, so a failed test does not leave
-    /// a server holding target\debug\wmux.exe open (which fails the next
+    /// a server holding target\debug\keepane.exe open (which fails the next
     /// build).
     socket: Option<String>,
 }
@@ -49,7 +49,7 @@ struct Term {
 impl Drop for Term {
     fn drop(&mut self) {
         if let Some(s) = &self.socket {
-            let _ = wmux().args(["-L", s, "kill-server"]).output();
+            let _ = keepane().args(["-L", s, "kill-server"]).output();
         }
     }
 }
@@ -62,12 +62,12 @@ impl Term {
     fn spawn_env(args: &[&str], cols: u16, rows: u16, env: &[(&str, &str)]) -> Term {
         let pty = native_pty_system();
         let pair = pty.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).unwrap();
-        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_wmux"));
+        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_keepane"));
         cmd.args(args);
-        cmd.env_remove("WMUX_PANE"); // make sure we do not look nested
-        cmd.env_remove("WMUX");
-        cmd.env("WMUX_SESSIONS_DIR", sessions_dir()); // keep autosave out of the real directory
-        cmd.env("WMUX_CONFIG", empty_config()); // and the machine's config out of the test
+        cmd.env_remove("KEEPANE_PANE"); // make sure we do not look nested
+        cmd.env_remove("KEEPANE");
+        cmd.env("KEEPANE_SESSIONS_DIR", sessions_dir()); // keep autosave out of the real directory
+        cmd.env("KEEPANE_CONFIG", empty_config()); // and the machine's config out of the test
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -154,10 +154,10 @@ impl Term {
 #[test]
 fn real_client_in_conpty() {
     let socket = format!("console-{}", std::process::id());
-    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "cmd.exe", "/q", "/k", "prompt wmux$g"], 80, 24);
+    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"], 80, 24);
 
     // Attached: shell prompt in the pane, status line at the bottom.
-    t.wait_for("prompt", |s| s.contents().contains("wmux>"));
+    t.wait_for("prompt", |s| s.contents().contains("keepane>"));
     t.wait_for("status", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[t] 0:cmd*"));
     assert!(t.parser.screen().alternate_screen(), "client should use the alternate screen");
     // The default right side: the pane's directory and the machine's
@@ -169,9 +169,9 @@ fn real_client_in_conpty() {
     t.send("echo typed-in-conpty\r");
     t.wait_for("echo", |s| s.contents().matches("typed-in-conpty").count() >= 2);
 
-    // A wmux command run inside a pane talks to the server that owns the pane,
-    // without -L: $WMUX names the socket, as $TMUX does for tmux.
-    t.send("wmux ls\r");
+    // A keepane command run inside a pane talks to the server that owns the pane,
+    // without -L: $KEEPANE names the socket, as $TMUX does for tmux.
+    t.send("keepane ls\r");
     t.wait_for("ls from inside the pane", |s| s.contents().contains("t: 1 windows"));
 
     // Prefix + % splits; a vertical border shows up in the middle.
@@ -185,10 +185,10 @@ fn real_client_in_conpty() {
 
     // A repeatable binding (`bind -r`, the default for pane movement) keeps
     // working without the prefix: one C-b, then two bare h's, walks left twice.
-    let out = wmux().args(["-L", &socket, "split-window", "-h", "-t", "t"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "split-window", "-h", "-t", "t"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let panes = || {
-        let out = wmux().args(["-L", &socket, "list-panes", "-t", "t"]).output().unwrap();
+        let out = keepane().args(["-L", &socket, "list-panes", "-t", "t"]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
     let active = || panes().lines().position(|l| l.contains("(active)")).unwrap();
@@ -211,10 +211,10 @@ fn real_client_in_conpty() {
     assert!(raw.contains("\x1b[?1049l"), "alternate screen never left");
 
     // The session survived the detach; kill it through the CLI.
-    let out = wmux().args(["-L", &socket, "ls"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "ls"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("t: 1 windows"), "{stdout}");
-    let out = wmux().args(["-L", &socket, "kill-server"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "kill-server"]).output().unwrap();
     assert!(out.status.success());
     let _ = std::fs::remove_dir_all(sessions_dir());
 }
@@ -222,18 +222,18 @@ fn real_client_in_conpty() {
 /// The two answers the binary gives without a server at all.
 #[test]
 fn version_and_help_answer_locally_and_reject_junk() {
-    let out = wmux().arg("-V").output().unwrap();
+    let out = keepane().arg("-V").output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(text.trim(), format!("wmux {}", env!("CARGO_PKG_VERSION")));
+    assert_eq!(text.trim(), format!("keepane {}", env!("CARGO_PKG_VERSION")));
 
-    let out = wmux().arg("-h").output().unwrap();
+    let out = keepane().arg("-h").output().unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: wmux"));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: keepane"));
 
     // A typo must not look like it worked.
     for args in [vec!["version", "-v"], vec!["help", "me"]] {
-        let out = wmux().args(&args).output().unwrap();
+        let out = keepane().args(&args).output().unwrap();
         assert_eq!(out.status.code(), Some(1), "{args:?} should fail");
         assert!(String::from_utf8_lossy(&out.stderr).contains("takes no arguments"), "{args:?}");
     }
@@ -244,12 +244,12 @@ fn version_and_help_answer_locally_and_reject_junk() {
 #[test]
 fn choose_tree_through_the_real_keyboard() {
     let socket = format!("choose-{}", std::process::id());
-    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "cmd.exe", "/q", "/k", "prompt wmux$g"], 80, 24);
-    t.wait_for("prompt", |s| s.contents().contains("wmux>"));
+    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"], 80, 24);
+    t.wait_for("prompt", |s| s.contents().contains("keepane>"));
     // Windows 0, 1, 2 with 0 still current (-d), all running the same shell.
     for _ in 0..2 {
-        let out = wmux()
-            .args(["-L", &socket, "new-window", "-d", "-t", "t", "cmd.exe", "/q", "/k", "prompt wmux$g"])
+        let out = keepane()
+            .args(["-L", &socket, "new-window", "-d", "-t", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"])
             .output()
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -274,18 +274,18 @@ fn choose_tree_through_the_real_keyboard() {
     t.send("\r");
     t.wait_for("selected", |s| !s.contents().contains("j/k move") && s.rows(0, 80).nth(23).unwrap().contains("2:cmd*"));
     // The shell never saw any of it.
-    let out = wmux().args(["-L", &socket, "capture-pane", "-p", "-t", "t:0"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "capture-pane", "-p", "-t", "t:0"]).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(text.trim(), "wmux>", "picker keys leaked into the pane: {text:?}");
+    assert_eq!(text.trim(), "keepane>", "picker keys leaked into the pane: {text:?}");
 
     t.send("\x02d");
     assert_eq!(t.wait_exit(), 0);
-    let out = wmux().args(["-L", &socket, "kill-server"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "kill-server"]).output().unwrap();
     assert!(out.status.success());
     let _ = std::fs::remove_dir_all(sessions_dir());
 }
 
-/// `pane-timestamps` through the whole path: PowerShell with wmux's prompt
+/// `pane-timestamps` through the whole path: PowerShell with keepane's prompt
 /// hook reports each command, the server pins it to its line, and the
 /// client shows the time at the right end of that line, in cells that were
 /// blank, without the pane changing size. `prefix C-t` turns it off again.
@@ -294,7 +294,7 @@ fn command_times_show_at_the_end_of_their_lines() {
     let socket = format!("stamps-{}", std::process::id());
     let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "pwsh", "-NoLogo", "-NoProfile"], 100, 20);
     t.wait_for("prompt", |s| s.contents().contains("PS "));
-    let out = wmux().args(["-L", &socket, "set", "-g", "pane-timestamps", "on"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "set", "-g", "pane-timestamps", "on"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     t.send("echo stamped\r");
     let stamped =
@@ -309,9 +309,9 @@ fn command_times_show_at_the_end_of_their_lines() {
     assert_eq!(row.chars().count(), 100, "{row:?}");
     // The pane itself did not change: same size, and its text is what the
     // shell printed, no time in it.
-    let size = wmux().args(["-L", &socket, "display", "-p", "-t", "t", "#{pane_width}"]).output().unwrap();
+    let size = keepane().args(["-L", &socket, "display", "-p", "-t", "t", "#{pane_width}"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&size.stdout).trim(), "100");
-    let text = wmux().args(["-L", &socket, "capture-pane", "-p", "-t", "t"]).output().unwrap();
+    let text = keepane().args(["-L", &socket, "capture-pane", "-p", "-t", "t"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&text.stdout).contains('✓'));
     // A failing command is marked so.
     t.send("cmd /c exit 3\r");
@@ -326,7 +326,7 @@ fn command_times_show_at_the_end_of_their_lines() {
 
 /// The history log, from the pane to the viewer: output that scrolls off
 /// is written to today's file, `prefix /` lists the pane's position with
-/// that day under it, and Enter opens it in `wmux view` in a popup, at the
+/// that day under it, and Enter opens it in `keepane view` in a popup, at the
 /// end, with the command's times before it; q closes it.
 #[test]
 fn history_is_kept_and_read_back_in_a_popup() {
@@ -338,7 +338,7 @@ fn history_is_kept_and_read_back_in_a_popup() {
         &["-L", &socket, "new", "-s", "hist", "pwsh", "-NoLogo", "-NoProfile"],
         100,
         20,
-        &[("WMUX_SESSIONS_DIR", &dir)],
+        &[("KEEPANE_SESSIONS_DIR", &dir)],
     );
     t.wait_for("prompt", |s| s.contents().contains("PS "));
     t.send("1..60 | % { \"kept $_\" }\r");
@@ -371,10 +371,10 @@ fn history_is_kept_and_read_back_in_a_popup() {
 fn nested_new_is_refused_and_detached_flag_allowed() {
     let socket = format!("nested-{}", std::process::id());
     // Start a server with a session, then run a client pretending to be inside a pane.
-    let out = wmux().args(["-L", &socket, "new", "-d", "-s", "outer", "cmd.exe", "/c", "pause"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "new", "-d", "-s", "outer", "cmd.exe", "/c", "pause"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    // Inside a pane (WMUX_PANE set), `new` without -d is refused like tmux does.
-    let mut t = Term::spawn_env(&["-L", &socket, "new", "-s", "inner"], 80, 24, &[("WMUX_PANE", "1")]);
+    // Inside a pane (KEEPANE_PANE set), `new` without -d is refused like tmux does.
+    let mut t = Term::spawn_env(&["-L", &socket, "new", "-s", "inner"], 80, 24, &[("KEEPANE_PANE", "1")]);
     let code = t.wait_exit();
     assert_eq!(code, 1);
     assert!(
@@ -383,24 +383,24 @@ fn nested_new_is_refused_and_detached_flag_allowed() {
         t.parser.screen().contents()
     );
     // With -d it is allowed.
-    let mut t = Term::spawn_env(&["-L", &socket, "new", "-d", "-s", "inner"], 80, 24, &[("WMUX_PANE", "1")]);
+    let mut t = Term::spawn_env(&["-L", &socket, "new", "-d", "-s", "inner"], 80, 24, &[("KEEPANE_PANE", "1")]);
     assert_eq!(t.wait_exit(), 0);
-    let out = wmux().args(["-L", &socket, "ls"]).output().unwrap();
+    let out = keepane().args(["-L", &socket, "ls"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("outer:") && stdout.contains("inner:"), "{stdout}");
-    let _ = wmux().args(["-L", &socket, "kill-server"]).output();
+    let _ = keepane().args(["-L", &socket, "kill-server"]).output();
     let _ = std::fs::remove_dir_all(sessions_dir());
 }
 
 /// A sessions directory of its own: another test removes the shared one
 /// when it ends, and these save and restore across a server restart.
 fn own_dir(tag: &str) -> String {
-    std::env::temp_dir().join(format!("wmux-console-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
+    std::env::temp_dir().join(format!("keepane-console-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
 }
 
 /// Stops a test's server when the test ends, failed assertions included:
 /// a real server process outlives a panicking test otherwise, and holds
-/// target\debug\wmux.exe so the next build cannot replace it.
+/// target\debug\keepane.exe so the next build cannot replace it.
 struct StopServer(String, String);
 
 impl Drop for StopServer {
@@ -411,7 +411,7 @@ impl Drop for StopServer {
 }
 
 fn run_in(dir: &str, socket: &str, args: &[&str]) -> (i32, String, String) {
-    let out = wmux().env("WMUX_SESSIONS_DIR", dir).args(["-L", socket]).args(args).output().unwrap();
+    let out = keepane().env("KEEPANE_SESSIONS_DIR", dir).args(["-L", socket]).args(args).output().unwrap();
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -445,7 +445,7 @@ fn restart_server_moves_the_sessions_and_the_attached_client_follows() {
     wait_until("the echo", || run(&["capture-pane", "-p", "-t", "keep:0"]).1.matches("before-restart").count() >= 2);
     let pid_before = run(&["display-message", "-p", "-t", "keep", "#{pid}"]).1.trim().to_string();
 
-    let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "keep"], 80, 24, &[("WMUX_SESSIONS_DIR", &dir)]);
+    let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "keep"], 80, 24, &[("KEEPANE_SESSIONS_DIR", &dir)]);
     t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[keep]"));
 
     let (code, out, err) = run(&["restart-server"]);
@@ -491,36 +491,36 @@ fn restart_server_moves_the_sessions_and_the_attached_client_follows() {
 }
 
 /// Attached to a server of another version, the terminal's title says so,
-/// and so does the client when it detaches. Needs an older wmux.exe to be
-/// the server: set WMUX_OLD_EXE to one (the installed release, say) and run
+/// and so does the client when it detaches. Needs an older keepane.exe to be
+/// the server: set KEEPANE_OLD_EXE to one (the installed release, say) and run
 /// with --ignored.
 #[test]
 #[ignore]
 fn the_title_says_when_the_server_is_another_version() {
-    let Some(old) = std::env::var_os("WMUX_OLD_EXE") else { return };
+    let Some(old) = std::env::var_os("KEEPANE_OLD_EXE") else { return };
     let dir = own_dir("mismatch");
     let socket = format!("mismatch-{}", std::process::id());
-    let old_wmux = || {
+    let old_keepane = || {
         let mut c = std::process::Command::new(&old);
-        c.env("WMUX_SESSIONS_DIR", &dir).env("WMUX_CONFIG", empty_config()).args(["-L", &socket]);
+        c.env("KEEPANE_SESSIONS_DIR", &dir).env("KEEPANE_CONFIG", empty_config()).args(["-L", &socket]);
         c
     };
-    let out = old_wmux().args(["new", "-d", "-s", "m"]).output().unwrap();
+    let out = old_keepane().args(["new", "-d", "-s", "m"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let v = String::from_utf8_lossy(&std::process::Command::new(&old).arg("-V").output().unwrap().stdout)
         .trim()
-        .trim_start_matches("wmux ")
+        .trim_start_matches("keepane ")
         .to_string();
-    assert_ne!(v, env!("CARGO_PKG_VERSION"), "WMUX_OLD_EXE must be another version");
-    let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "m"], 80, 24, &[("WMUX_SESSIONS_DIR", &dir)]);
+    assert_ne!(v, env!("CARGO_PKG_VERSION"), "KEEPANE_OLD_EXE must be another version");
+    let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "m"], 80, 24, &[("KEEPANE_SESSIONS_DIR", &dir)]);
     t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[m]"));
-    let want = format!("wmux: m [server {v}: run wmux restart-server]");
+    let want = format!("keepane: m [server {v}: run keepane restart-server]");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !String::from_utf8_lossy(&t.raw).contains(&want) {
         assert!(Instant::now() < deadline, "no title {want:?} in {:?}", String::from_utf8_lossy(&t.raw));
         t.pump(Duration::from_millis(100));
     }
-    let _ = old_wmux().arg("kill-server").output();
+    let _ = old_keepane().arg("kill-server").output();
     t.wait_exit();
     let text = String::from_utf8_lossy(&t.raw);
     assert!(text.contains("restart-server` moves your sessions"), "{}", t.parser.screen().contents());
@@ -539,8 +539,8 @@ fn restart_server_from_inside_a_pane_finishes_outside_it() {
     run(&["new", "-d", "-s", "inner", "cmd.exe", "/q", "/k", "prompt in$g"]);
     wait_until("prompt", || run(&["capture-pane", "-p", "-t", "inner:0"]).1.contains("in>"));
     let pid_before = run(&["display-message", "-p", "-t", "inner", "#{pid}"]).1.trim().to_string();
-    // The pane's PATH starts with this wmux.exe's directory.
-    run(&["send-keys", "-t", "inner:0", "wmux restart-server", "Enter"]);
+    // The pane's PATH starts with this keepane.exe's directory.
+    run(&["send-keys", "-t", "inner:0", "keepane restart-server", "Enter"]);
     let log = std::path::Path::new(&dir).join("restart.log");
     wait_until("restart.log", || std::fs::read_to_string(&log).is_ok_and(|t| t.contains("restored")));
     let text = std::fs::read_to_string(&log).unwrap();
@@ -551,7 +551,7 @@ fn restart_server_from_inside_a_pane_finishes_outside_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `wmux show-keys` through the real console path: the prefix shows as
+/// `keepane show-keys` through the real console path: the prefix shows as
 /// C-b with the record it came in, and q ends it.
 #[test]
 fn show_keys_reports_the_prefix_and_quits_on_q() {

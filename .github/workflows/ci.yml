@@ -26,5 +26,5 @@ jobs:
         # The suite spawns cmd.exe/pwsh panes through ConPTY and runs the real
         # client inside a pseudo console; keep autosave out of the runner profile.
         env:
-          WMUX_SESSIONS_DIR: ${{ runner.temp }}\wmux-sessions
+          KEEPANE_SESSIONS_DIR: ${{ runner.temp }}\keepane-sessions
         run: cargo test --all-targets

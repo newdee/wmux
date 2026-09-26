@@ -13,7 +13,7 @@ pub struct Grid {
     scrollback: std::collections::VecDeque<crate::row::Row>,
     scrollback_len: usize,
     scrollback_offset: usize,
-    /// (wmux) Rows that have left the top of the screen, ever, whether the
+    /// (keepane) Rows that have left the top of the screen, ever, whether the
     /// scrollback kept them or not: `scrolled + row` names a line for good,
     /// however much has scrolled since.
     scrolled: u64,
@@ -37,7 +37,7 @@ impl Grid {
         }
     }
 
-    /// (wmux) Rows that have left the top of the screen so far.
+    /// (keepane) Rows that have left the top of the screen so far.
     pub fn scrolled(&self) -> u64 {
         self.scrolled
     }
@@ -73,7 +73,7 @@ impl Grid {
         self.size
     }
 
-    /// (wmux) How many lines the scrollback holds, without moving through it.
+    /// (keepane) How many lines the scrollback holds, without moving through it.
     pub fn scrollback_rows(&self) -> usize {
         self.scrollback.len()
     }
@@ -94,7 +94,7 @@ impl Grid {
         for row in &mut self.rows {
             row.resize(size.cols, crate::Cell::new());
         }
-        // (wmux) A terminal that shrinks scrolls the lines it can no longer
+        // (keepane) A terminal that shrinks scrolls the lines it can no longer
         // show into the scrollback rather than dropping them: what falls
         // off the top is what the cursor does not need on screen; rows
         // below the cursor (blank, as a rule) are the ones let go. Growing

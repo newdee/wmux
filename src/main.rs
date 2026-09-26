@@ -1,10 +1,10 @@
-//! wmux: a tmux-like terminal multiplexer for Windows (ConPTY, PowerShell, WSL).
+//! keepane: a tmux-like terminal multiplexer for Windows (ConPTY, PowerShell, WSL).
 
 use anyhow::Result;
-use wmux::{client, logger, server};
+use keepane::{client, logger, server};
 
 const USAGE: &str = "\
-usage: wmux [-L socket-name] [command [flags]]
+usage: keepane [-L socket-name] [command [flags]]
 
 Sessions:
   new-session   (new)     [-s name] [-n window] [-c dir] [-d [-x cols] [-y rows]] [command...]
@@ -34,23 +34,24 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   record [-t target] [out.cast]   (write the pane's output as asciinema v2; no path stops)
   notify [-T title] message   (a desktop notification; `set -g notify on` for alerts, with a Go-to-pane button)
   focus-pane %N   (every attached client switches to that pane and comes to the front)
-Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\wmux\\sessions):
+Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\keepane\\sessions):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
   startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
-  windows-terminal install|remove|status   (a wmux profile in the Windows Terminal dropdown)
-Upgrading:  version (this wmux and the server's)   update [--check]   restart-server (sessions move to this version)
+  windows-terminal install|remove|status   (a keepane profile in the Windows Terminal dropdown)
+Upgrading:  version (this keepane and the server's)   update [--check]   restart-server (sessions move to this version)
+  migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
 On a phone:  web [--port N] [--bind IP] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
   list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
   undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
-Keys not arriving?  show-keys   (prints each key as the console hands it over and as wmux reads it; q quits)
+Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
-Config: %USERPROFILE%\\.wmux.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name);
-  with none, ~/.tmux.conf is read and whatever wmux cannot use is skipped.
-Any unambiguous prefix of a command name works: `wmux att`, `wmux lsp`, `wmux splitw -h`.
+Config: %USERPROFILE%\\.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name);
+  with none, ~/.tmux.conf is read and whatever keepane cannot use is skipped.
+Any unambiguous prefix of a command name works: `keepane att`, `keepane lsp`, `keepane splitw -h`.
 Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
 Default prefix: C-b.  Prefix ? lists key bindings, prefix q shows pane numbers.";
 
@@ -58,8 +59,8 @@ fn main() {
     // args() panics on non-UTF-8 (unpaired surrogates in a path); be lossy instead.
     let mut args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     // Inside a pane, talk to the server that owns it (tmux does the same with
-    // $TMUX), so `wmux ls` from a script or a plugin means "this server".
-    let mut socket = std::env::var("WMUX").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
+    // $TMUX), so `keepane ls` from a script or a plugin means "this server".
+    let mut socket = std::env::var("KEEPANE").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
     // Global flags.
     loop {
         match args.first().map(String::as_str) {
@@ -90,13 +91,13 @@ fn main() {
                     eprintln!("{}: takes no arguments", args[0]);
                     std::process::exit(1);
                 }
-                println!("wmux {}", env!("CARGO_PKG_VERSION"));
+                println!("keepane {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
             _ => break,
         }
     }
-    // `wmux __replay file`: the helper a resumed pane runs first. It prints
+    // `keepane __replay file`: the helper a resumed pane runs first. It prints
     // the pane's saved output into the console it was started in (the
     // pane's ConPTY) and removes the file, so the text is in the console's
     // own buffer before the shell starts.
@@ -106,8 +107,8 @@ fn main() {
             std::process::exit(2);
         };
         let code = match std::fs::read_to_string(path) {
-            Ok(text) => match wmux::console::write_to_console(&text)
-                .and_then(|()| wmux::console::write_to_console(wmux::server::pane::REPLAY_MARKER))
+            Ok(text) => match keepane::console::write_to_console(&text)
+                .and_then(|()| keepane::console::write_to_console(keepane::server::pane::REPLAY_MARKER))
             {
                 Ok(()) => 0,
                 Err(e) => {
@@ -124,7 +125,7 @@ fn main() {
         // server has started the pane's program in it, which it signals by
         // removing the file. A server that never does is not waited on
         // forever.
-        if code == 0 && std::env::var_os("WMUX_REPLAY_NO_WAIT").is_none() {
+        if code == 0 && std::env::var_os("KEEPANE_REPLAY_NO_WAIT").is_none() {
             let started = std::time::Instant::now();
             while std::path::Path::new(path).exists() && started.elapsed() < std::time::Duration::from_secs(60) {
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -133,24 +134,24 @@ fn main() {
         let _ = std::fs::remove_file(path);
         std::process::exit(code);
     }
-    // `wmux __shell-hook`: the prompt hook wmux gives an interactive
+    // `keepane __shell-hook`: the prompt hook keepane gives an interactive
     // PowerShell, for a shell started with a script of its own (which gets
-    // none): `Invoke-Expression (wmux __shell-hook)` in that script. The
+    // none): `Invoke-Expression (keepane __shell-hook)` in that script. The
     // picture scripts in tools/ use it.
     if args.first().map(String::as_str) == Some("__shell-hook") {
-        println!("{}", wmux::config::POWERSHELL_PROMPT_HOOK);
+        println!("{}", keepane::config::POWERSHELL_PROMPT_HOOK);
         return;
     }
-    // A notification's "Go to pane" button opens a wmux:// URL, which the
+    // A notification's "Go to pane" button opens a keepane:// URL, which the
     // protocol registration hands to us as the one argument.
-    if let Some(url) = args.first().filter(|a| a.starts_with("wmux://")).cloned() {
-        match wmux::notify::parse_go_url(&url) {
+    if let Some(url) = args.first().filter(|a| a.starts_with("keepane://")).cloned() {
+        match keepane::notify::parse_go_url(&url) {
             Some((sock, pane)) => {
                 socket = sock;
                 args = vec!["focus-pane".into(), format!("%{pane}")];
             }
             None => {
-                eprintln!("wmux: not a wmux://go/<socket>/<pane> link: {url}");
+                eprintln!("keepane: not a keepane://go/<socket>/<pane> link: {url}");
                 std::process::exit(1);
             }
         }
@@ -158,37 +159,45 @@ fn main() {
     if args.is_empty() {
         args.push("new-session".into());
     }
+    // Up from wmux (keepane's old name): its data directory moves here the
+    // first time, unless a wmux server still uses it (`migrate` then).
+    if args[0] != "__server" && args[0] != "migrate" {
+        keepane::legacy::move_data_dir_at_start();
+    }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     // Starting at logon is about the server, and the Windows Terminal
     // profile is a file of ours: both are settled without a server.
     let local = match args[0].as_str() {
-        "startup" => Some(wmux::startup::run(&socket, &args[1..])),
-        "windows-terminal" | "wt" => Some(wmux::wt::run(&socket, &args[1..])),
-        "completion" => Some(wmux::completion::run(&args[1..])),
+        "startup" => Some(keepane::startup::run(&socket, &args[1..])),
+        "windows-terminal" | "wt" => Some(keepane::wt::run(&socket, &args[1..])),
+        "completion" => Some(keepane::completion::run(&args[1..])),
         "version" | "restart-server" | "show-keys" if args.len() > 1 => {
             Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
         }
-        "show-keys" => Some(wmux::console::show_keys()),
+        "show-keys" => Some(keepane::console::show_keys()),
         "view" => match args.get(1..) {
-            Some([file]) => Some(wmux::pager::run(file)),
-            _ => Some(Err(anyhow::anyhow!("usage: wmux view FILE"))),
+            Some([file]) => Some(keepane::pager::run(file)),
+            _ => Some(Err(anyhow::anyhow!("usage: keepane view FILE"))),
         },
         // These talk to the server, but as a client of their own: the
         // version of this program next to the server's, and moving the
         // sessions to a server of this version.
         "version" => Some(rt.block_on(client::version(&socket))),
         "restart-server" => Some(rt.block_on(client::restart_server(&socket))),
-        "update" => Some(rt.block_on(wmux::update::run(&socket, &args[1..]))),
+        // From wmux (keepane's old name): sessions, data and registrations.
+        "migrate" if args.len() > 1 => Some(Err(anyhow::anyhow!("migrate: takes no arguments"))),
+        "migrate" => Some(rt.block_on(client::migrate(&socket))),
+        "update" => Some(rt.block_on(keepane::update::run(&socket, &args[1..]))),
         // The panes on a phone: a client of the server that also answers
         // HTTP on the local network, until Ctrl+C.
-        "web" => Some(rt.block_on(wmux::web::run(&socket, &args[1..]))),
+        "web" => Some(rt.block_on(keepane::web::run(&socket, &args[1..]))),
         _ => None,
     };
     if let Some(result) = local {
         let code = match result {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("wmux: {e:#}");
+                eprintln!("keepane: {e:#}");
                 1
             }
         };
@@ -213,7 +222,7 @@ fn main() {
         match rt.block_on(run_client(socket, args)) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("wmux: {e:#}");
+                eprintln!("keepane: {e:#}");
                 1
             }
         }

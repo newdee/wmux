@@ -1,7 +1,7 @@
 //! Save everything when Windows shuts down, restarts or the user logs off.
 //!
 //! Windows tells a process the session is ending in one of two ways, and a
-//! wmux server may be in either situation: started by a client it has no
+//! keepane server may be in either situation: started by a client it has no
 //! console (`DETACHED_PROCESS`), so only a top-level window of its own gets
 //! `WM_QUERYENDSESSION` / `WM_ENDSESSION`; started at logon it sits under
 //! a headless conhost, whose console control handler gets
@@ -29,7 +29,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// The window class of the hidden window; its title is the socket name, so
 /// a test (or a curious `FindWindowW`) can tell servers apart.
-pub const WINDOW_CLASS: &str = "wmux-shutdown";
+pub const WINDOW_CLASS: &str = "keepane-shutdown";
 
 type Hook = Box<dyn Fn() + Send + Sync>;
 
@@ -119,7 +119,7 @@ fn window_thread(title: &str) {
         log::warn!("shutdown watcher: no window; sessions will not be saved at shutdown");
         return;
     }
-    unsafe { ShutdownBlockReasonCreate(hwnd, wide("wmux is saving its sessions").as_ptr()) };
+    unsafe { ShutdownBlockReasonCreate(hwnd, wide("keepane is saving its sessions").as_ptr()) };
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
         unsafe {

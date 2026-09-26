@@ -7,7 +7,7 @@
 //! process's, which is why PowerShell panes get a prompt hook instead (see
 //! `config::POWERSHELL_PROMPT_HOOK`) and this is the fallback for the rest.
 //!
-//! Offsets are those of the 64-bit PEB; wmux is built for x86_64 only.
+//! Offsets are those of the 64-bit PEB; keepane is built for x86_64 only.
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;

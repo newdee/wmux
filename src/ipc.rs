@@ -11,7 +11,7 @@ const MAX_FRAME: u32 = 64 * 1024 * 1024;
 
 /// Name of the per-user named pipe the server listens on. Both the user name
 /// and the socket name are reduced to `[A-Za-z0-9_.-]` so a `-L` value can
-/// never escape the `wmux-<user>-` namespace (pipe names accept `\`).
+/// never escape the `keepane-<user>-` namespace (pipe names accept `\`).
 pub fn pipe_name(socket_name: &str) -> String {
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
     let clean = |s: &str| -> String {
@@ -19,7 +19,7 @@ pub fn pipe_name(socket_name: &str) -> String {
     };
     let (user, socket) = (clean(&user), clean(socket_name));
     let socket = if socket.is_empty() { "default".to_string() } else { socket };
-    format!(r"\\.\pipe\wmux-{user}-{socket}")
+    format!(r"\\.\pipe\keepane-{user}-{socket}")
 }
 
 /// Raw Windows `KEY_EVENT_RECORD`, forwarded verbatim so the server can hand it
@@ -46,7 +46,7 @@ pub struct MouseRecord {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ClientMsg {
-    /// Run a command (the argv of the `wmux` CLI, or a `:` prompt line).
+    /// Run a command (the argv of the `keepane` CLI, or a `:` prompt line).
     /// If the command attaches, the server answers `Attached` and the stream
     /// switches into interactive mode.
     Command {
@@ -57,7 +57,7 @@ pub enum ClientMsg {
         rows: u16,
         /// Client is running on a real console and may be attached.
         interactive: bool,
-        /// Value of `WMUX_PANE` in the client's environment (running inside a pane).
+        /// Value of `KEEPANE_PANE` in the client's environment (running inside a pane).
         pane_env: Option<u32>,
     },
     Key(KeyRecord),
@@ -88,7 +88,7 @@ pub enum ServerMsg {
         reason: String,
     },
     Error(String),
-    /// Whether the console should capture mouse events for wmux (`mouse`
+    /// Whether the console should capture mouse events for keepane (`mouse`
     /// option). When false the host terminal keeps its native selection.
     SetMouse(bool),
     /// Bring the client's terminal window to the front (`focus-pane`, the
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn pipe_name_is_sanitized() {
         let n = pipe_name("default");
-        assert!(n.starts_with(r"\\.\pipe\wmux-"));
+        assert!(n.starts_with(r"\\.\pipe\keepane-"));
         assert!(n.ends_with("-default"));
         assert!(pipe_name(r"..\evil").ends_with("-.._evil"));
         assert!(pipe_name("").ends_with("-default"));

@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon.svg">
-<title>wmux</title>
+<title>keepane</title>
 <style>
   :root {
     --bg: #1a1b26; --bar: #16161e; --card: #24283b; --line: #3b4261;
@@ -97,7 +97,7 @@
 <body>
 <header>
   <button id="back" class="icon hidden" aria-label="Back">&#8249;</button>
-  <h1 id="title">wmux</h1>
+  <h1 id="title">keepane</h1>
   <button id="detail" class="icon hidden" aria-label="Times">&#9201;</button>
   <button id="plus" class="icon hidden" aria-label="More">+</button>
 </header>
@@ -126,13 +126,13 @@
 "use strict";
 // The key: from the address the QR code gave (then taken out of it, so it
 // is not left in the address bar), or kept from last time on this phone.
-// `#...&p=N` (the pane's number, `%N` in wmux) opens that pane straight away.
+// `#...&p=N` (the pane's number, `%N` in keepane) opens that pane straight away.
 const startPane = ((m) => (m ? "%" + m[1] : null))(location.hash.match(/[#&]p=(?:%25|%)?(\d+)/));
 const key = (() => {
   const m = location.hash.match(/k=([A-Za-z0-9_-]+)/);
   try {
-    if (m) { localStorage.setItem("wmux-key", m[1]); history.replaceState(null, "", location.pathname); return m[1]; }
-    return localStorage.getItem("wmux-key") || "";
+    if (m) { localStorage.setItem("keepane-key", m[1]); history.replaceState(null, "", location.pathname); return m[1]; }
+    return localStorage.getItem("keepane-key") || "";
   } catch (e) { return m ? m[1] : ""; }
 })();
 
@@ -149,8 +149,8 @@ const KEYS = [
 ];
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, { ...opts, cache: "no-store", headers: { "X-Wmux-Key": key, ...(opts.headers || {}) } });
-  if (r.status === 401) throw new Error(t("This page needs the code again: run `wmux web` and scan it.", "需要重新扫码：在电脑上运行 `wmux web` 再扫一次。"));
+  const r = await fetch(path, { ...opts, cache: "no-store", headers: { "X-Keepane-Key": key, ...(opts.headers || {}) } });
+  if (r.status === 401) throw new Error(t("This page needs the code again: run `keepane web` and scan it.", "需要重新扫码：在电脑上运行 `keepane web` 再扫一次。"));
   if (!r.ok) throw new Error((await r.text()) || r.statusText);
   return r;
 }
@@ -213,7 +213,7 @@ function showList(push) {
   current = null;
   stopWatch();
   if (push) history.pushState({}, "");
-  $("title").textContent = "wmux";
+  $("title").textContent = "keepane";
   $("screen").classList.add("hidden"); $("list").classList.remove("hidden");
   $("back").classList.add("hidden"); $("detail").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
   tick();
@@ -248,7 +248,7 @@ $("main").addEventListener("scroll", () => {
 // started on its line (the date when not today); tapping it says more. The
 // pane keeps its size: the column is the page's, not the pane's.
 const GUTTER = 6;
-let detail = (() => { try { return localStorage.getItem("wmux-detail") === "1"; } catch (e) { return false; } })();
+let detail = (() => { try { return localStorage.getItem("keepane-detail") === "1"; } catch (e) { return false; } })();
 let shown = { text: "", marks: [] };
 const pad2 = (n) => String(n).padStart(2, "0");
 function stampText(m) {
@@ -275,7 +275,7 @@ function stampDetail(m) {
 $("detail").classList.toggle("on", detail);
 $("detail").addEventListener("click", () => {
   detail = !detail;
-  try { localStorage.setItem("wmux-detail", detail ? "1" : "0"); } catch (e) {}
+  try { localStorage.setItem("keepane-detail", detail ? "1" : "0"); } catch (e) {}
   $("detail").classList.toggle("on", detail);
   fitFont(); lastText = null; showScreen(shown.text, shown.marks);
 });
@@ -331,8 +331,8 @@ async function watchScreen() {
   while (!ctl.signal.aborted && current === id) {
     try {
       const r = await fetch(`/api/watch?pane=${encodeURIComponent(id)}&history=300`,
-        { headers: { "X-Wmux-Key": key }, cache: "no-store", signal: ctl.signal });
-      if (r.status === 401) { showError(t("This page needs the code again: run `wmux web` and scan it.", "需要重新扫码：在电脑上运行 `wmux web` 再扫一次。")); return; }
+        { headers: { "X-Keepane-Key": key }, cache: "no-store", signal: ctl.signal });
+      if (r.status === 401) { showError(t("This page needs the code again: run `keepane web` and scan it.", "需要重新扫码：在电脑上运行 `keepane web` 再扫一次。")); return; }
       if (!r.ok) { showError((await r.text()) || r.statusText); throw new Error("retry"); }
       if (!r.body || !r.body.getReader) {
         // This browser cannot read a response as it arrives: ask every
@@ -483,7 +483,7 @@ if (window.visualViewport) {
   try {
     const info = await (await api("/api/info")).json();
     readOnly = info.readOnly;
-    document.title = `wmux · ${info.host}`;
+    document.title = `keepane · ${info.host}`;
   } catch (e) {
     $("list").innerHTML = `<p class="error">${esc(e.message)}</p>`;
     return;

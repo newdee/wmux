@@ -1,4 +1,4 @@
-//! The wmux command language, shared by the `wmux` CLI, the `:` prompt,
+//! The keepane command language, shared by the `keepane` CLI, the `:` prompt,
 //! key bindings and the config file.
 
 use std::fmt;
@@ -171,7 +171,7 @@ pub enum Cmd {
         before: bool,
         /// `-f`: span the full window width/height instead of the target pane.
         full: bool,
-        /// `-N count` (wmux's own): make that many new panes and tile the
+        /// `-N count` (keepane's own): make that many new panes and tile the
         /// window. 1 is an ordinary split.
         count: u16,
     },
@@ -297,7 +297,7 @@ pub enum Cmd {
     SendPrefix {
         target: Option<Target>,
     },
-    /// `list-commands`: the command names this wmux knows.
+    /// `list-commands`: the command names this keepane knows.
     ListCommands,
     /// `list-clients`: who is attached, to what, at what size.
     ListClients,
@@ -341,7 +341,7 @@ pub enum Cmd {
     /// to the pane, `x` kills it, `r` restarts it.
     ChooseJobs,
     /// `choose-history`: what panes printed, kept a file a day (prefix `/`):
-    /// a pane position, then a day, opened in `wmux view` in a popup.
+    /// a pane position, then a day, opened in `keepane view` in a popup.
     ChooseHistory,
     /// `undo-kill`: the pane or window killed last comes back where it
     /// was, programs still running, within `undo-kill-time` seconds.
@@ -475,7 +475,7 @@ pub enum Cmd {
         windows: bool,
     },
     /// `run-shell [-b] [-t target] command`: run a shell command with
-    /// `WMUX`/`WMUX_PANE` set; output is shown (or printed) when it finishes.
+    /// `KEEPANE`/`KEEPANE_PANE` set; output is shown (or printed) when it finishes.
     RunShell {
         command: String,
         background: bool,
@@ -487,7 +487,7 @@ pub enum Cmd {
         cmd: Option<Box<Cmd>>,
     },
     ShowHooks,
-    /// `load-plugin name-or-path`: source `<dir>/<name>.wmux` (or `plugin.wmux`).
+    /// `load-plugin name-or-path`: source `<dir>/<name>.keepane` (or `plugin.keepane`).
     LoadPlugin {
         path: String,
     },
@@ -1434,7 +1434,7 @@ fn bad_flag(name: &str, flag: &str) -> String {
 
 /// The key tables: the keys after the prefix, keys without it, and the
 /// keys of copy mode (tmux's `copy-mode-vi`; `copy-mode`, its emacs table,
-/// is taken as the same one, wmux's copy mode being vi-style).
+/// is taken as the same one, keepane's copy mode being vi-style).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KeyTable {
     Prefix,
@@ -1460,7 +1460,9 @@ fn key_table(name: &str, table: &str) -> Result<KeyTable, String> {
         "root" => Ok(KeyTable::Root),
         "prefix" => Ok(KeyTable::Prefix),
         "copy-mode-vi" | "copy-mode" => Ok(KeyTable::Copy),
-        other => Err(format!("{name}: key table '{other}' is not supported (wmux has root, prefix and copy-mode-vi)")),
+        other => {
+            Err(format!("{name}: key table '{other}' is not supported (keepane has root, prefix and copy-mode-vi)"))
+        }
     }
 }
 
@@ -2003,7 +2005,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
         }
         "kill-server" => {
-            // `-r` (wmux's own, used by `restart-server`): attached clients
+            // `-r` (keepane's own, used by `restart-server`): attached clients
             // are told the server is coming back, and attach again.
             let mut restarting = false;
             while a.is_flag() {
@@ -2074,7 +2076,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 match a.next().unwrap() {
                     "-s" => src = Some(Target::parse(a.value("-s")?)),
                     "-t" => dst = Some(Target::parse(a.value("-t")?)),
-                    "-d" | "-k" | "-a" | "-b" | "-r" => {} // tmux flags without a wmux meaning
+                    "-d" | "-k" | "-a" | "-b" | "-r" => {} // tmux flags without a keepane meaning
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -2435,7 +2437,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-t" | "-s" => target = Some(Target::parse(a.value("-t")?)),
-                    "-d" | "-P" => {} // tmux flags without a wmux meaning
+                    "-d" | "-P" => {} // tmux flags without a keepane meaning
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -2579,7 +2581,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-T" => title = Some(a.value("-T")?.to_string()),
-                    // Placement and the client to show it on: wmux draws the
+                    // Placement and the client to show it on: keepane draws the
                     // menu over the window of the client that asked for it.
                     "-x" | "-y" | "-c" | "-t" => {
                         a.value("-x")?;
@@ -2692,7 +2694,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-F" => format = true,
-                    "-b" => {} // background: wmux runs it inline either way
+                    "-b" => {} // background: keepane runs it inline either way
                     "-t" => {
                         a.value("-t")?;
                     }
@@ -2849,7 +2851,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     match c {
                         's' => sessions = true,
                         'w' => windows = true,
-                        _ => {} // -Z -N -G -r: tmux flags without a wmux meaning
+                        _ => {} // -Z -N -G -r: tmux flags without a keepane meaning
                     }
                 }
             }
@@ -2886,7 +2888,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 match a.next().unwrap() {
                     "-b" => background = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    "-C" => {} // tmux: run as a wmux command; here everything is a shell command
+                    "-C" => {} // tmux: run as a keepane command; here everything is a shell command
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -3680,7 +3682,7 @@ mod tests {
         // tmux's window-scoped spellings are the same command here.
         assert_eq!(p("setw -g mode-keys vi"), p("set -g mode-keys vi"));
         // The three key tables; copy-mode (emacs) is taken as copy-mode-vi,
-        // and a table wmux does not have is refused, not bound elsewhere.
+        // and a table keepane does not have is refused, not bound elsewhere.
         assert!(matches!(p("bind -T root M-x kill-pane"), Cmd::BindKey { table: KeyTable::Root, .. }));
         assert!(matches!(p("bind -T prefix x kill-pane"), Cmd::BindKey { table: KeyTable::Prefix, .. }));
         let vi = p("bind -T copy-mode-vi v send -X begin-selection");

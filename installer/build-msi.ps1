@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-  Build the wmux MSI from an already built release binary.
+  Build the keepane MSI from an already built release binary.
 
 .DESCRIPTION
-  Stages the files the installer ships (wmux.exe, README.md, LICENSE,
-  wmux.conf.example) into a temporary directory and runs WiX over
-  installer/wmux.wxs. WiX 3.14 is used from -WixBin, from PATH, from the usual
+  Stages the files the installer ships (keepane.exe, README.md, LICENSE,
+  keepane.conf.example) into a temporary directory and runs WiX over
+  installer/keepane.wxs. WiX 3.14 is used from -WixBin, from PATH, from the usual
   "WiX Toolset v3.x" install, or downloaded (no install) when none is found.
 
 .EXAMPLE
@@ -16,7 +16,7 @@
 param(
     # Product version; must be x.y.z (MSI does not take anything else).
     [string]$Version,
-    # Directory holding the built wmux.exe.
+    # Directory holding the built keepane.exe.
     [string]$ExeDir = "target/release",
     # Where the .msi lands.
     [string]$OutDir = "target",
@@ -53,24 +53,24 @@ function Resolve-Wix {
 }
 
 $wix = Resolve-Wix
-$exe = Join-Path $root $ExeDir "wmux.exe"
-if (-not (Test-Path $exe)) { throw "no wmux.exe at $exe (cargo build --release first)" }
+$exe = Join-Path $root $ExeDir "keepane.exe"
+if (-not (Test-Path $exe)) { throw "no keepane.exe at $exe (cargo build --release first)" }
 
 # Everything the MSI ships, in one directory, so the .wxs has a single root.
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) "wmux-msi-stage-$PID"
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) "keepane-msi-stage-$PID"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item $exe $stage
-foreach ($f in @("README.md", "LICENSE", "wmux.conf.example")) { Copy-Item (Join-Path $root $f) $stage }
+foreach ($f in @("README.md", "LICENSE", "keepane.conf.example")) { Copy-Item (Join-Path $root $f) $stage }
 
-$obj = Join-Path $stage "wmux.wixobj"
+$obj = Join-Path $stage "keepane.wixobj"
 $outDirFull = Join-Path $root $OutDir
 New-Item -ItemType Directory -Force $outDirFull | Out-Null
-$msi = Join-Path $outDirFull "wmux-$Version-windows-x86_64.msi"
+$msi = Join-Path $outDirFull "keepane-$Version-windows-x86_64.msi"
 
 try {
     & "$wix/candle.exe" -nologo -arch x64 "-dVersion=$Version" "-dSourceDir=$stage" `
-        (Join-Path $root "installer/wmux.wxs") -o $obj
+        (Join-Path $root "installer/keepane.wxs") -o $obj
     if ($LASTEXITCODE -ne 0) { throw "candle failed" }
     # ICE61 fires on same-version upgrades, which MajorUpgrade allows on purpose.
     & "$wix/light.exe" -nologo -ext WixUIExtension -sice:ICE61 -spdb -b $root $obj -o $msi

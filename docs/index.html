@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>wmux · tmux for Windows</title>
+    <title>keepane · tmux for Windows</title>
     <meta
       name="description"
       content="A tmux-style terminal multiplexer for Windows. Split panes, detach and reattach, and pick a session back up after a reboot. Native ConPTY, no Cygwin, no WSL required."
     />
-    <meta property="og:title" content="wmux" />
+    <meta property="og:title" content="keepane" />
     <meta property="og:description" content="tmux for Windows: split panes, sessions that outlive the terminal, and the same keys and commands as tmux." />
     <meta property="og:image" content="img/panes.png" />
     <meta name="theme-color" content="#0d1017" />
@@ -20,12 +20,12 @@
   </head>
   <body>
     <header class="top">
-      <a class="brand" href="#top">wmux<span class="dot">.</span></a>
+      <a class="brand" href="#top">keepane<span class="dot">.</span></a>
       <nav>
         <a class="nav-link" href="#tour" data-i18n="nav.tour">Tour</a>
         <button id="lang" class="lang-btn" type="button">中文</button>
-        <a class="btn small" href="https://github.com/newdee/wmux/releases/latest" data-i18n="nav.download">Download</a>
-        <a class="star-btn" href="https://github.com/newdee/wmux">
+        <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="nav.download">Download</a>
+        <a class="star-btn" href="https://github.com/newdee/keepane">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path
               fill="currentColor"
@@ -47,13 +47,13 @@
           PowerShell, cmd and WSL run inside panes, and every keystroke reaches them unchanged.
         </p>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/newdee/wmux/releases/latest" data-i18n="hero.download">Download for Windows</a>
-          <a class="btn ghost" href="https://github.com/newdee/wmux" data-i18n="hero.source">View source</a>
+          <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>
+          <a class="btn ghost" href="https://github.com/newdee/keepane" data-i18n="hero.source">View source</a>
         </div>
-        <p class="meta" data-i18n="hero.meta">MIT · Windows 10 1809 or newer · one 3 MB exe</p>
+        <p class="meta" data-i18n="hero.meta">MIT · Windows 10 1809 or newer · one 3 MB exe · formerly wmux</p>
 
         <figure class="stage">
-          <img src="img/wmux-demo.gif" width="880" alt="A wmux session: splitting panes, typing into all of them with set sync, zooming, the pane menu, the window picker, detaching and attaching again" />
+          <img src="img/keepane-demo.gif" width="880" alt="A keepane session: splitting panes, typing into all of them with set sync, zooming, the pane menu, the window picker, detaching and attaching again" />
           <figcaption data-i18n="hero.caption">
             One session, recorded end to end: split, type into every pane at once, move, zoom, the pane menu, switch windows, detach, attach again.
           </figcaption>
@@ -63,7 +63,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>247</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>250</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -79,11 +79,11 @@
           </p>
         </header>
         <div class="pair">
-          <figure class="shot"><img src="img/panes.png" alt="Three panes: a shell on the left, wmux list-panes top right, a build loop bottom right" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/panes.png" alt="Three panes: a shell on the left, keepane list-panes top right, a build loop bottom right" loading="lazy" /></figure>
           <figure class="shot"><img src="img/sync.png" alt="The same three panes after one echo typed with synchronize-panes on: the line ran in every pane, S on the status line" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside wmux.</li>
+          <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside keepane.</li>
           <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the Windows clipboard.</li>
           <li data-i18n="c1.p3"><kbd>C-b S</kbd> or <code>:set sync</code> (Tab completes the name) sends every key to every pane in the window. <code>split-window -N 3</code> adds three panes at once and tiles them.</li>
         </ul>
@@ -94,19 +94,19 @@
           <span class="num">02</span>
           <h2 data-i18n="cw.title">Your panes, on your phone</h2>
           <p data-i18n="cw.sub">
-            Start <code>wmux web</code> before you walk away from a long build. It prints a QR code; scan it on
+            Start <code>keepane web</code> before you walk away from a long build. It prints a QR code; scan it on
             the same Wi-Fi and the phone's browser lists every pane, shows any of them as it appears on screen,
             and lets you type into it. Nothing to install on the phone.
           </p>
         </header>
         <figure class="shot phone-shot">
-          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="wmux web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
+          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
         </figure>
         <ul class="points">
-          <li data-i18n="cw.p1">wmux sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
+          <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
           <li data-i18n="cw.p2">A row under the screen has the keys a phone keyboard lacks: Esc, Tab, Shift+Tab, the arrows, Ctrl+C, y, n, 1, 2 and 3. Longer input goes in the text box. The <kbd>+</kbd> menu splits the pane, opens a window or closes the pane.</li>
           <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
-          <li data-i18n="cw.p4">It works only while <code>wmux web</code> is running, and the QR code carries a new 128-bit key each time. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
+          <li data-i18n="cw.p4">It works only while <code>keepane web</code> is running, and the QR code carries a new 128-bit key each time. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
         </ul>
       </section>
 
@@ -143,7 +143,7 @@
           <span class="num">04</span>
           <h2 data-i18n="c3.title">Close the terminal, the programs keep running</h2>
           <p data-i18n="c3.sub">
-            <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>wmux attach</code>
+            <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>keepane attach</code>
             picks the session up again, from any terminal window.
           </p>
         </header>
@@ -152,9 +152,9 @@
           <figure class="shot"><img src="img/attach.png" alt="The same layout after attaching again" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and <code>wmux resume</code> brings back the windows, the pane layout, and each pane's command and directory.</li>
+          <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and <code>keepane resume</code> brings back the windows, the pane layout, and each pane's command and directory.</li>
           <li data-i18n="c3.p2">The file also keeps what each pane printed: <code>save-history</code> stores the last 500 lines by default, or the whole scrollback with <code>all</code>, colours included. A resumed pane shows its old output instead of an empty prompt.</li>
-          <li data-i18n="c3.p3"><code>wmux list-saved</code> shows what can be restored, and <code>wmux resume work</code> restores just that session.</li>
+          <li data-i18n="c3.p3"><code>keepane list-saved</code> shows what can be restored, and <code>keepane resume work</code> restores just that session.</li>
         </ul>
       </section>
 
@@ -169,7 +169,7 @@
           </p>
         </header>
         <figure class="stage">
-          <img src="img/wmux-alerts.gif" width="880" loading="lazy" alt="A background job finishes in another window, the status line marks it, C-b M-n jumps there, a failing command leaves its pane in place, and a popup shows the window list" />
+          <img src="img/keepane-alerts.gif" width="880" loading="lazy" alt="A background job finishes in another window, the status line marks it, C-b M-n jumps there, a failing command leaves its pane in place, and a popup shows the window list" />
           <figcaption data-i18n="c35.caption">
             A deploy finishes in window 1 while window 0 carries on; the flag appears in the status line and in
             <code>list-windows</code>; a command that fails leaves its pane and its exit code behind.
@@ -178,7 +178,7 @@
         <ul class="points">
           <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
           <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
-          <li data-i18n="c35.p3">Scripts can wait on each other: <code>wmux wait-for ready</code> blocks until another client runs <code>wmux wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
+          <li data-i18n="c35.p3">Scripts can wait on each other: <code>keepane wait-for ready</code> blocks until another client runs <code>keepane wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
         </ul>
       </section>
 
@@ -192,7 +192,7 @@
           </p>
         </header>
         <figure class="stage">
-          <img src="img/wmux-history.gif" width="880" loading="lazy" alt="Command times appear at the end of each command's line, the history picker lists pane positions and days, a day opens in a pager, and a pane closed by mistake comes back with C-b u" />
+          <img src="img/keepane-history.gif" width="880" loading="lazy" alt="Command times appear at the end of each command's line, the history picker lists pane positions and days, a day opens in a pager, and a pane closed by mistake comes back with C-b u" />
           <figcaption data-i18n="ch.caption">
             Three commands with their times, one of them failing; the history picker and a day in the pager;
             a pane closed by mistake, back with <kbd>C-b u</kbd>.
@@ -215,7 +215,7 @@
           <h2 data-i18n="c4.title">Your .tmux.conf, more or less</h2>
           <p data-i18n="c4.sub">
             The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
-            Options tmux has but wmux does not are accepted and ignored, so an existing config is a starting point.
+            Options tmux has but keepane does not are accepted and ignored, so an existing config is a starting point.
           </p>
         </header>
         <pre class="code"><code>set -g prefix C-a
@@ -231,9 +231,9 @@ bind | split-window -h
 bind -n M-Right next-window       <span class="c"># -n: no prefix at all</span>
 set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         <ul class="points">
-          <li data-i18n="c4.p0">A command name can be cut to any unambiguous prefix (<code>wmux att</code>, <code>wmux splitw -h</code>), and so can an option name: <code>set sync</code> means <code>set synchronize-panes</code>, <code>set mon-act on</code> means <code>set monitor-activity on</code>, and an on/off option given no value flips.</li>
-          <li data-i18n="c4.p1"><code>wmux send-keys</code> (tmux's <code>-X</code> copy-mode commands included), <code>wmux capture-pane -p -e</code> and <code>wmux split-window</code> drive a session from a script. Run inside a pane, they need no socket name.</li>
-          <li data-i18n="c4.p2">A plugin is a directory with a <code>&lt;name&gt;.wmux</code> file of commands plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
+          <li data-i18n="c4.p0">A command name can be cut to any unambiguous prefix (<code>keepane att</code>, <code>keepane splitw -h</code>), and so can an option name: <code>set sync</code> means <code>set synchronize-panes</code>, <code>set mon-act on</code> means <code>set monitor-activity on</code>, and an on/off option given no value flips.</li>
+          <li data-i18n="c4.p1"><code>keepane send-keys</code> (tmux's <code>-X</code> copy-mode commands included), <code>keepane capture-pane -p -e</code> and <code>keepane split-window</code> drive a session from a script. Run inside a pane, they need no socket name.</li>
+          <li data-i18n="c4.p2">A plugin is a directory with a <code>&lt;name&gt;.keepane</code> file of commands plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
         </ul>
       </section>
 
@@ -243,16 +243,16 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
           <h2 data-i18n="c6.title">Git branch, CPU and memory on the status line</h2>
           <p data-i18n="c6.sub">
             The default status line shows your git branch, the pane's directory, CPU and memory use, and the
-            battery if there is one. wmux reads these itself once a second without starting any helper process.
+            battery if there is one. keepane reads these itself once a second without starting any helper process.
             You can replace the line with your own or turn it off.
           </p>
         </header>
-        <pre class="code statusline"><code>[work] 0:editor* 1:build 2:logs     master | ~\Documents\dfine\wmux | CPU 9% MEM 65% | 11:45</code></pre>
+        <pre class="code statusline"><code>[work] 0:editor* 1:build 2:logs     master | ~\Documents\dfine\keepane | CPU 9% MEM 65% | 11:45</code></pre>
         <ul class="points">
           <li data-i18n="c6.p1"><code>#{git_branch}</code>, <code>#{cpu_percentage}</code>, <code>#{ram_percentage}</code>, <code>#{battery_percentage}</code>, <code>#{pane_current_path_short}</code> and <code>#{pane_pid_command}</code> (the program running in the pane right now) can go anywhere in <code>status-right</code>. <code>set -g status off</code> hides the line.</li>
           <li data-i18n="c6.p2">When two terminals attach at different sizes, <code>window-size</code> decides which one sizes the session. The smaller terminal sees part of the window and pans with <kbd>Shift</kbd> + arrows.</li>
-          <li data-i18n="c6.p3">A right click pastes. At the <kbd>:</kbd> prompt, <kbd>Tab</kbd> completes commands, flags, targets and option names, and <code>wmux completion powershell</code> gives PowerShell the same completions.</li>
-          <li data-i18n="c6.p4"><code>wmux update</code> installs a new release, and <code>wmux restart-server</code> moves every running session to it with history and directories. Attached terminals reconnect on their own.</li>
+          <li data-i18n="c6.p3">A right click pastes. At the <kbd>:</kbd> prompt, <kbd>Tab</kbd> completes commands, flags, targets and option names, and <code>keepane completion powershell</code> gives PowerShell the same completions.</li>
+          <li data-i18n="c6.p4"><code>keepane update</code> installs a new release, and <code>keepane restart-server</code> moves every running session to it with history and directories. Attached terminals reconnect on their own.</li>
         </ul>
       </section>
 
@@ -264,23 +264,23 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         <div class="cards">
           <div class="card">
             <h3 data-i18n="c5.msi">Installer</h3>
-            <p data-i18n="c5.msi.sub">The .msi puts wmux in Program Files, on the system PATH, and in "Apps &amp; features".</p>
-            <a class="btn small" href="https://github.com/newdee/wmux/releases/latest" data-i18n="c5.get">Get it</a>
+            <p data-i18n="c5.msi.sub">The .msi puts keepane in Program Files, on the system PATH, and in "Apps &amp; features".</p>
+            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
           </div>
           <div class="card">
             <h3 data-i18n="c5.zip">Portable</h3>
             <p data-i18n="c5.zip.sub">The .zip is the same single exe. Unzip it anywhere and run it.</p>
-            <a class="btn small" href="https://github.com/newdee/wmux/releases/latest" data-i18n="c5.get">Get it</a>
+            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
           </div>
           <div class="card">
             <h3 data-i18n="c5.scoop">Scoop</h3>
             <p data-i18n="c5.scoop.sub">The manifest in the repository installs the zip and follows releases.</p>
-            <pre class="code mini"><code>scoop install https://raw.githubusercontent.com/newdee/wmux/master/packaging/scoop/wmux.json</code></pre>
+            <pre class="code mini"><code>scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json</code></pre>
           </div>
           <div class="card">
             <h3 data-i18n="c5.cargo">From source</h3>
             <pre class="code mini"><code>cargo install --git \
-  https://github.com/newdee/wmux --locked</code></pre>
+  https://github.com/newdee/keepane --locked</code></pre>
           </div>
         </div>
       </section>
@@ -288,15 +288,15 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
       <section class="closing">
         <h2 data-i18n="close.title">Try it on your next long build.</h2>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/newdee/wmux/releases/latest" data-i18n="hero.download">Download for Windows</a>
-          <a class="btn ghost" href="https://github.com/newdee/wmux#readme" data-i18n="close.docs">Read the docs</a>
+          <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>
+          <a class="btn ghost" href="https://github.com/newdee/keepane#readme" data-i18n="close.docs">Read the docs</a>
         </div>
       </section>
     </main>
 
     <footer>
       <span data-i18n="footer.built">Built in Rust on ConPTY and the Win32 console API.</span>
-      <a href="https://github.com/newdee/wmux">github.com/newdee/wmux</a>
+      <a href="https://github.com/newdee/keepane">github.com/newdee/keepane</a>
     </footer>
 
     <script src="site.js"></script>

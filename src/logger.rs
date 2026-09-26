@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Size at which the log is rotated: 5 MB, or `WMUX_LOG_MAX` bytes.
+/// Size at which the log is rotated: 5 MB, or `KEEPANE_LOG_MAX` bytes.
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 struct State {
@@ -69,10 +69,10 @@ impl log::Log for FileLogger {
 }
 
 pub fn log_dir() -> std::path::PathBuf {
-    if let Some(d) = std::env::var_os("WMUX_LOG_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = crate::legacy::var_os("KEEPANE_LOG_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("wmux")
+    dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("keepane")
 }
 
 pub fn init(name: &str) {
@@ -80,14 +80,15 @@ pub fn init(name: &str) {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{name}.log"));
     let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) else { return };
-    let level = match std::env::var("WMUX_LOG").as_deref() {
-        Ok("trace") => log::LevelFilter::Trace,
-        Ok("debug") => log::LevelFilter::Debug,
-        Ok("warn") => log::LevelFilter::Warn,
-        Ok("error") => log::LevelFilter::Error,
+    let level = match crate::legacy::var("KEEPANE_LOG").as_deref() {
+        Some("trace") => log::LevelFilter::Trace,
+        Some("debug") => log::LevelFilter::Debug,
+        Some("warn") => log::LevelFilter::Warn,
+        Some("error") => log::LevelFilter::Error,
         _ => log::LevelFilter::Info,
     };
-    let max = std::env::var("WMUX_LOG_MAX").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(MAX_BYTES);
+    let max =
+        crate::legacy::var("KEEPANE_LOG_MAX").and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(MAX_BYTES);
     let written = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut state = State { file, path, written, max };
     // Already over the limit (from before rotation existed): start fresh.
@@ -106,7 +107,7 @@ mod tests {
 
     #[test]
     fn a_full_log_moves_aside_and_a_new_one_starts() {
-        let dir = std::env::temp_dir().join(format!("wmux-logrot-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-logrot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.log");
         let file = OpenOptions::new().create(true).append(true).open(&path).unwrap();

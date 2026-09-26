@@ -9,7 +9,7 @@ pub fn encode_key_record(r: &KeyRecord) -> Vec<u8> {
 }
 
 /// Plain VT (xterm) encoding of a logical key, for `send-keys` and keys
-/// synthesized by wmux itself.
+/// synthesized by keepane itself.
 pub fn encode_key(k: Key, app_cursor: bool) -> Vec<u8> {
     let modifier = 1 + u8::from(k.shift) + 2 * u8::from(k.alt) + 4 * u8::from(k.ctrl);
     let with_mod = |code: &str, final_: char| -> Vec<u8> {

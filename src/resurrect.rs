@@ -107,7 +107,7 @@ impl SavedFile {
     pub fn from_json(s: &str) -> Result<SavedFile, String> {
         let f: SavedFile = serde_json::from_str(s).map_err(|e| format!("saved session: {e}"))?;
         if f.version != FORMAT_VERSION {
-            return Err(format!("saved session: version {} (this wmux writes {FORMAT_VERSION})", f.version));
+            return Err(format!("saved session: version {} (this keepane writes {FORMAT_VERSION})", f.version));
         }
         Ok(f)
     }
@@ -130,10 +130,10 @@ impl SavedFile {
     }
 }
 
-/// Default directory of the auto-saved sessions (`WMUX_SESSIONS_DIR` wins,
+/// Default directory of the auto-saved sessions (`KEEPANE_SESSIONS_DIR` wins,
 /// which is how the tests keep their servers out of the real one).
 pub fn default_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("WMUX_SESSIONS_DIR")
+    if let Some(d) = crate::legacy::var("KEEPANE_SESSIONS_DIR")
         && !d.is_empty()
     {
         return PathBuf::from(d);
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn per_session_files() {
-        let dir = std::env::temp_dir().join(format!("wmux-resurrect-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("keepane-resurrect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let f = sample();
         let path = file_for(&dir, "main");

@@ -16,11 +16,11 @@ pub enum PaneEvent {
     Input(PaneId, Vec<u8>),
 }
 
-/// What the printer of a resumed pane's saved output (`wmux __replay`)
+/// What the printer of a resumed pane's saved output (`keepane __replay`)
 /// writes after the text: a private OSC that ConPTY passes through and the
 /// screen model turns into `replay_done`, the cue to start the pane's own
 /// program in that console while the printer still holds it open.
-pub const REPLAY_MARKER: &str = "\x1b]7777;wmux-replayed\x1b\\";
+pub const REPLAY_MARKER: &str = "\x1b]7777;keepane-replayed\x1b\\";
 
 /// The generation tag of the printer's exit event, which is never the
 /// pane's own: its exit is not the pane's program exiting.
@@ -229,13 +229,13 @@ impl vt100::Callbacks for Callbacks {
         let raw = match params {
             [b"7", p] => Some(*p),
             [b"9", b"9", p] => Some(*p),
-            [b"7777", b"wmux-replayed"] => {
+            [b"7777", b"keepane-replayed"] => {
                 self.replayed = true;
                 None
             }
-            // OSC 7777 ; wmux-cmd ; start ; end ; ok   (the PowerShell hook,
+            // OSC 7777 ; keepane-cmd ; start ; end ; ok   (the PowerShell hook,
             // times in Unix milliseconds)
-            [b"7777", b"wmux-cmd", start, end, ok] if shell => {
+            [b"7777", b"keepane-cmd", start, end, ok] if shell => {
                 if let (Some(start), Some(end)) = (local_ms(start), local_ms(end)) {
                     self.marks.push(MarkEvent::Ran { start, end, ok: *ok != b"0" });
                 }
@@ -392,30 +392,30 @@ pub struct Pipe {
     pub output: bool,
 }
 
-/// The wmux.exe that runs `__replay` and `view`: this executable when it is wmux,
-/// `WMUX_EXE` when set (the tests, whose own binary is not wmux), else the
-/// wmux.exe two directories up from a test binary (cargo's layout).
+/// The keepane.exe that runs `__replay` and `view`: this executable when it is keepane,
+/// `KEEPANE_EXE` when set (the tests, whose own binary is not keepane), else the
+/// keepane.exe two directories up from a test binary (cargo's layout).
 pub fn helper_exe() -> Option<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os("WMUX_EXE").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
+    if let Some(p) = std::env::var_os("KEEPANE_EXE").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
     let me = std::env::current_exe().ok()?;
-    if me.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("wmux")) {
+    if me.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("keepane")) {
         return Some(me);
     }
-    let sibling = me.parent()?.parent()?.join("wmux.exe");
+    let sibling = me.parent()?.parent()?.join("keepane.exe");
     sibling.is_file().then_some(sibling)
 }
 
-/// The command that prints `text` into the pane's console: `wmux __replay
+/// The command that prints `text` into the pane's console: `keepane __replay
 /// file`, which writes the file's text to the console and removes it.
 fn replay_argv(id: PaneId, text: &str) -> Result<(Vec<String>, std::path::PathBuf)> {
-    let exe = helper_exe().context("no wmux.exe to print the saved output with")?;
+    let exe = helper_exe().context("no keepane.exe to print the saved output with")?;
     // Unique per file, not per pane: several servers in one process (the
     // tests) hand out the same pane ids.
     static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("wmux-replay-{}-{id}-{n}.txt", std::process::id()));
+    let path = std::env::temp_dir().join(format!("keepane-replay-{}-{id}-{n}.txt", std::process::id()));
     std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
     Ok((vec![exe.to_string_lossy().into_owned(), "__replay".into(), path.to_string_lossy().into_owned()], path))
 }
@@ -565,7 +565,7 @@ impl Pane {
         // event): waiting here would block the server, and with it the
         // answers ConPTY expects to its own queries while a process starts.
         //
-        // What runs is the command plus wmux's shell integration (a prompt
+        // What runs is the command plus keepane's shell integration (a prompt
         // hook that reports the directory); what is remembered and shown
         // is the command as given.
         let (run, pending) = match replay.filter(|t| !t.is_empty()).map(|t| replay_argv(id, &t)) {
@@ -988,7 +988,7 @@ impl Pane {
                 let lost = oldest - self.logged;
                 self.log_hold.push_back((
                     u64::MAX,
-                    format!("[wmux: {lost} lines scrolled past the history before they were kept]"),
+                    format!("[keepane: {lost} lines scrolled past the history before they were kept]"),
                 ));
                 self.logged = oldest;
             }
@@ -1406,12 +1406,12 @@ mod tests {
             }
         });
         let text = format!("before{REPLAY_MARKER}after\r\n");
-        let path = std::env::temp_dir().join(format!("wmux-marker-test-{}.txt", std::process::id()));
+        let path = std::env::temp_dir().join(format!("keepane-marker-test-{}.txt", std::process::id()));
         std::fs::write(&path, &text).unwrap();
-        let mut cmd = CommandBuilder::new(helper_exe().expect("wmux.exe (WMUX_EXE or beside the tests)"));
+        let mut cmd = CommandBuilder::new(helper_exe().expect("keepane.exe (KEEPANE_EXE or beside the tests)"));
         cmd.arg("__replay");
         cmd.arg(&path);
-        cmd.env("WMUX_REPLAY_NO_WAIT", "1");
+        cmd.env("KEEPANE_REPLAY_NO_WAIT", "1");
         let mut child = pair.slave.spawn_command(cmd).unwrap();
         let started = std::time::Instant::now();
         let mut answered = false;
@@ -1498,9 +1498,9 @@ mod tests {
         let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into(), "prompt $g".into()];
         let mut p = Pane::spawn(1, &argv, None, 80, 24, 100, &[], tx).unwrap();
         assert!(pump(&mut p, &rx, |p| p.screen().contents().contains('>'), Duration::from_secs(10)), "no prompt");
-        p.write_input(b"echo hello-wmux\r");
+        p.write_input(b"echo hello-keepane\r");
         assert!(
-            pump(&mut p, &rx, |p| p.screen().contents().matches("hello-wmux").count() >= 2, Duration::from_secs(10)),
+            pump(&mut p, &rx, |p| p.screen().contents().matches("hello-keepane").count() >= 2, Duration::from_secs(10)),
             "no echo: {:?}",
             p.screen().contents()
         );
@@ -1532,11 +1532,11 @@ mod tests {
     #[test]
     fn kill_takes_grandchildren_down() {
         let (tx, rx) = channel();
-        // The shell starts ping (a grandchild of wmux) and waits for it.
+        // The shell starts ping (a grandchild of keepane) and waits for it.
         let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into(), "prompt $g".into()];
         let mut p = Pane::spawn(9, &argv, None, 80, 24, 100, &[], tx).unwrap();
         assert!(pump(&mut p, &rx, |p| p.screen().contents().contains('>'), Duration::from_secs(10)));
-        let marker = std::env::temp_dir().join(format!("wmux-job-marker-{}", std::process::id()));
+        let marker = std::env::temp_dir().join(format!("keepane-job-marker-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
         p.write_input(format!("ping -n 4 127.0.0.1 > nul & echo done > \"{}\"\r", marker.display()).as_bytes());
         std::thread::sleep(Duration::from_millis(500));
@@ -1582,7 +1582,7 @@ mod tests {
     const B: &str = "\x1b]133;B\x1b\\";
 
     fn ran(start: i64, end: i64, ok: bool) -> String {
-        format!("\x1b]7777;wmux-cmd;{start};{end};{}\x1b\\", ok as u8)
+        format!("\x1b]7777;keepane-cmd;{start};{end};{}\x1b\\", ok as u8)
     }
 
     #[test]

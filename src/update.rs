@@ -1,17 +1,17 @@
-//! `wmux update [--check]`: is there a newer wmux, and installing it the
+//! `keepane update [--check]`: is there a newer keepane, and installing it the
 //! way this one was installed. Nothing runs in the background and nothing
 //! is installed unasked: the command is typed, it says what it does.
 //!
 //! The release is asked of GitHub with `curl.exe` (part of Windows 10 and
 //! later); an MSI is checked against the SHA-256 published beside it before
 //! Windows Installer sees it. Afterwards the running server is still the
-//! old program: `wmux restart-server` moves the sessions to the new one.
+//! old program: `keepane restart-server` moves the sessions to the new one.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const REPO: &str = "newdee/wmux";
+const REPO: &str = "newdee/keepane";
 
 /// A release: its version ("0.10.0"), its page, and its files by name.
 #[derive(Debug, PartialEq)]
@@ -21,10 +21,10 @@ pub struct Release {
     pub assets: Vec<(String, String)>,
 }
 
-/// How this wmux was installed, which says how to update it.
+/// How this keepane was installed, which says how to update it.
 #[derive(Debug, PartialEq)]
 pub enum Kind {
-    /// `scoop install wmux`: scoop updates it.
+    /// `scoop install keepane`: scoop updates it.
     Scoop,
     /// The MSI, under Program Files.
     Msi,
@@ -79,7 +79,7 @@ pub fn parse_release(json: &str) -> Result<Release> {
 
 fn curl(args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("curl.exe")
-        .args(["-fsSL", "--retry", "2", "-H", "User-Agent: wmux-update"])
+        .args(["-fsSL", "--retry", "2", "-H", "User-Agent: keepane-update"])
         .args(args)
         .output()
         .context("curl.exe (part of Windows 10 and later) could not be run")?;
@@ -109,11 +109,11 @@ fn sha256_of(path: &Path) -> Result<String> {
 }
 
 fn install_msi(r: &Release) -> Result<()> {
-    let name = format!("wmux-{}-windows-x86_64.msi", r.version);
+    let name = format!("keepane-{}-windows-x86_64.msi", r.version);
     let find = |n: &str| r.assets.iter().find(|(a, _)| a == n).map(|(_, u)| u.clone());
     let msi_url = find(&name).with_context(|| format!("the release has no {name}"))?;
     let sha_url = find(&format!("{name}.sha256")).with_context(|| format!("the release has no {name}.sha256"))?;
-    let dir = std::env::temp_dir().join(format!("wmux-update-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("keepane-update-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let msi = dir.join(&name);
     println!("downloading {name}");
@@ -129,7 +129,7 @@ fn install_msi(r: &Release) -> Result<()> {
     let status = Command::new("msiexec.exe").arg("/i").arg(&msi).args(["/passive", "/norestart"]).status()?;
     let _ = std::fs::remove_dir_all(&dir);
     // 3010: installed, a reboot finishes it (a file was in use: the old
-    // wmux.exe, which the running server still is).
+    // keepane.exe, which the running server still is).
     match status.code() {
         Some(0) | Some(3010) => Ok(()),
         Some(1602) => bail!("the install was cancelled"),
@@ -146,10 +146,10 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     let current = env!("CARGO_PKG_VERSION");
     let r = latest()?;
     if !newer(&r.version, current) {
-        println!("wmux {current} is the latest");
+        println!("keepane {current} is the latest");
         return Ok(0);
     }
-    println!("wmux {} is out (this is {current}): {}", r.version, r.page);
+    println!("keepane {} is out (this is {current}): {}", r.version, r.page);
     if check {
         return Ok(0);
     }
@@ -160,26 +160,28 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
             // scoop is a .cmd/.ps1 shim, which Command::new would not find
             // (it looks for scoop.exe): let cmd resolve it.
             let ok = Command::new("cmd.exe")
-                .args(["/d", "/c", "scoop", "update", "wmux"])
+                .args(["/d", "/c", "scoop", "update", "keepane"])
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                bail!("`scoop update wmux` failed");
+                bail!("`scoop update keepane` failed");
             }
         }
         Kind::Msi => install_msi(&r)?,
         Kind::Other(path) => {
             println!(
-                "this wmux ({}) was not installed by the MSI or scoop: download it from the page above",
+                "this keepane ({}) was not installed by the MSI or scoop: download it from the page above",
                 path.display()
             );
             return Ok(1);
         }
     }
-    println!("installed wmux {}", r.version);
+    println!("installed keepane {}", r.version);
     if crate::client::server_version(socket).await.is_some() {
-        println!("the running server is still the old one: `wmux restart-server` moves your sessions to the new one");
+        println!(
+            "the running server is still the old one: `keepane restart-server` moves your sessions to the new one"
+        );
     }
     Ok(0)
 }
@@ -200,26 +202,26 @@ mod tests {
 
     #[test]
     fn the_install_is_told_by_the_path() {
-        assert_eq!(kind_of(Path::new(r"C:\Users\x\scoop\apps\wmux\current\wmux.exe")), Kind::Scoop);
+        assert_eq!(kind_of(Path::new(r"C:\Users\x\scoop\apps\keepane\current\keepane.exe")), Kind::Scoop);
         if let Ok(pf) = std::env::var("ProgramFiles") {
-            assert_eq!(kind_of(&Path::new(&pf).join("wmux").join("wmux.exe")), Kind::Msi);
+            assert_eq!(kind_of(&Path::new(&pf).join("keepane").join("keepane.exe")), Kind::Msi);
         }
-        let dev = Path::new(r"D:\src\wmux\target\release\wmux.exe");
+        let dev = Path::new(r"D:\src\keepane\target\release\keepane.exe");
         assert_eq!(kind_of(dev), Kind::Other(dev.to_path_buf()));
     }
 
     #[test]
     fn a_release_and_its_hashes_are_read() {
-        let json = r#"{"tag_name":"v0.10.0","html_url":"https://github.com/newdee/wmux/releases/tag/v0.10.0",
-            "assets":[{"name":"wmux-0.10.0-windows-x86_64.msi","browser_download_url":"https://x/a.msi"},
+        let json = r#"{"tag_name":"v0.10.0","html_url":"https://github.com/newdee/keepane/releases/tag/v0.10.0",
+            "assets":[{"name":"keepane-0.10.0-windows-x86_64.msi","browser_download_url":"https://x/a.msi"},
                       {"name":"broken"}]}"#;
         let r = parse_release(json).unwrap();
         assert_eq!(r.version, "0.10.0");
-        assert_eq!(r.assets, vec![("wmux-0.10.0-windows-x86_64.msi".to_string(), "https://x/a.msi".to_string())]);
+        assert_eq!(r.assets, vec![("keepane-0.10.0-windows-x86_64.msi".to_string(), "https://x/a.msi".to_string())]);
         assert!(parse_release("{}").is_err());
         assert!(parse_release("not json").is_err());
         let h = "a".repeat(64);
-        assert_eq!(parse_sha256_file(&format!("{h}  wmux.msi")), Some(h.clone()));
+        assert_eq!(parse_sha256_file(&format!("{h}  keepane.msi")), Some(h.clone()));
         assert_eq!(parse_sha256_file(&h.to_uppercase()), Some(h));
         assert_eq!(parse_sha256_file("abc  file"), None);
         assert_eq!(parse_sha256_file(""), None);
@@ -227,7 +229,7 @@ mod tests {
 
     #[test]
     fn certutil_hashes_a_file() {
-        let p = std::env::temp_dir().join(format!("wmux-sha-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("keepane-sha-{}", std::process::id()));
         std::fs::write(&p, b"abc").unwrap();
         let h = sha256_of(&p).unwrap();
         std::fs::remove_file(&p).unwrap();

@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  Pictures of `wmux web` on a phone, for the README and the site.
+  Pictures of `keepane web` on a phone, for the README and the site.
 
 .DESCRIPTION
   Starts a scratch server with a few panes doing something, runs
-  `wmux web` on this machine only, and has Edge show the page as an iPhone
+  `keepane web` on this machine only, and has Edge show the page as an iPhone
   would (390x844, touch, twice the pixels; tools/phone-shot.mjs through
   puppeteer-core, fetched into target/ on first use): the pane list, one
   pane, and the two side by side. Needs node, ffmpeg and Edge. Writes
@@ -25,15 +25,15 @@ $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$en
 if (-not $edge) { throw "Microsoft Edge not found" }
 cargo build
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
-$w = Join-Path $repo "target\debug\wmux.exe"
+$w = Join-Path $repo "target\debug\keepane.exe"
 
 New-Item -ItemType Directory -Force $Work | Out-Null
 $tmp = (Resolve-Path $Work).Path
-$env:WMUX_SESSIONS_DIR = Join-Path $tmp "sessions"
-$env:WMUX_CONFIG = Join-Path $tmp "empty.conf"
-Set-Content $env:WMUX_CONFIG ""
-Remove-Item Env:WMUX -ErrorAction SilentlyContinue
-Remove-Item Env:WMUX_PANE -ErrorAction SilentlyContinue
+$env:KEEPANE_SESSIONS_DIR = Join-Path $tmp "sessions"
+$env:KEEPANE_CONFIG = Join-Path $tmp "empty.conf"
+Set-Content $env:KEEPANE_CONFIG ""
+Remove-Item Env:KEEPANE -ErrorAction SilentlyContinue
+Remove-Item Env:KEEPANE_PANE -ErrorAction SilentlyContinue
 
 # Short prompts and nothing from this machine's history.
 $prompt = Join-Path $tmp "prompt.ps1"
@@ -41,7 +41,7 @@ Set-Content $prompt -Encoding utf8 -Value @"
 function global:prompt { 'PS> ' }
 try { Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing } catch {}
 Set-Location '$repo'
-# A shell started with a script gets no prompt hook from wmux; this one
+# A shell started with a script gets no prompt hook from keepane; this one
 # installs it, so the pane reports its commands (the times in the picture).
 Invoke-Expression (& '$w' __shell-hook | Out-String)
 Clear-Host
@@ -85,7 +85,7 @@ $web = Start-Process -FilePath $w -ArgumentList "-L", $socket, "web", "--bind", 
 try {
     Start-Sleep 2
     $key = [regex]::Match((Get-Content $out -Raw), "#k=([A-Za-z0-9_-]+)").Groups[1].Value
-    if (-not $key) { throw "wmux web printed no key: $(Get-Content $out -Raw)" }
+    if (-not $key) { throw "keepane web printed no key: $(Get-Content $out -Raw)" }
     $pane = (& $w -L $socket list-panes -t dev:0 -F "#{pane_id}" | Select-Object -First 1).TrimStart("%")
     $shots = @(
         @{ Name = "phone-list"; View = "list"; Url = "http://127.0.0.1:17682/#k=$key" },

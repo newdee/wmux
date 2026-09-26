@@ -1,4 +1,4 @@
-//! wmux: a tmux-like terminal multiplexer for Windows (ConPTY, PowerShell, WSL).
+//! keepane: a tmux-like terminal multiplexer for Windows (ConPTY, PowerShell, WSL).
 
 pub mod client;
 pub mod clipboard;
@@ -10,6 +10,7 @@ pub mod format;
 pub mod histlog;
 pub mod ipc;
 pub mod keys;
+pub mod legacy;
 pub mod logger;
 pub mod notify;
 pub mod pager;
