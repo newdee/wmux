@@ -325,9 +325,19 @@ impl Board {
             return match (k.code, picked) {
                 (KeyCode::Char('u'), _) => run(&["drop-message", "-u"]),
                 (KeyCode::Char('d'), Some(id)) => run(&["drop-message", &id]),
-                (KeyCode::Char('K'), Some(id)) => run(&["move-message", &id, "up"]),
-                (KeyCode::Char('J'), Some(id)) => run(&["move-message", &id, "down"]),
-                (KeyCode::Char('g'), Some(id)) => run(&["move-message", &id, "top"]),
+                // The pick goes with the message it moves.
+                (KeyCode::Char('K'), Some(id)) => {
+                    self.pick = self.pick.saturating_sub(1);
+                    run(&["move-message", &id, "up"])
+                }
+                (KeyCode::Char('J'), Some(id)) => {
+                    self.pick = (self.pick + 1).min(self.queued.len().saturating_sub(1));
+                    run(&["move-message", &id, "down"])
+                }
+                (KeyCode::Char('g'), Some(id)) => {
+                    self.pick = 0;
+                    run(&["move-message", &id, "top"])
+                }
                 _ => {
                     self.note = Some("no queued message".into());
                     Action::Redraw
@@ -694,6 +704,8 @@ mod tests {
         assert!(b.managing() && b.frame("12:00").contains("MANAGE"));
         b.key(Key::ch('n'));
         assert_eq!(b.key(Key::ch('g')), Action::Run(vec!["move-message".into(), "6".into(), "top".into()]));
+        assert_eq!(b.pick, 0, "the pick goes with the message to the top");
+        b.pick = 1;
         assert_eq!(b.key(Key::ch('d')), Action::Run(vec!["drop-message".into(), "6".into()]));
         assert_eq!(b.key(Key::ch('u')), Action::Run(vec!["drop-message".into(), "-u".into()]));
         for k in every_key() {

@@ -47,11 +47,11 @@ History (what panes printed, a file a day, 30 days):  choose-history (prefix /) 
   undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
 Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami
-  set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets at its prompt; ai: its agent says pane-ready)
+  set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets; ai: its agent says pane-ready; from a pane, only that pane)
   send-message [-t pane] [-r] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
   trace-message id [-w secs]   drop-message id | -u   move-message id up|down|top   pane-status [text]
   list-tasks [-t session]   show-task id   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
-  create-pane / close-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
+  create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
   dashboard (prefix v: every pane at a glance; E manages queued messages)   setup claude [--install]
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:

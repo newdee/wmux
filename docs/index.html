@@ -45,6 +45,7 @@
           Split a terminal into panes and move between them with <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
           Close the window and everything keeps running; attach again later, or check on it from your phone.
           PowerShell, cmd and WSL run inside panes, and every keystroke reaches them unchanged.
+          Panes can hand each other work, too: an agent in one, a shell in another.
         </p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>
@@ -63,7 +64,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>250</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>292</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -212,6 +213,33 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">07</span>
+          <h2 data-i18n="cm.title">Panes that hand each other work</h2>
+          <p data-i18n="cm.sub">
+            Give a pane a name and a work mode, and send it messages: a shell runs them at its prompt, an agent gets them
+            when it is free. <kbd>C-b v</kbd> shows every pane and its inbox.
+          </p>
+        </header>
+        <figure class="stage">
+          <img src="img/keepane-messages.gif" width="880" loading="lazy" alt="A command sent to the pane named builder runs there with its envelope as a comment; its record says done and keeps the output; the dashboard shows every pane and an agent's inbox, and a message is moved to the top in manage mode" />
+          <figcaption data-i18n="cm.caption">
+            A command sent to the pane named builder runs there, its source in a comment; its record says done and keeps
+            what it printed. Then the dashboard: every pane, an agent's inbox, a message put first in manage mode.
+          </figcaption>
+        </figure>
+        <div class="pair">
+          <figure class="shot"><img src="img/messages.png" alt="Left, the command running with its envelope as a comment; right, trace-message showing it delivered, done and its output" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/dashboard.png" alt="The dashboard in manage mode: three panes with their modes and states, an agent's two queued messages" loading="lazy" /></figure>
+        </div>
+        <ul class="points">
+          <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
+          <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup claude</code> prints the two hooks and the registration.</li>
+          <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">08</span>
           <h2 data-i18n="c4.title">Your .tmux.conf, more or less</h2>
           <p data-i18n="c4.sub">
             The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
@@ -239,7 +267,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">08</span>
+          <span class="num">09</span>
           <h2 data-i18n="c6.title">Git branch, CPU and memory on the status line</h2>
           <p data-i18n="c6.sub">
             The default status line shows your git branch, the pane's directory, CPU and memory use, and the
@@ -258,7 +286,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter install">
         <header class="chapter-head">
-          <span class="num">09</span>
+          <span class="num">10</span>
           <h2 data-i18n="c5.title">Install</h2>
         </header>
         <div class="cards">

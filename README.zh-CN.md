@@ -187,6 +187,11 @@ pane 里输出过的东西也会存到磁盘上（`log-history`，默认开）�
 
 ## pane 之间互相发消息
 
+<p align="center">
+  <img src="docs/img/keepane-messages.gif" width="880"
+       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；dashboard 显示所有 pane 和一个 agent 的收件箱，在管理模式下把一条消息置顶">
+</p>
+
 每个 pane 可以有名字、工作模式和收件箱。一个 pane（脚本、人、Claude Code 这样的 agent）给另一个发消息，keepane 把它排进队列，等对方空闲时打进去，并记下它后来怎么样了。不同窗口里的 agent 可以这样互相派活，agent 也可以自己开 pane 来干活。
 
 ```powershell
@@ -221,7 +226,7 @@ shell 收到时它是命令前面的一段 PowerShell 注释（`<# … #> cargo 
 
 `keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。
 
-通过 MCP，agent 可以发消息和 `reply`、在一轮之内 `wait_message` 等回信、`trace_message`、报告自己在做什么（`set_status`），开 session、窗口和 pane（`create_session`、`create_window`、`split_pane`，可以带名字、模式和第一条任务），并关掉自己开的那些。它能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。在 pane 里面，只能改名、切换模式、关闭自己和自己创建的 pane；`shell` 模式只能由人或创建者打开。这些规则防的是失误：以你身份运行的任何程序照样能连上服务端。
+通过 MCP，agent 可以发消息和 `reply`、在一轮之内 `wait_message` 等回信、`trace_message`、报告自己在做什么（`set_status`），开 session、窗口和 pane（`create_session`、`create_window`、`split_pane`，可以带名字、模式和第一条任务），也能关 pane。它能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。pane 的工作模式只能在那个 pane 里切换：在某个 pane 里运行 `set-work-mode`，只能改它自己，所以任何 pane 里的程序（包括 agent）都不能把别的 pane 变成"收到什么就执行什么"的 shell；在 keepane 外面的终端、快捷键或 `C-b :` 命令行里可以改任何 pane。其余操作（改名、收件箱、关 pane）都开放：关掉的 pane 10 秒内可以用 `C-b u` 找回，Claude Code 调用你没放行过的 MCP 工具前也会先问你。这些规则防的是失误：以你身份运行的任何程序照样能连上服务端。
 
 ### dashboard
 

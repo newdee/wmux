@@ -57,6 +57,15 @@ impl Server {
         self.place_of(p).map(|_| p)
     }
 
+    /// The caller, when it is an agent's pane: one in `ai` work mode, or one
+    /// another pane made (`create-pane`). What a person types in a shell
+    /// pane of their own is a person's command.
+    fn agent_caller(&self, cid: Option<ClientId>) -> Option<PaneId> {
+        let me = self.caller_pane(cid)?;
+        let p = self.pane_ref(me)?;
+        (p.actor.mode == WorkMode::Ai || p.actor.creator.is_some()).then_some(me)
+    }
+
     /// The pane a mail command is about: the one named, else the caller's
     /// own, else the current pane of the attached client.
     fn mail_target(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<PaneId, String> {
@@ -66,18 +75,6 @@ impl Server {
             return Ok(p);
         }
         self.resolve(target, cid).map(|(_, _, p)| p)
-    }
-
-    /// From inside a pane, only that pane and the panes it created (and
-    /// theirs) may be changed; a person, outside every pane, may change
-    /// any. It guards against mistakes, not malice: the same user can
-    /// always talk to the server without `KEEPANE_PANE`.
-    fn may_change(&self, cid: Option<ClientId>, pane: PaneId) -> Result<(), String> {
-        let Some(me) = self.caller_pane(cid) else { return Ok(()) };
-        if self.created_by(pane, me) {
-            return Ok(());
-        }
-        Err(format!("from inside a pane only it and the panes it created can be changed: %{me} cannot change %{pane}"))
     }
 
     /// `pane` is `by`, or was created by it or by one it created.
@@ -164,7 +161,6 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::CreatePane(c) => self.create_pane(cid, *c),
-            Cmd::ClosePane { target } => self.close_pane(cid, &target),
             Cmd::ListTasks { target } => self.list_tasks(cid, target.as_ref()),
             Cmd::ShowTask { id } => self.show_task(id),
             Cmd::ListEvents { target, since, last } => self.list_events(cid, target.as_ref(), since, last),
@@ -354,14 +350,11 @@ impl Server {
 
     fn pane_ready(&mut self, cid: Option<ClientId>, quiet: bool, target: Option<&Target>) -> Outcome {
         if let Some(t) = target {
-            // A person unsticking a pane (or a pane one it created).
+            // Unsticking a pane that stays busy.
             let pid = match self.resolve(Some(t), cid) {
                 Ok((_, _, p)) => p,
                 Err(e) => return Outcome::Error(e),
             };
-            if let Err(e) = self.may_change(cid, pid) {
-                return Outcome::Error(e);
-            }
             if let Some(p) = self.find_pane_mut(pid) {
                 p.actor.force_idle();
             }
@@ -398,9 +391,6 @@ impl Server {
             Ok(p) => p,
             Err(e) => return Outcome::Error(e),
         };
-        if let Err(e) = self.may_change(cid, pid) {
-            return Outcome::Error(e);
-        }
         match self.take_message(pid) {
             Some(text) => Outcome::Text(text),
             None => match (wait, cid) {
@@ -491,7 +481,7 @@ impl Server {
         if undo {
             let keep = Duration::from_secs(self.opts.undo_kill_time);
             self.msg_dropped.retain(|d| d.at.elapsed() < keep && d.pane != 0);
-            let Some(i) = self.msg_dropped.iter().rposition(|d| self.may_change(cid, d.pane).is_ok()) else {
+            let Some(i) = self.msg_dropped.len().checked_sub(1) else {
                 return Outcome::Error("drop-message -u: nothing deleted to bring back".into());
             };
             let d = self.msg_dropped.remove(i);
@@ -508,9 +498,6 @@ impl Server {
         let Some(pid) = self.holder(id) else {
             return Outcome::Error(format!("#{id} is not waiting in any inbox"));
         };
-        if let Err(e) = self.may_change(cid, pid) {
-            return Outcome::Error(e);
-        }
         let p = self.find_pane_mut(pid).expect("holder found it");
         let place = p.actor.inbox.iter().position(|m| m.id == id).unwrap_or(0);
         let Some(msg) = p.actor.remove(id) else { return Outcome::Error(format!("#{id} is not queued")) };
@@ -523,9 +510,6 @@ impl Server {
         let Some(pid) = self.holder(id) else {
             return Outcome::Error(format!("#{id} is not waiting in any inbox"));
         };
-        if let Err(e) = self.may_change(cid, pid) {
-            return Outcome::Error(e);
-        }
         let by = self.by(cid);
         let to = match to {
             MoveTo::Up => actor::Move::Up,
@@ -572,16 +556,16 @@ impl Server {
             Ok(p) => p,
             Err(e) => return Outcome::Error(e),
         };
-        if let Err(e) = self.may_change(cid, pid) {
-            return Outcome::Error(e);
-        }
-        // Commands typed into a pane from elsewhere: only a person, or the
-        // pane that created it, turns that on; never a pane for itself.
-        if mode == WorkMode::Shell
-            && let Some(me) = self.caller_pane(cid)
-            && (me == pid || !self.created_by(pid, me))
+        // A pane's mode is changed in that pane: nothing run in one pane turns
+        // another into a shell that runs what it is sent. From outside every
+        // pane (a terminal, the `:` prompt, a key) it goes where it is aimed.
+        if let Some(me) = self.caller_pane(cid)
+            && me != pid
         {
-            return Outcome::Error(format!("set-work-mode shell: only a person or the pane that created %{pid} can"));
+            return Outcome::Error(format!(
+                "set-work-mode changes only the pane it runs in (%{me}, not %{pid}); \
+                 for another, run it there, or at the C-b : prompt"
+            ));
         }
         let by = self.by(cid);
         let addr = self.address_of(pid);
@@ -602,9 +586,6 @@ impl Server {
             Ok(p) => p,
             Err(e) => return Outcome::Error(e),
         };
-        if let Err(e) = self.may_change(cid, pid) {
-            return Outcome::Error(e);
-        }
         if !name.is_empty() {
             if let Err(e) = actor::check_name(&name) {
                 return Outcome::Error(e);
@@ -655,7 +636,9 @@ impl Server {
     /// `agent-pane-limit` for the whole line of creators.
     fn create_pane(&mut self, cid: Option<ClientId>, c: crate::command::CreatePane) -> Outcome {
         let crate::command::CreatePane { kind, target, session_name, horizontal, cwd, name, mode, message, argv } = c;
-        let me = self.caller_pane(cid);
+        // An agent's creation: its own, within its budget and list. A person's
+        // is nobody's.
+        let me = self.agent_caller(cid);
         // The program it runs: the one given, else the pane default.
         let program = argv.first().cloned().unwrap_or_else(|| {
             self.opts.default_command.first().cloned().unwrap_or_else(|| self.opts.default_shell.clone())
@@ -700,7 +683,8 @@ impl Server {
             },
         };
         // Beside the pane that asked, unless told where.
-        let target = target.or_else(|| me.map(|p| Target { pane_id: Some(p), ..Default::default() }));
+        let target =
+            target.or_else(|| self.caller_pane(cid).map(|p| Target { pane_id: Some(p), ..Default::default() }));
         let inner = match kind.as_str() {
             "session" => Cmd::NewSession {
                 name: session_name,
@@ -747,21 +731,6 @@ impl Server {
             }
         }
         Outcome::Text(out.join("\n"))
-    }
-
-    /// `close-pane`: from inside a pane, only itself or one it created.
-    fn close_pane(&mut self, cid: Option<ClientId>, target: &Target) -> Outcome {
-        let pid = match self.resolve(Some(target), cid) {
-            Ok((_, _, p)) => p,
-            Err(e) => return Outcome::Error(e),
-        };
-        if let Err(e) = self.may_change(cid, pid) {
-            return Outcome::Error(e);
-        }
-        self.exec(
-            Cmd::KillPane { target: Some(Target { pane_id: Some(pid), ..Default::default() }), all_but: false },
-            cid,
-        )
     }
 
     /// The address prefix of a session (`$1:`), for filtering by it.

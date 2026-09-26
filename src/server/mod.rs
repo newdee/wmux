@@ -72,6 +72,13 @@ enum Event {
 /// ahead of the output the prompt hook wrote after it).
 const PROMPT_SETTLE: Duration = Duration::from_millis(60);
 
+/// A key record that is someone typing: a key pressed, not one let go (the
+/// Enter that started `keepane attach` is let go in the pane it attached to)
+/// and not Shift, Ctrl, Alt, Win or Caps Lock pressed on its own.
+fn typing(rec: &crate::ipc::KeyRecord) -> bool {
+    rec.down && !matches!(rec.vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5)
+}
+
 /// Hooks a plugin can attach commands to (`set-hook -g <name> <command>`).
 pub const HOOKS: &[&str] = &[
     "after-new-session",
@@ -2914,8 +2921,7 @@ impl Server {
             | Cmd::ListTasks { .. }
             | Cmd::ShowTask { .. }
             | Cmd::ListEvents { .. }
-            | Cmd::CreatePane(_)
-            | Cmd::ClosePane { .. }) => self.exec_mail(c, cid),
+            | Cmd::CreatePane(_)) => self.exec_mail(c, cid),
             Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);
@@ -5409,7 +5415,7 @@ impl Server {
                     let bytes = input::encode_key_record(&rec);
                     match self.clients.get_mut(&cid).and_then(|c| c.popup.as_mut()).filter(|p| !p.finished) {
                         Some(p) => p.pane.write_input(&bytes),
-                        None => self.write_active(sid, &bytes),
+                        None => self.write_active(sid, &bytes, typing(&rec)),
                     }
                     return;
                 }
@@ -5503,7 +5509,7 @@ impl Server {
             c.view_pinned = false;
             c.view_follow = true;
         }
-        self.write_active(sid, &input::encode_key_record(&rec));
+        self.write_active(sid, &input::encode_key_record(&rec), typing(&rec));
     }
 
     /// A key while a popup is open: it goes to the popup's program, or closes
@@ -5542,15 +5548,18 @@ impl Server {
     }
 
     /// Input for the current window: the active pane, or every pane when
-    /// `synchronize-panes` is on.
-    fn write_active(&mut self, sid: SessionId, bytes: &[u8]) {
+    /// `synchronize-panes` is on. `typing` is whether it counts as someone
+    /// typing (a key pressed, not a key let go or a modifier on its own),
+    /// which makes the pane busy for its messages.
+    fn write_active(&mut self, sid: SessionId, bytes: &[u8], typing: bool) {
         let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) else { return };
+        let write = |p: &mut Pane| if typing { p.type_input(bytes) } else { p.write_input(bytes) };
         if w.synchronized {
             for p in &mut w.panes {
-                p.type_input(bytes);
+                write(p);
             }
         } else if let Some(p) = w.active_pane_mut() {
-            p.type_input(bytes);
+            write(p);
         }
     }
 
@@ -7934,6 +7943,14 @@ mod tests {
 
     /// Every default binding must survive the trip through `list-keys`:
     /// printed as a command line and parsed back into the same command.
+    #[test]
+    fn only_a_key_pressed_is_typing() {
+        let r = |down, vk| crate::ipc::KeyRecord { down, repeat: 1, vk, sc: 0, ch: 0, ctrl: 0 };
+        assert!(typing(&r(true, 0x41)) && typing(&r(true, 0x26)), "a letter, an arrow");
+        assert!(!typing(&r(false, 0x0D)), "an Enter let go");
+        assert!(!typing(&r(true, 0x10)) && !typing(&r(true, 0xA2)) && !typing(&r(true, 0x5B)), "a modifier alone");
+    }
+
     #[test]
     fn default_bindings_round_trip() {
         for (key, b) in default_bindings() {

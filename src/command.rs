@@ -223,11 +223,6 @@ pub enum Cmd {
     /// `agent-pane-limit`, and may run only an `agent-commands` program.
     CreatePane(Box<CreatePane>),
 
-    /// `close-pane -t pane`: close a pane; from inside a pane, only itself
-    /// or one it created.
-    ClosePane {
-        target: Target,
-    },
     /// `dashboard`: every pane at a glance, in a popup (prefix v).
     Dashboard,
     /// `list-tasks [-t session]`: every chain of messages, newest first.
@@ -889,10 +884,6 @@ impl fmt::Display for Cmd {
                     }
                 }
                 Ok(())
-            }
-            Cmd::ClosePane { target } => {
-                f.write_str("close-pane")?;
-                fmt_target(f, &Some(target.clone()))
             }
             Cmd::Dashboard => f.write_str("dashboard"),
             Cmd::ListTasks { target } => {
@@ -1818,7 +1809,6 @@ pub const COMMANDS: &[&str] = &[
     "list-tasks",
     "dashboard",
     "create-pane",
-    "close-pane",
     "show-task",
     "list-events",
     "list-panes",
@@ -1942,7 +1932,6 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-tasks", &["-t"]),
     ("dashboard", &[]),
     ("create-pane", &["-k", "-t", "-s", "-h", "-c", "-n", "-m", "-M"]),
-    ("close-pane", &["-t"]),
     ("show-task", &[]),
     ("list-events", &["-t", "-S", "-n"]),
     ("list-panes", &["-a", "-s", "-t", "-F"]),
@@ -2484,17 +2473,6 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 message,
                 argv,
             }))
-        }
-        "close-pane" => {
-            let mut target = None;
-            while a.is_flag() {
-                match a.next().unwrap() {
-                    "-t" => target = Some(Target::parse(a.value("-t")?)),
-                    f => return Err(bad_flag(n, f)),
-                }
-            }
-            a.none_left(n)?;
-            Cmd::ClosePane { target: target.ok_or_else(|| format!("{n}: -t pane required"))? }
         }
         "dashboard" => {
             a.none_left(n)?;

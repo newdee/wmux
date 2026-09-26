@@ -4672,15 +4672,19 @@ async fn an_agent_pane_takes_work_when_it_says_so_and_answers_along_the_chain() 
     let (code, _, err) = h.cli(&["pane-ready"]).await;
     assert!(code != 0 && err.contains("not run inside"), "{err}");
     assert_eq!(h.cli(&["pane-ready", "-q"]).await.0, 0);
-    // A pane changes only itself (and what it created); a person, anything.
-    let (code, _, err) = h.cli_in(Some(a), &["rename-pane", "-t", &pb, "x"]).await;
-    assert!(code != 0 && err.contains("cannot change"), "{err}");
+    // A work mode is changed in the pane itself: nothing run in one pane
+    // turns another into a shell that runs what it is sent...
     let (code, _, err) = h.cli_in(Some(a), &["set-work-mode", "-t", &pb, "shell"]).await;
-    assert!(code != 0 && err.contains("cannot change"), "{err}");
-    let (code, _, err) = h.cli_in(Some(b), &["set-work-mode", "shell"]).await;
-    assert!(code != 0 && err.contains("only a person"), "never a pane for itself: {err}");
-    assert_eq!(h.cli_in(Some(b), &["rename-pane", "worker"]).await.0, 0);
-    assert_eq!(h.cli(&["rename-pane", "-t", &pa, "boss"]).await.0, 0);
+    assert!(code != 0 && err.contains("changes only the pane it runs in"), "{err}");
+    assert_eq!(ask_pane(&h, b, "#{pane_work_mode}").await, "ai");
+    // ...in the pane itself, whatever the pane is, and from outside every
+    // pane (a terminal, the C-b : prompt).
+    assert_eq!(h.cli_in(Some(b), &["set-work-mode", "normal"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(b), &["set-work-mode", "-t", &pb, "ai"]).await.0, 0, "-t naming itself");
+    assert_eq!(h.cli(&["set-work-mode", "-t", &pb, "shell"]).await.0, 0);
+    // Names are anyone's to give.
+    assert_eq!(h.cli_in(Some(a), &["rename-pane", "-t", &pb, "worker"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(b), &["rename-pane", "-t", &pa, "boss"]).await.0, 0);
     h.cli(&["kill-server"]).await;
 }
 
@@ -4782,6 +4786,9 @@ async fn an_agent_makes_panes_within_its_limits_and_owns_them() {
     h.cli(&["new", "-d", "-s", "boss"]).await;
     h.cli(&["new", "-d", "-s", "other"]).await;
     let (a, o) = (pane_id(&h, "boss:0.0").await, pane_id(&h, "other:0.0").await);
+    // Both are agents' panes: what they make is theirs, within limits.
+    h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await;
+    h.cli(&["set-work-mode", "-t", &format!("%{o}"), "ai"]).await;
     // Only agent-commands programs, from inside a pane.
     let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe", "/q"]).await;
     assert!(code != 0 && err.contains("agent-commands"), "{err}");
@@ -4797,10 +4804,10 @@ async fn an_agent_makes_panes_within_its_limits_and_owns_them() {
     let who: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
     assert_eq!(who[2..], ["child", "ai"], "{out}");
     assert!(lines.next().unwrap_or_default().contains("queued"), "the first task waits for it: {out}");
-    // Its creator may change it, and a pane it did not make may not.
-    assert_eq!(h.cli_in(Some(a), &["set-work-mode", "-t", "%child", "shell"]).await.0, 0);
-    let (code, _, err) = h.cli_in(Some(o), &["close-pane", "-t", "%child"]).await;
-    assert!(code != 0 && err.contains("cannot change"), "{err}");
+    // Once made, its mode is changed in it: not even its creator switches
+    // it (to a shell that runs what it is sent) from elsewhere.
+    let (code, _, err) = h.cli_in(Some(a), &["set-work-mode", "-t", "%child", "shell"]).await;
+    assert!(code != 0 && err.contains("changes only the pane it runs in"), "{err}");
     // A shell made for an agent takes commands unless told otherwise.
     let (_, out, err) = h.cli_in(Some(a), &["create-pane", "-n", "sh1", "--", "pwsh", "-NoLogo", "-NoProfile"]).await;
     assert!(out.contains(" sh1  shell"), "{out} {err}");
@@ -4813,7 +4820,7 @@ async fn an_agent_makes_panes_within_its_limits_and_owns_them() {
     // A person is not an agent: no list, no budget, no owner.
     assert_eq!(h.cli(&["create-pane", "-k", "window", "-t", "other", "--", "wsl.exe", "--help"]).await.0, 0);
     // Closing what it made frees the budget.
-    assert_eq!(h.cli_in(Some(a), &["close-pane", "-t", "%sh1"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(a), &["kill-pane", "-t", "%sh1"]).await.0, 0);
     assert_eq!(h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe"]).await.0, 0);
     h.cli(&["kill-server"]).await;
 }
@@ -4825,6 +4832,8 @@ async fn an_agent_talks_to_keepane_over_mcp_as_its_pane() {
     h.cli(&["new-window", "-d", "-t", "m"]).await;
     let (a, b) = (pane_id(&h, "m:0.0").await, pane_id(&h, "m:1.0").await);
     h.cli(&["rename-pane", "-t", &format!("%{b}"), "peer"]).await;
+    // The agent's pane.
+    h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await;
     let requests = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
@@ -4862,12 +4871,8 @@ async fn an_agent_talks_to_keepane_over_mcp_as_its_pane() {
     assert_eq!(lines[0]["result"]["serverInfo"]["name"], "keepane");
     assert!(text(1).contains("m:0.0") && !error(1), "it is the pane it runs in: {}", text(1));
     assert!(text(2).contains("queued for") && !error(2), "{}", text(2));
-    assert!(
-        text(3).contains("-from mcp") && text(3).contains(&format!(".%{a} (normal)")),
-        "sent as its pane: {}",
-        text(3)
-    );
-    assert!(error(4) && text(4).contains("cannot change"), "not its pane to close: {}", text(4));
+    assert!(text(3).contains("-from mcp") && text(3).contains(&format!(".%{a} (ai)")), "sent as its pane: {}", text(3));
+    assert!(!error(4), "a pane closed (kept a moment for undo-kill): {}", text(4));
     assert!(text(5).contains("not working on a message"), "{}", text(5));
     h.cli(&["kill-server"]).await;
 }

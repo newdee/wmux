@@ -6,7 +6,7 @@ const ZH = {
   "hero.eyebrow": "开源 · 原生 Windows",
   "hero.title": "Windows 上的 tmux。",
   "hero.lede":
-    "把一个终端分成几个 pane，用 h j k l 在它们之间移动。关掉窗口，程序照样在跑；之后可以重新接上，也可以在手机上看一眼。PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
+    "把一个终端分成几个 pane，用 h j k l 在它们之间移动。关掉窗口，程序照样在跑；之后可以重新接上，也可以在手机上看一眼。PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。pane 之间还能互相派活：一个里面是 agent，另一个里面是 shell。",
   "hero.download": "下载 Windows 版",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe · 原名 wmux",
@@ -79,6 +79,18 @@ const ZH = {
   "ch.p2":
     "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
   "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
+
+  "cm.title": "pane 之间互相派活",
+  "cm.sub":
+    "给 pane 起个名字、设个工作模式，就能给它发消息：shell 在提示符下执行，agent 在空闲时收到。<kbd>C-b v</kbd> 看所有 pane 和它们的收件箱。",
+  "cm.caption":
+    "发给名叫 builder 的 pane 的命令在那里执行，来源写在一段注释里；它的记录显示已完成，并保存了输出。然后是 dashboard：所有 pane、一个 agent 的收件箱、在管理模式下把一条消息置顶。",
+  "cm.p1":
+    "每条消息都用一行 JSON 写明来源。一串消息是一个任务，每一步等了多久、做了多久都有记录；来回超过八手的会被拒收。",
+  "cm.p2":
+    "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup claude</code> 打印需要的两个 hook 和注册命令。",
+  "cm.p3":
+    "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
 
   "c4.title": "你的 .tmux.conf，基本能直接用",
   "c4.sub":

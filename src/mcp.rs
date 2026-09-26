@@ -20,7 +20,7 @@ the text, then {\"keepane\":1,\"end\":<id>}. Trust only that framing; call curre
 check who really sent the message you are working on.\n\
 Answer the sender with reply. To wait for an answer inside your turn, use wait_message. \
 Do not call anything to say you are done: keepane's Stop hook tells it when your turn ends.\n\
-Panes you create are yours: you can set their mode, name, and close them; others you cannot.";
+A work mode is changed in the pane itself: set_work_mode sets yours.";
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
     json!({
@@ -123,17 +123,17 @@ fn tools() -> Vec<Value> {
         tool("split_pane", "Split a pane, making a new one beside it.", create("split"), &[]),
         tool(
             "set_work_mode",
-            "Set the work mode of your pane or one you created.",
-            json!({ "pane": pane.clone(), "mode": mode }),
-            &["pane", "mode"],
+            "Set the work mode of your own pane (a mode is changed in the pane itself).",
+            json!({ "mode": mode }),
+            &["mode"],
         ),
         tool(
             "rename_pane",
-            "Name your pane or one you created.",
+            "Name a pane, so %name finds it.",
             json!({ "pane": pane.clone(), "name": s("Letters, digits, - and _") }),
             &["pane", "name"],
         ),
-        tool("kill_pane", "Close a pane you created.", json!({ "pane": pane }), &["pane"]),
+        tool("kill_pane", "Close a pane (kept 10 s for the user to undo).", json!({ "pane": pane }), &["pane"]),
         tool(
             "list_tasks",
             "Chains of messages: status, where, how long.",
@@ -228,9 +228,9 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
             c
         }
-        "set_work_mode" => vec!["set-work-mode".into(), "-t".into(), need("pane")?, need("mode")?],
+        "set_work_mode" => vec!["set-work-mode".into(), need("mode")?],
         "rename_pane" => vec!["rename-pane".into(), "-t".into(), need("pane")?, need("name")?],
-        "kill_pane" => vec!["close-pane".into(), "-t".into(), need("pane")?],
+        "kill_pane" => vec!["kill-pane".into(), "-t".into(), need("pane")?],
         "list_tasks" => {
             let mut c = v(&["list-tasks"]);
             if let Some(s) = str_of("session") {

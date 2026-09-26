@@ -305,6 +305,11 @@ session is not kept, because the session ends with it.
 
 ## Panes that talk to each other
 
+<p align="center">
+  <img src="docs/img/keepane-messages.gif" width="880"
+       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows every pane and an agent's inbox, a message put first in manage mode">
+</p>
+
 Every pane can have a name, a work mode and an inbox. A pane (a script, a
 person, an agent such as Claude Code) sends another a message; keepane
 queues it, types it in when the other pane is free, and records what
@@ -371,12 +376,16 @@ Through MCP an agent can send and `reply`, `wait_message` for an answer
 inside its turn, `trace_message`, report what it is doing (`set_status`),
 make sessions, windows and panes (`create_session`, `create_window`,
 `split_pane`, with a name, a mode and a first message) and close the ones
-it made. What it may start is limited to `agent-commands` (`pwsh
+it made (or any other). What it may start is limited to `agent-commands` (`pwsh
 powershell claude codex`), how many panes it and the panes it made may
-make to `agent-pane-limit` (8). From inside a pane, only that pane and the
-ones it created can be renamed, switched to another mode or closed; only a
-person or its creator turns on `shell` mode. These rules guard against
-mistakes: any program running as you can still reach the server.
+make to `agent-pane-limit` (8). A pane's work mode is changed in that pane:
+from one pane, `set-work-mode` changes only that pane, so nothing running
+in a pane (an agent included) turns another into a shell that runs what it
+is sent; from a terminal outside keepane, a key or the `C-b :` prompt, any.
+Everything else (names, inboxes, closing panes) is open: a closed pane can
+be brought back with `C-b u` for 10 seconds, and Claude Code asks you before
+each MCP call you have not allowed. These
+rules guard against mistakes: any program running as you can still reach the server.
 
 ### The dashboard
 

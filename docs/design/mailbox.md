@@ -28,7 +28,7 @@
 | 收件箱 | 先进先出队列，条数上限 `message-inbox-limit` |
 | 空闲 / 忙 | 只对 `shell`、`ai` 有意义 |
 | 当前消息 | 正在处理的那条：决定回信对象、跳数、所属任务 |
-| 创建者 | 由哪个窗格用 `create-pane` 创建（MCP 的创建工具就是它；普通的 `new-window`/`split-window` 不记录），用于权限与配额 |
+| 创建者 | 由哪个 agent 窗格用 `create-pane` 创建（MCP 的创建工具就是它；人开的、普通 `new-window`/`split-window` 开的不记录），用于配额 |
 | 状态文本 | agent 上报的进度（`pane-status`），服务端盖章来源 |
 
 没有单独的发件箱：发出即进入对方收件箱；发送记录在事件日志里。
@@ -80,7 +80,7 @@ $1:@3.%7  work:2.1  builder  ai
 
 **当前消息何时结束**：shell 为下一个提示符；ai 为下一次 `pane-ready`。结束即记 `done` 事件（第 10 节）。`read-message` 取走的消息取走即完成（记 `read`），不成为当前消息，只记为"最近读到的"供 `-r` 回复：agent 在自己一轮里用 `wait_message` 取回信，不会结束它手上的任务；人读完回信再发新请求，开始新的任务链（实测发现：否则跳数会一直累加，几轮往来后就被跳数上限拒收）。
 
-**卡在忙**：人在 agent 输入框里打字后又删掉，或 Ctrl+C 取消输入而提示符未重绘，窗格会一直忙。人可以用 `pane-ready -t <窗格>` 解开（第 8 节：从窗格内部只能对自己和自己创建的窗格用 `-t`）。
+**卡在忙**：人在 agent 输入框里打字后又删掉，或 Ctrl+C 取消输入而提示符未重绘，窗格会一直忙。可以用 `pane-ready -t <窗格>` 解开。
 
 ## 5. 信封
 
@@ -149,9 +149,9 @@ list-messages [-t 窗格] [-a]           # 查看收件箱，不取出；-a 所�
 trace-message 编号 [-w 秒]              # 一条消息的时间线与状态（含 shell 执行结果）；-w 等到完成
 drop-message [-u] 编号                 # 删除排队中的消息；-u 撤销最近一次删除（undo-kill-time 内）
 move-message 编号 up|down|top          # 调整排队顺序
-pane-ready [-q] [-t 窗格]              # 报空闲；-q 不在窗格里时静默退出；-t 解开卡住的窗格（窗格内部只能对自己和自己创建的用）
+pane-ready [-q] [-t 窗格]              # 报空闲；-q 不在窗格里时静默退出；-t 解开卡住的窗格
 pane-status [文本]                     # 上报进度，空文本清除
-set-work-mode [-t 窗格] normal|shell|ai
+set-work-mode [-t 窗格] normal|shell|ai  # 在窗格里调用只能改它自己
 rename-pane [-t 窗格] 名字              # 空名字清除
 whoami
 list-events [-t 目标] [-S 时长] [-n 行数]  # 如 -S 1h；-n 取内存里最近的行，不读文件
@@ -159,7 +159,6 @@ list-tasks [-t 会话]
 show-task 编号
 dashboard                              # 别名 dash；默认绑定 prefix v
 create-pane [-k session|window|split] [-t 目标] [-s 会话名] [-h] [-c 目录] [-n 名字] [-m 模式] [-M 首条消息] [-- 程序]
-close-pane -t 窗格                     # 从窗格内部只能关自己和自己创建的
 setup claude [--install]               # 默认只打印要加的配置
 mcp                                    # stdio MCP 服务端
 ```
@@ -170,15 +169,15 @@ mcp                                    # stdio MCP 服务端
 
 ## 8. 权限
 
-同一用户的任何程序本来就能连命名管道、对任意窗格 `send-keys`，所以以下规则防的是失误（例如 agent 写错目标），不是恶意；清掉 `KEEPANE_PANE` 就能绕过，文档如实说明。
+keepane 的这些规则防的是失误，不是恶意：同一 Windows 用户的任何程序本来就能连命名管道、对任意窗格 `send-keys`。经过实测与讨论（2026-09-26，录制演示时发现原先的规则让人在自己的 shell 里改别的窗格都被拒），只保留一条：
 
-- **从窗格内部调用**（客户端带 `KEEPANE_PANE`）时，改模式、改名字、关闭、`pane-ready -t`、删除或调整收件箱里的消息，只能作用于自己和自己创建的窗格（含子孙）。
-- **人手**（外部终端、快捷键、`:` 命令行）不受限。
-- `shell` 模式只能由人手或创建者开启：agent 不能把你的窗格改成 shell 再发命令。
-- MCP 只暴露消息、查询和创建相关的能力，不暴露 `send-keys`、`kill-server`。
-- MCP 创建窗格只能启动 `agent-commands` 里的程序；名单只管程序名，不管参数（不试图识别 `--dangerously-skip-permissions` 之类的写法，挡不全，不给虚假安全感）。
-- 创建配额：一个 agent 及其子孙最多创建 `agent-pane-limit` 个窗格。
+- **工作模式只能在窗格自己里切换**：从一个窗格里调用 `set-work-mode`，只能改这个窗格自己（`-t` 指向别的窗格会被拒）。这样，任何窗格里运行的东西（包括 agent）都不能把另一个窗格变成"收到什么就执行什么"的 shell。人在 keepane 之外的终端、快捷键或 `Ctrl+B :` 命令行里，可以改任何窗格。agent 改自己窗格的模式，影响的只是它自己。`create-pane -m` 在创建时指定模式，不算切换。
 
+其余操作（改名、关闭窗格、`pane-ready -t`、读取或管理任何收件箱）对所有人开放：出错只影响成败；关掉的窗格有 `undo-kill`（10 秒）；MCP 工具在 Claude Code 里默认每次调用都要用户批准，放不放行 `kill_pane` 由用户决定。
+
+`create-pane` 从 agent 的窗格（`ai` 模式，或由别的窗格用 `create-pane` 创建的窗格）调用时：只能启动 `agent-commands` 里的程序（只管程序名、不管参数，不给虚假安全感），记下创建者，一个 agent 及其子孙最多创建 `agent-pane-limit` 个窗格。人用它开的窗格不记创建者、不计配额。
+
+不做"防恶意"（2026-09-26 用户决定）：同一用户的程序能读到文件、环境变量、剪贴板里的任何密钥，所以给窗格或会话发密钥挡不住 agent；可靠的做法是服务端按操作系统事实（请求进程属于哪个窗格的 job object）识别调用者，但会把核心逻辑绑在平台上。以后需要时放进平台接口作为可选能力（Linux/mac 可用 Unix socket 对端进程号 + 进程树/cgroup）。
 ## 9. MCP 与 agent 接入
 
 `keepane mcp`：stdio MCP 服务端，由 agent 启动，继承 `KEEPANE_PANE` 得知自己是哪个窗格；只把工具调用转成服务端命令，自身无状态。第一版就做。
@@ -188,7 +187,7 @@ mcp                                    # stdio MCP 服务端
 | 创建 | `create_session`、`create_window`、`split_pane`、`set_work_mode`、`rename_pane` |
 | 查询 | `whoami`、`list_panes`、`current_message`、`trace_message`、`list_tasks`、`show_task`、`query_events` |
 | 通信 | `send_message`、`reply`、`wait_message`、`list_messages`、`drop_message`、`move_message`、`set_status` |
-| 销毁 | `kill_pane`（只限自己创建的） |
+| 销毁 | `kill_pane`（即 `kill-pane`，可 `undo-kill`） |
 
 - 创建工具可带 `message`：创建时即放入新窗格收件箱，就绪后投递，没有"发早了"的时序问题。
 - 默认模式：启动 agent 程序（`claude`、`codex`、`gemini`）为 `ai`，启动 `pwsh`/`powershell` 为 `shell`，其他为 `normal`；可用 `mode` 参数覆盖。

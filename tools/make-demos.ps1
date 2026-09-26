@@ -3,7 +3,7 @@
   Re-record the demos and re-cut every picture in docs/img from them.
 
 .DESCRIPTION
-  1. tests/demo_frames.rs plays three scripted sessions into the real keepane.exe
+  1. tests/demo_frames.rs plays four scripted sessions into the real keepane.exe
      and writes each screen as JSON: f0001.json ... for the animation, and
      still-<name>.json wherever the script marks a picture.
   2. tools/render-frames.ps1 draws them as PNGs.
@@ -31,7 +31,8 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "ffmpeg is 
 $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT"; Test = "record_demo"; Name = "keepane-demo" },
     @{ Env = "KEEPANE_DEMO_OUT2"; Test = "record_alerts"; Name = "keepane-alerts" },
-    @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" }
+    @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" },
+    @{ Env = "KEEPANE_DEMO_OUT4"; Test = "record_messages"; Name = "keepane-messages" }
 )
 foreach ($t in $takes) {
     $frames = Join-Path $Work "$($t.Name)-frames"

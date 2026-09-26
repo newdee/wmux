@@ -287,6 +287,73 @@ fn record_history() {
     d.finish();
 }
 
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_messages() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT4").unwrap_or_else(|_| "target/demo-frames-4".into());
+    let mut d = Demo::start("demo4", &out_dir, "");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s work"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    // A second pane; the first one becomes "builder", taking commands.
+    rec.key("\x02%");
+    rec.hold(3);
+    rec.type_line("keepane rename-pane -t :.0 builder");
+    rec.hold(2);
+    // A pane's mode is set in it, or by a person: at the C-b : prompt.
+    rec.key("\x02:");
+    rec.hold(1);
+    rec.type_text("set-work-mode -t %builder shell");
+    rec.hold(2);
+    rec.key("\r");
+    rec.hold(3);
+    rec.type_line("keepane send-message -t %builder \"git status --short; 'tests: 42 passed'\"");
+    rec.wait_for("it ran there", |s| s.contents().contains("tests: 42 passed"), 20);
+    rec.hold(5);
+    rec.type_line("keepane trace-message 1");
+    rec.wait_for("its record", |s| s.contents().contains("output:"), 10);
+    rec.hold(8);
+    rec.still("messages");
+
+    // An agent's pane with work waiting for it (no agent says ready here).
+    rec.type_line("keepane create-pane -k window -n agent -m ai");
+    rec.type_line(
+        "keepane send-message -t %agent 'review the diff'; keepane send-message -t %agent 'then run the tests'",
+    );
+    rec.hold(4);
+
+    // C-b v: every pane at a glance.
+    rec.key("\x02v");
+    rec.wait_for("the dashboard", |s| s.contents().contains("keepane dashboard"), 15);
+    rec.hold(6);
+    rec.key("j");
+    rec.hold(2);
+    rec.key("j");
+    rec.hold(4);
+    rec.key("m");
+    rec.wait_for("its inbox", |s| s.contents().contains("then run the tests"), 10);
+    rec.hold(6);
+    // Manage mode: the second message first.
+    rec.key("E");
+    rec.hold(3);
+    rec.key("n");
+    rec.hold(2);
+    rec.key("g");
+    rec.wait_for("moved", |s| s.contents().contains("done: move-message"), 10);
+    rec.hold(6);
+    rec.still("dashboard");
+    rec.key("\x1b");
+    rec.hold(2);
+    rec.key("q");
+    rec.hold(4);
+
+    d.finish();
+}
+
 /// Everything a recording needs: a pty running a plain shell with keepane on
 /// the PATH, a scratch directory, and the frame recorder itself.
 struct Demo {
