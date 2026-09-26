@@ -26,8 +26,10 @@ pub struct Release {
 pub enum Kind {
     /// `scoop install keepane`: scoop updates it.
     Scoop,
-    /// The MSI, under Program Files.
+    /// The MSI, under Program Files: installing needs an administrator.
     Msi,
+    /// The per-user MSI, under %LOCALAPPDATA%\Programs: no administrator.
+    MsiUser,
     /// Anything else (a zip, `cargo install`, a build): by hand.
     Other(PathBuf),
 }
@@ -45,12 +47,38 @@ pub fn kind_of(exe: &Path) -> Kind {
     if s.contains(r"\scoop\apps\") || s.contains(r"\scoop\shims\") {
         return Kind::Scoop;
     }
+    if let Ok(local) = std::env::var("LOCALAPPDATA")
+        && !local.is_empty()
+        && s.starts_with(&format!(r"{}\programs\keepane\", local.to_lowercase()))
+    {
+        return Kind::MsiUser;
+    }
     let under =
         |var: &str| std::env::var(var).ok().filter(|p| !p.is_empty()).is_some_and(|p| s.starts_with(&p.to_lowercase()));
     if under("ProgramFiles") || under("ProgramW6432") {
         return Kind::Msi;
     }
     Kind::Other(exe.to_path_buf())
+}
+
+/// The MSI of a release, per machine or per user.
+pub fn msi_name(version: &str, user: bool) -> String {
+    format!("keepane-{version}-windows-x86_64{}.msi", if user { "-user" } else { "" })
+}
+
+/// Whether a per-machine MSI cannot be installed from here: over SSH nobody
+/// is at the desktop to answer Windows' permission prompt, unless this
+/// session already runs as an administrator.
+pub fn machine_msi_blocked(over_ssh: bool, elevated: bool) -> bool {
+    over_ssh && !elevated
+}
+
+fn over_ssh() -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|v| std::env::var_os(v).is_some())
+}
+
+fn elevated() -> bool {
+    unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
 }
 
 /// The hash in a `.sha256` file: `<hex>  <file name>`.
@@ -108,8 +136,8 @@ fn sha256_of(path: &Path) -> Result<String> {
         .context("certutil gave no hash")
 }
 
-fn install_msi(r: &Release) -> Result<()> {
-    let name = format!("keepane-{}-windows-x86_64.msi", r.version);
+fn install_msi(r: &Release, user: bool) -> Result<()> {
+    let name = msi_name(&r.version, user);
     let find = |n: &str| r.assets.iter().find(|(a, _)| a == n).map(|(_, u)| u.clone());
     let msi_url = find(&name).with_context(|| format!("the release has no {name}"))?;
     let sha_url = find(&format!("{name}.sha256")).with_context(|| format!("the release has no {name}.sha256"))?;
@@ -125,7 +153,7 @@ fn install_msi(r: &Release) -> Result<()> {
         let _ = std::fs::remove_dir_all(&dir);
         bail!("{name} does not match its published SHA-256 ({got} != {want}); not installed");
     }
-    println!("SHA-256 matches; installing (Windows asks for permission)");
+    println!("SHA-256 matches; installing{}", if user { "" } else { " (Windows asks for permission)" });
     let status = Command::new("msiexec.exe").arg("/i").arg(&msi).args(["/passive", "/norestart"]).status()?;
     let _ = std::fs::remove_dir_all(&dir);
     // 3010: installed, a reboot finishes it (a file was in use: the old
@@ -168,7 +196,15 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
                 bail!("`scoop update keepane` failed");
             }
         }
-        Kind::Msi => install_msi(&r)?,
+        Kind::Msi if machine_msi_blocked(over_ssh(), elevated()) => {
+            println!(
+                "over SSH nobody is at the desktop to answer Windows' permission prompt for this MSI (it installs for every user):"
+            );
+            println!("install {} instead (it needs no administrator), or use scoop", msi_name(&r.version, true));
+            return Ok(1);
+        }
+        Kind::Msi => install_msi(&r, false)?,
+        Kind::MsiUser => install_msi(&r, true)?,
         Kind::Other(path) => {
             println!(
                 "this keepane ({}) was not installed by the MSI or scoop: download it from the page above",
@@ -206,8 +242,29 @@ mod tests {
         if let Ok(pf) = std::env::var("ProgramFiles") {
             assert_eq!(kind_of(&Path::new(&pf).join("keepane").join("keepane.exe")), Kind::Msi);
         }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let p = Path::new(&local).join("Programs").join("keepane").join("keepane.exe");
+            assert_eq!(kind_of(&p), Kind::MsiUser);
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            // Case does not matter on Windows; a sibling whose name only starts
+            // with keepane is not it.
+            let upper = format!(r"{}\PROGRAMS\KEEPANE\keepane.exe", local.to_uppercase());
+            assert_eq!(kind_of(Path::new(&upper)), Kind::MsiUser);
+            let sibling = Path::new(&local).join("Programs").join("keepane2").join("keepane.exe");
+            assert!(matches!(kind_of(&sibling), Kind::Other(_)), "{sibling:?}");
+        }
         let dev = Path::new(r"D:\src\keepane\target\release\keepane.exe");
         assert_eq!(kind_of(dev), Kind::Other(dev.to_path_buf()));
+    }
+
+    #[test]
+    fn the_msi_to_take_and_when_not_to() {
+        assert_eq!(msi_name("0.15.2", false), "keepane-0.15.2-windows-x86_64.msi");
+        assert_eq!(msi_name("0.15.2", true), "keepane-0.15.2-windows-x86_64-user.msi");
+        assert!(machine_msi_blocked(true, false), "over SSH, not an administrator");
+        assert!(!machine_msi_blocked(true, true), "an administrator session needs no prompt");
+        assert!(!machine_msi_blocked(false, false), "at the desktop the prompt is answered");
     }
 
     #[test]

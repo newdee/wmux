@@ -11,6 +11,7 @@
 .EXAMPLE
   cargo build --release
   pwsh -File installer/build-msi.ps1 -Version 0.10.0
+  pwsh -File installer/build-msi.ps1 -Scope user    # per user: no administrator rights to install
 #>
 [CmdletBinding()]
 param(
@@ -21,7 +22,10 @@ param(
     # Where the .msi lands.
     [string]$OutDir = "target",
     # Directory holding candle.exe / light.exe.
-    [string]$WixBin
+    [string]$WixBin,
+    # machine: Program Files, system PATH (needs administrator rights);
+    # user: %LOCALAPPDATA%\Programs, the user's PATH (does not).
+    [ValidateSet("machine", "user")] [string]$Scope = "machine"
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,8 +57,11 @@ function Resolve-Wix {
 }
 
 $wix = Resolve-Wix
-$exe = Join-Path $root $ExeDir "keepane.exe"
+$exe = Join-Path $(if ([IO.Path]::IsPathRooted($ExeDir)) { $ExeDir } else { Join-Path $root $ExeDir }) "keepane.exe"
 if (-not (Test-Path $exe)) { throw "no keepane.exe at $exe (cargo build --release first)" }
+# A stale build would go in under this version's name.
+$exeVersion = ((& $exe -V) -split ' ')[-1].Trim()
+if ($exeVersion -ne $Version) { throw "$exe is keepane $exeVersion, not $Version (cargo build --release first)" }
 
 # Everything the MSI ships, in one directory, so the .wxs has a single root.
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) "keepane-msi-stage-$PID"
@@ -64,16 +71,21 @@ Copy-Item $exe $stage
 foreach ($f in @("README.md", "LICENSE", "keepane.conf.example")) { Copy-Item (Join-Path $root $f) $stage }
 
 $obj = Join-Path $stage "keepane.wixobj"
-$outDirFull = Join-Path $root $OutDir
+$outDirFull = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $root $OutDir }
 New-Item -ItemType Directory -Force $outDirFull | Out-Null
-$msi = Join-Path $outDirFull "keepane-$Version-windows-x86_64.msi"
+$suffix = if ($Scope -eq "user") { "-user" } else { "" }
+$msi = Join-Path $outDirFull "keepane-$Version-windows-x86_64$suffix.msi"
+$scopeVar = if ($Scope -eq "user") { "perUser" } else { "perMachine" }
 
 try {
-    & "$wix/candle.exe" -nologo -arch x64 "-dVersion=$Version" "-dSourceDir=$stage" `
+    & "$wix/candle.exe" -nologo -arch x64 "-dVersion=$Version" "-dSourceDir=$stage" "-dScope=$scopeVar" `
         (Join-Path $root "installer/keepane.wxs") -o $obj
     if ($LASTEXITCODE -ne 0) { throw "candle failed" }
     # ICE61 fires on same-version upgrades, which MajorUpgrade allows on purpose.
-    & "$wix/light.exe" -nologo -ext WixUIExtension -sice:ICE61 -spdb -b $root $obj -o $msi
+    # ICE91 warns that a per-user file is not copied to every profile, which a
+    # per-user package does not want anyway.
+    $ices = @("-sice:ICE61") + $(if ($Scope -eq "user") { @("-sice:ICE91") } else { @() })
+    & "$wix/light.exe" -nologo -ext WixUIExtension @ices -spdb -b $root $obj -o $msi
     if ($LASTEXITCODE -ne 0) { throw "light failed" }
 }
 finally {

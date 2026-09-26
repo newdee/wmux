@@ -68,6 +68,7 @@ pane 根据工作模式处理消息：
 
 - `keepane-v<版本>-windows-x86_64.zip`：里面是一个目录 `keepane-v<版本>-windows-x86_64`，`keepane.exe` 在这个目录里。解压后将该目录加入 `PATH`。不需要管理员权限。
 - `keepane-<版本>-windows-x86_64.msi`：安装到 `Program Files`，供所有用户使用，并加入系统 `PATH`；可在“应用和功能”中卸载。需要管理员权限（静默安装：`msiexec /i keepane-<版本>-windows-x86_64.msi /qn`）。
+- `keepane-<版本>-windows-x86_64-user.msi`：只为当前用户安装，装到 `%LOCALAPPDATA%\Programs\keepane`，加入用户 `PATH`。安装和 `keepane update` 都不需要管理员权限，通过 SSH 也能装、能升级。
 
 Scoop 可直接使用仓库中的清单安装 zip，无需管理员权限：
 
@@ -82,7 +83,7 @@ scoop config no_junction true
 scoop reset keepane
 ```
 
-通过 SSH 时，`keepane update` 无法完成 MSI 的交互式权限确认；这种场景请使用 zip 或 Scoop。
+通过 SSH 时，按机器安装的 MSI 需要在桌面上确认权限，没人能点；`keepane update` 遇到这种情况会直接说明，请改用按用户安装的 MSI、zip 或 Scoop。
 
 WinGet 的清单（装 MSI）在 `packaging/winget/`，`winget validate` 通过；合进 winget-pkgs 之后 `winget install newdee.keepane` 就行，在那之前可以在克隆里 `winget install --manifest packaging/winget/manifests/n/newdee/keepane/<版本>`。细节见 `packaging/README.md`。
 

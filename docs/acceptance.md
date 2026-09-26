@@ -2598,3 +2598,19 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 1 | 只动了顺序 | 新旧各 10 章，去掉编号后逐块相同；章外只差测试数；i18n 77/77 | 干净（1/3） |
 | 2 | 视觉 | 320/375/768/1280 × 中英：溢出 0，编号 01–10 连续，第一章中英标题正确 | 干净（2/3） |
 | 3 | 行为 | `#tour` 之后即第 01 章；首章 gif 独立加载宽 900；瞬时滚动截图可见第 01 章与动图（后台标签页里平滑滚动与懒加载不运行，第一次的"未加载"是检测方法问题，改用不依赖前台的检测） | 干净（3/3） |
+
+## 63. 按用户安装的 MSI；SSH 下 update 不再卡在看不见的权限框
+
+同一个 keepane.wxs 出两种包：`-dScope=perUser` 装到 `%LOCALAPPDATA%\Programs\keepane`、写用户 PATH、InstallPrivileges=limited（不要管理员、不弹 UAC），独立 UpgradeCode（两种范围之间不能互相升级），一个固定 GUID 的组件以 HKCU 值为键路径、卸载时删目录。`build-msi.ps1 -Scope user`，文件名 `-user.msi`；release 两种都出；winget 安装清单两个条目（Scope machine / user），下载模式只在 release 有该文件时加入。`keepane update` 认出按用户安装（换装同种包，无需管理员）；按机器安装、在 SSH 里且非管理员时直接说明并停下（原来会一直等桌面上没人能点的 UAC）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实装 | 按用户包静默装：文件 4 个在位、用户 PATH 加上、HKCU 标记在；卸载：目录与标记都没了，用户 PATH 与备份逐字相同。发现：本地 target\release 是旧编译（包 0.15.1、exe 0.15.0）→ build-msi 加版本守卫；`runas /trustlevel` 的 SAFER 令牌连不上 Installer 服务（1601），改用包本身的声明验证：WordCount 机器 2 / 用户 10（"无需提权"位），ALLUSERS 机器 1 / 用户未设，UpgradeCode 不同 | 修守卫 |
+| 1 | 机制与变异 | fmt/clippy 0；全量 204/10/84；U1 按用户认成按机器、U2 管理员也被拦、U3 文件名不带 -user 均被单测抓到 | 干净 |
+| 2 | 静态一致性 | 5 条说法都在代码/流程里；packaging/README 还写"两个 .sha256"、引用已关闭的 PR #440225 | **有问题**，更新 |
+| 3 | 边界 | 大小写混用与同前缀目录（keepane2）的识别正确；但 build-msi 的 -ExeDir/-OutDir 传绝对路径会被拼到仓库根后面（旧 bug，release 用相对路径未暴露） | **有问题**，绝对路径照用 |
+| 4 | 机制通路 | 照 release 的写法打两种包，生成清单 winget validate 通过（machine,user）；全量 204/10/84 | 干净（1/3） |
+| 5 | 静态一致性 | 中英 README 新内容计数一致，GFM h2 14、漏出反引号 0 | 干净（2/3） |
+| 6 | 可复现性 | 生成器同输入两次，4 个文件哈希相同；update 单测 3/3 | 干净（3/3） |
+
+遗留：真正非管理员会话里的安装与 `keepane update`（用户的 SSH 会话）待下个版本发布后实测。

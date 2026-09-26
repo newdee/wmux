@@ -16,7 +16,9 @@
 #
 # With -MsiPath and -ZipPath (the files just built, as in the release
 # workflow) nothing is downloaded: the hashes and the ProductCode come from
-# those files, and the URLs are still the release's.
+# those files, and the URLs are still the release's. -UserMsiPath adds the
+# per-user MSI (from 0.15.2 on); downloading, it is added when the release
+# has one.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version,
@@ -24,6 +26,7 @@ param(
     [string] $OutDir = (Join-Path $PSScriptRoot "..\packaging"),
     [string] $MsiPath,
     [string] $ZipPath,
+    [string] $UserMsiPath,
     # yyyy-MM-dd; the release's publish date when downloading, today otherwise.
     [string] $ReleaseDate
 )
@@ -32,6 +35,8 @@ $ErrorActionPreference = "Stop"
 $base = "https://github.com/$Repo/releases/download/v$Version"
 $msiName = "keepane-$Version-windows-x86_64.msi"
 $zipName = "keepane-v$Version-windows-x86_64.zip"
+$userMsiName = "keepane-$Version-windows-x86_64-user.msi"
+$userMsiSha = $null; $userProductCode = $null
 
 function Get-Sha256FromRelease([string] $asset) {
     $text = (Invoke-RestMethod "$base/${asset}.sha256").Trim()
@@ -62,6 +67,12 @@ if ($MsiPath -or $ZipPath) {
     $msiSha = (Get-FileHash $MsiPath -Algorithm SHA256).Hash.ToLower()
     $zipSha = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLower()
     $productCode = Get-MsiProductCode $MsiPath
+    if ($UserMsiPath) {
+        if (-not (Test-Path $UserMsiPath)) { throw "no such file: $UserMsiPath" }
+        if ((Split-Path -Leaf $UserMsiPath) -ne $userMsiName) { throw "$UserMsiPath should be named $userMsiName for v$Version" }
+        $userMsiSha = (Get-FileHash $UserMsiPath -Algorithm SHA256).Hash.ToLower()
+        $userProductCode = Get-MsiProductCode $UserMsiPath
+    }
     $releaseDate = if ($ReleaseDate) { $ReleaseDate } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd") }
 } else {
     try {
@@ -82,11 +93,24 @@ if ($MsiPath -or $ZipPath) {
         $got = (Get-FileHash $msiPath -Algorithm SHA256).Hash.ToLower()
         if ($got -ne $msiSha) { throw "${msiName}: downloaded sha256 $got is not the published $msiSha" }
         $productCode = Get-MsiProductCode $msiPath
+        # The per-user MSI, when this release has one.
+        if ($release.assets.name -contains $userMsiName) {
+            $userMsiSha = Get-Sha256FromRelease $userMsiName
+            $userPath = Join-Path $tmp $userMsiName
+            Invoke-WebRequest "$base/$userMsiName" -OutFile $userPath
+            $got = (Get-FileHash $userPath -Algorithm SHA256).Hash.ToLower()
+            if ($got -ne $userMsiSha) { throw "${userMsiName}: downloaded sha256 $got is not the published $userMsiSha" }
+            $userProductCode = Get-MsiProductCode $userPath
+        }
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }
 }
 if ($productCode -notmatch '^\{[0-9A-F-]{36}\}$') { throw "odd ProductCode: $productCode" }
+if ($userProductCode -and $userProductCode -notmatch '^\{[0-9A-F-]{36}\}$') { throw "odd per-user ProductCode: $userProductCode" }
+$userInstaller = if ($userMsiSha) {
+    "`n- Architecture: x64`n  Scope: user`n  InstallerUrl: $base/$userMsiName`n  InstallerSha256: $($userMsiSha.ToUpper())`n  ProductCode: '$userProductCode'"
+} else { "" }
 
 $wingetDir = Join-Path $OutDir "winget\manifests\n\newdee\keepane\$Version"
 New-Item -ItemType Directory -Force $wingetDir | Out-Null
@@ -107,7 +131,6 @@ $installerYaml = @"
 PackageIdentifier: newdee.keepane
 PackageVersion: $Version
 InstallerType: wix
-Scope: machine
 InstallModes:
 - interactive
 - silent
@@ -118,9 +141,10 @@ Commands:
 ReleaseDate: $releaseDate
 Installers:
 - Architecture: x64
+  Scope: machine
   InstallerUrl: $base/$msiName
   InstallerSha256: $($msiSha.ToUpper())
-  ProductCode: '$productCode'
+  ProductCode: '$productCode'$userInstaller
 ManifestType: installer
 ManifestVersion: 1.12.0
 "@

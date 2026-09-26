@@ -1,27 +1,29 @@
 # Package manifests
 
 Generated, not hand-written: `tools\package-manifests.ps1 -Version X.Y.Z`
-reads the two `.sha256` files and the MSI's ProductCode from the GitHub
-release for `vX.Y.Z` and writes
+reads the `.sha256` files and the MSIs' ProductCodes from the GitHub release
+for `vX.Y.Z` and writes
 
 - `winget\manifests\n\newdee\keepane\X.Y.Z\` — the three WinGet manifests
-  (version, installer, defaultLocale), laid out as
+  (version, installer, defaultLocale); the installer manifest lists the MSI
+  for the machine (`Scope: machine`) and, from 0.15.2 on, the one for the
+  user (`Scope: user`, no administrator rights). Laid out as
   [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) wants
   them; `winget validate --manifest <that directory>` passes.
 - `scoop\keepane.json` — a Scoop manifest for the zip, with `checkver` and
   `autoupdate` so a bucket keeps up with releases by itself.
 
 The release workflow runs it for every tag from the files it just built
-(`-MsiPath`/`-ZipPath`: no download), attaches `keepane-X.Y.Z-manifests.zip`
+(`-MsiPath`/`-UserMsiPath`/`-ZipPath`: no download), attaches `keepane-X.Y.Z-manifests.zip`
 to the release and commits the output here, so this directory follows
 releases by itself. Running it by hand is for a release made some other
 way. Either way, then:
 
-**WinGet.** The first version went in by hand:
-[microsoft/winget-pkgs#440225](https://github.com/microsoft/winget-pkgs/pull/440225)
-(`New package: newdee.keepane version 0.10.0`, from the `newdee/winget-pkgs`
-fork). Its bot validates and installs it in a VM once the CLA is signed on
-the PR; a maintainer merges it, and `winget install newdee.keepane` works a
+**WinGet.** The first version goes in by hand, from the `newdee/winget-pkgs`
+fork: [microsoft/winget-pkgs#441466](https://github.com/microsoft/winget-pkgs/pull/441466)
+(`New package: newdee.keepane`; an earlier one, #440225, was closed). Its
+bot validates and installs it in a VM once the CLA is signed on the PR; a
+maintainer merges it, and `winget install newdee.keepane` works a
 few hours later. After that, every release can submit its own update:
 add a repository secret `WINGET_TOKEN` (a classic token with `public_repo`
 of the account owning the fork) and the release workflow runs

@@ -1,24 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Per-machine MSI for keepane: one directory under Program Files, keepane.exe on the
-  system PATH, and a normal entry in "Apps & features".
+  MSI for keepane, in two scopes from this one file:
+
+  - perMachine (the default): one directory under Program Files, keepane.exe on
+    the system PATH. Installing needs administrator rights.
+  - perUser (-dScope=perUser): one directory under %LOCALAPPDATA%\Programs,
+    keepane.exe on the user's PATH. No administrator rights, no UAC prompt,
+    so it installs and updates over SSH too.
+
+  The two have their own UpgradeCode: Windows Installer does not upgrade a
+  package from one scope to the other.
 
   Build (WiX 3.14):
-    candle -arch x64 -dVersion=<x.y.z> -dSourceDir=<dir with keepane.exe> installer\keepane.wxs -o <obj>
-    light -ext WixUIExtension <obj> -o keepane-<x.y.z>-x86_64.msi
+    candle -arch x64 -dVersion=<x.y.z> -dSourceDir=<dir with keepane.exe> [-dScope=perUser] installer\keepane.wxs -o <obj>
+    light -ext WixUIExtension <obj> -o keepane-<x.y.z>-windows-x86_64[-user].msi
 -->
+<?ifndef Scope ?>
+<?define Scope = "perMachine" ?>
+<?endif ?>
+<?if $(var.Scope) = "perUser" ?>
+<?define UpgradeCode = "3B8F2C6D-9A41-4E57-B0C3-7D2E5F1A9C84" ?>
+<?define Privileges = "limited" ?>
+<?else ?>
+<?define UpgradeCode = "6C4E1E4B-0E0B-4E4E-9C2E-2B6B0B2F6A31" ?>
+<?define Privileges = "elevated" ?>
+<?endif ?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
            Name="keepane"
            Language="1033"
            Version="$(var.Version)"
            Manufacturer="newdee"
-           UpgradeCode="6C4E1E4B-0E0B-4E4E-9C2E-2B6B0B2F6A31">
+           UpgradeCode="$(var.UpgradeCode)">
     <Package InstallerVersion="500"
              Compressed="yes"
-             InstallScope="perMachine"
+             InstallScope="$(var.Scope)"
+             InstallPrivileges="$(var.Privileges)"
              Description="keepane $(var.Version) - panes that keep running and pass messages to each other" />
-
     <!-- Installing a newer version replaces the old one in place. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of keepane is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -31,6 +49,33 @@
       <ComponentGroupRef Id="Files" />
     </Feature>
 
+<?if $(var.Scope) = "perUser" ?>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="UserPrograms" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="keepane" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- In a user's profile a component is kept by a registry value under
+         HKCU, not by a file, and the directories it made go on uninstall. -->
+    <ComponentGroup Id="Files" Directory="INSTALLFOLDER">
+      <!-- A fixed GUID: a component kept by a registry value and holding files
+           cannot have one made up for it. -->
+      <Component Id="UserFiles" Guid="5E2A9C71-3D84-4F6B-A1C9-8B7D2E4F6A03" Win64="yes">
+        <RegistryValue Root="HKCU" Key="Software\newdee\keepane" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="keepaneExe" Name="keepane.exe" Source="$(var.SourceDir)\keepane.exe" />
+        <File Id="ReadmeFile" Name="README.md" Source="$(var.SourceDir)\README.md" />
+        <File Id="LicenseFile" Name="LICENSE" Source="$(var.SourceDir)\LICENSE" />
+        <File Id="ConfExampleFile" Name="keepane.conf.example" Source="$(var.SourceDir)\keepane.conf.example" />
+        <!-- `keepane` works from any new shell; removed again on uninstall. -->
+        <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="no" Permanent="no" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveUserPrograms" Directory="UserPrograms" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+<?else ?>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="keepane" />
@@ -54,6 +99,7 @@
         <File Id="ConfExampleFile" Name="keepane.conf.example" Source="$(var.SourceDir)\keepane.conf.example" KeyPath="yes" />
       </Component>
     </ComponentGroup>
+<?endif ?>
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />

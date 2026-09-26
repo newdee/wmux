@@ -123,6 +123,9 @@ keepane needs Windows 10 1809 or newer (for ConPTY). From the
   every user and puts `keepane` on the system `PATH`; it uninstalls from
   "Apps & features". It needs administrator rights (unattended:
   `msiexec /i keepane-<version>-windows-x86_64.msi /qn`).
+- `keepane-<version>-windows-x86_64-user.msi` installs for you alone, into
+  `%LOCALAPPDATA%\Programs\keepane`, and puts it on your `PATH`. Neither it
+  nor `keepane update` needs administrator rights, so both work over SSH.
 
 Scoop installs the zip straight from the manifest in this repository, with
 no administrator rights:
@@ -141,8 +144,9 @@ scoop config no_junction true
 scoop reset keepane
 ```
 
-Over SSH, `keepane update` cannot get through the MSI's interactive
-permission prompt; use the zip or Scoop there.
+Over SSH, the per-machine MSI's permission prompt appears on a desktop where
+nobody can answer it; `keepane update` says so and stops. Use the per-user
+MSI, the zip or Scoop there.
 
 WinGet manifests for the MSI are in `packaging/winget/` (validated with
 `winget validate`); `winget install newdee.keepane` works once they are

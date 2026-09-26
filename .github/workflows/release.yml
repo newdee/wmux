@@ -63,10 +63,15 @@ jobs:
           # Tags are vX.Y.Z; the MSI wants the bare X.Y.Z.
           $version = "${{ github.ref_name }}".TrimStart("v")
           pwsh -File installer/build-msi.ps1 -Version $version -OutDir dist
+          # Per user too: no administrator rights to install or update.
+          pwsh -File installer/build-msi.ps1 -Version $version -OutDir dist -Scope user
+          $user = "dist\keepane-$version-windows-x86_64-user.msi"
+          $uhash = (Get-FileHash $user -Algorithm SHA256).Hash.ToLower()
+          "$uhash  $(Split-Path -Leaf $user)" | Set-Content -NoNewline "$user.sha256"
           $msi = "dist\keepane-$version-windows-x86_64.msi"
           $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLower()
           "$hash  $(Split-Path -Leaf $msi)" | Set-Content -NoNewline "$msi.sha256"
-          Get-Content "$msi.sha256"
+          Get-Content "$msi.sha256", "$user.sha256"
           # wmux (keepane's name up to 0.13.1) updates itself by this file
           # name: the same MSI under it is what lets `wmux update` install
           # keepane (same UpgradeCode, so it replaces the wmux install).
@@ -82,6 +87,7 @@ jobs:
           $version = $tag.TrimStart("v")
           pwsh -File tools/package-manifests.ps1 -Version $version `
             -MsiPath "dist\keepane-$version-windows-x86_64.msi" `
+            -UserMsiPath "dist\keepane-$version-windows-x86_64-user.msi" `
             -ZipPath "dist\keepane-$tag-windows-x86_64.zip"
           if (Get-Command winget -ErrorAction SilentlyContinue) {
             # The runner's winget can be older than the manifest schema and
