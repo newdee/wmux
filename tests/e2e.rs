@@ -387,14 +387,17 @@ async fn attach_type_split_detach() {
     c.wait_for("renamed via ,", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:via-comma*")).await;
 
     // A multi-line error (bad source-file) is shown as an overlay, not flattened.
-    let bad = std::env::temp_dir().join(format!("keepane-bad-{}.conf", std::process::id()));
+    // Each message starts with the file's path and long lines are clipped at
+    // the window width, so the path must be short on every machine: relative
+    // to the package root, which is this process's (and the server's) cwd.
+    let bad = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("bad-{}.conf", std::process::id()));
     std::fs::write(&bad, "set -g mouse maybe\nfrobnicate\n").unwrap();
+    let rel = bad.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
     c.prefix(':').await;
-    c.type_str(&format!("source-file {}", bad.display())).await;
+    c.type_str(&format!("source-file {}", rel.display())).await;
     c.enter().await;
     c.wait_for("config errors overlay", |s| {
         let t = s.contents();
-        // Long lines are clipped at the window width, so match prefixes only.
         t.contains(":1: bad boolean 'maybe'") && t.contains(":2: unknown command") && t.contains("press any key")
     })
     .await;
