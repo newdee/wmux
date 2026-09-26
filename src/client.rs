@@ -55,7 +55,22 @@ fn start_server(socket: &str) -> Result<()> {
              `keepane migrate` moves them here"
         );
     }
-    spawn_self(&["-L", socket, "__server"], false)
+    spawn_server(socket)
+}
+
+/// The server process, out of the caller's job when it may leave: OpenSSH
+/// runs each session in a kill-on-close job, and a server left in it would
+/// end with the connection. A job that does not let it go (CreateProcess
+/// says access denied) keeps it, as before, rather than keep it from
+/// starting.
+fn spawn_server(socket: &str) -> Result<()> {
+    let args = ["-L", socket, "__server"];
+    match spawn_self(&args, true) {
+        Err(e) if e.downcast_ref::<std::io::Error>().and_then(|e| e.raw_os_error()) == Some(5) => {
+            spawn_self(&args, false)
+        }
+        r => r,
+    }
 }
 
 /// Run this program again, detached from the console and inheriting no
@@ -343,7 +358,7 @@ pub async fn migrate(socket: &str) -> Result<i32> {
     if !sessions.is_empty() {
         let pipe = pipe_name(socket);
         if !server_running(&pipe) {
-            spawn_self(&["-L", socket, "__server"], false)?;
+            spawn_server(socket)?;
             let deadline = Instant::now() + Duration::from_secs(15);
             while !server_running(&pipe) {
                 if Instant::now() > deadline {

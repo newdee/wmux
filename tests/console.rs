@@ -566,3 +566,97 @@ fn show_keys_reports_the_prefix_and_quits_on_q() {
     assert!(!s.alternate_screen(), "back on the main screen");
     assert!(s.contents().contains("->  C-b") && s.contents().contains("->  q"), "{}", s.contents());
 }
+
+/// A kill-on-close job like the one OpenSSH puts each session in: whatever
+/// is still inside when the handle closes is ended with it.
+struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+impl Job {
+    fn new(breakaway_ok: bool) -> Job {
+        use windows_sys::Win32::System::JobObjects::*;
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            assert!(!job.is_null(), "CreateJobObjectW");
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | if breakaway_ok { JOB_OBJECT_LIMIT_BREAKAWAY_OK } else { 0 };
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            assert!(ok != 0, "SetInformationJobObject");
+            Job(job)
+        }
+    }
+
+    /// Run `cmd /c line` inside the job (put there before it starts) and
+    /// wait for it; its exit code.
+    fn run(&self, line: &str) -> u32 {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::*;
+        let mut cmd: Vec<u16> =
+            std::ffi::OsStr::new(&format!("cmd.exe /d /c {line}")).encode_wide().chain(std::iter::once(0)).collect();
+        unsafe {
+            let mut si: STARTUPINFOW = std::mem::zeroed();
+            si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+            let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+            let ok = CreateProcessW(
+                std::ptr::null(),
+                cmd.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                std::ptr::null(),
+                std::ptr::null(),
+                &si,
+                &mut pi,
+            );
+            assert!(ok != 0, "CreateProcessW: {}", std::io::Error::last_os_error());
+            assert!(AssignProcessToJobObject(self.0, pi.hProcess) != 0, "AssignProcessToJobObject");
+            ResumeThread(pi.hThread);
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            let mut code = 0u32;
+            GetExitCodeProcess(pi.hProcess, &mut code);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            code
+        }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// A server started from inside a session's job (OpenSSH runs each session
+/// in one, kill-on-close) leaves it when the job allows that, so closing
+/// the connection does not take the sessions down; when the job does not
+/// allow it, the server still starts, inside it, as before.
+#[test]
+fn a_server_started_inside_a_job_outlives_it_when_the_job_allows() {
+    for (breakaway_ok, survives) in [(true, true), (false, false)] {
+        let socket = format!("job-{}-{}", std::process::id(), breakaway_ok);
+        let alive = || keepane().args(["-L", &socket, "ls"]).output().unwrap().status.success();
+        let job = Job::new(breakaway_ok);
+        let line = format!(
+            "set \"KEEPANE=\"&& set \"KEEPANE_PANE=\"&& set \"KEEPANE_SESSIONS_DIR={}\"&& set \"KEEPANE_CONFIG={}\"&& \"{}\" -L {} new -d -s t cmd.exe",
+            sessions_dir(),
+            empty_config(),
+            env!("CARGO_BIN_EXE_keepane"),
+            socket
+        );
+        assert_eq!(job.run(&line), 0, "new -d inside the job (breakaway_ok {breakaway_ok})");
+        assert!(alive(), "the server runs (breakaway_ok {breakaway_ok})");
+        drop(job);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(alive(), survives, "after the job closed (breakaway_ok {breakaway_ok})");
+        let _ = keepane().args(["-L", &socket, "kill-server"]).output();
+    }
+}

@@ -2525,3 +2525,19 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 11 | 可复现性 | 清单生成两次 4 个文件哈希相同；README 重新渲染与第 5 轮哈希一致 | 干净（3/3） |
 
 遗留：GitHub 仓库 About 描述需推送时一并改（`gh repo edit`）；网站章节顺序仍以 tmux 功能开头，actor 章节在第 07 章；winget PR #441466 里 0.15.0 的描述是旧的，不改（下个版本由生成器带上）。另：SSH 里 `C-b q` 不显示编号，本机 ConPTY 字节输入复现正常（按后 20 个带色格子），疑为 Mac 端 tmux 截走 `C-b`，待用户 `show-keys` 确认。
+
+## 58. 从 SSH 启动的 server 随连接断开而结束
+
+现象：SSH 里 `C-b d` 后关掉连接，回来 keepane 的 session 全没了。server.log 里 20:33 启动的默认 server 之后没有任何退出记录（正常退出、panic、restart 都会记），20:44 用户重连时才起了新的：它是被外面杀掉的。当时在跑的 server（pid 30112）经 `IsProcessInJob` 查证在 job 里，sshd 自己不在。OpenSSH 把每个会话放进 `KILL_ON_JOB_CLOSE | BREAKAWAY_OK` 的 job；keepane 起 server 时没带 `CREATE_BREAKAWAY_FROM_JOB`（该参数 09-24 为 `restart-server` 加入，起 server 的两处未跟上），所以 server 留在会话的 job 里。wmux 当时没断，是因为它的 server 在本机桌面会话里启动（进程启动于 09-25 0:34），SSH 里只 attach。
+
+修正：起 server（`start_server`、`migrate`）先带 `CREATE_BREAKAWAY_FROM_JOB`；job 不许脱离（CreateProcess 返回拒绝访问）就不带再起一次，和以前一样。`restart-server` 保持原样（脱离失败即报错）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 复现 | 新测试：在 `KILL_ON_JOB_CLOSE \| BREAKAWAY_OK` 的 job 里 `new -d`，关 job 后 server 死（left false / right true） | **有问题**，修正 |
+| 1 | 机制通路 | 修正后测试通过；变异 1（原代码不脱离）→ `breakaway_ok true` 失败；变异 2（去掉回退）→ `breakaway_ok false` 时 `new -d` 返回 1；fmt/clippy 0；全量 201/10/83 | 干净（1/3） |
+| 2 | 代码正确性/资源 | 通读 diff：回退只在起 server 处，`restart-server` 语义不变；全量跑完后残留 test server 0 个 | 干净（2/3） |
+| 3 | 边界/可复现 | pane 里 `-L inner new -d` 起的 server，在外层 server 被 kill 后仍活着（tmux 同）；新测试连跑 5 次 5/5，1.49–1.52 s | 干净（3/3） |
+
+遗留：用户机器上现在的 server 仍是 0.15.0 起的，还在 SSH 的 job 里，发版前断线仍会丢；自动存档在，`keepane resume` 可恢复布局。
+

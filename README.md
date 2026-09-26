@@ -798,6 +798,9 @@ Each pane is a ConPTY with a `vt100` terminal model on the server side; the
 server composites the visible panes, borders and status line into a frame and
 sends only the cells that changed to the attached client, which writes them to
 the console with VT sequences. The server exits when its last session ends.
+It leaves the job it was started in when that job allows it: OpenSSH runs
+each session in a kill-on-close job, so a server started over SSH would
+otherwise end with the connection.
 
 Environment inside panes: `KEEPANE` (socket name) and `KEEPANE_PANE` (pane id). A
 `keepane` command run inside a pane talks to the server that owns it, the way

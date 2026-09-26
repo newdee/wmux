@@ -441,7 +441,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 ## 它是怎么工作的
 
-`keepane` 这个命令本身是个客户端。第一次运行时它会拉起一个后台 server（`keepane __server`），所有 session 都归 server 管；客户端和 server 之间走一条按用户隔离的命名管道（`\\.\pipe\keepane-<用户名>-<socket>`，`-L` 可以换 socket）。每个 pane 是一个 ConPTY，server 这边用 `vt100` 维护一份终端画面；server 把可见的 pane、边框、状态栏拼成一帧，只把变化的格子发给接上来的客户端，客户端用 VT 序列写到控制台。最后一个 session 结束，server 就退出。
+`keepane` 这个命令本身是个客户端。第一次运行时它会拉起一个后台 server（`keepane __server`），所有 session 都归 server 管；客户端和 server 之间走一条按用户隔离的命名管道（`\\.\pipe\keepane-<用户名>-<socket>`，`-L` 可以换 socket）。每个 pane 是一个 ConPTY，server 这边用 `vt100` 维护一份终端画面；server 把可见的 pane、边框、状态栏拼成一帧，只把变化的格子发给接上来的客户端，客户端用 VT 序列写到控制台。最后一个 session 结束，server 就退出。server 启动时会脱离启动它的那个 job（只要那个 job 允许）：OpenSSH 把每个会话放在一个关闭即结束的 job 里，不脱离的话，从 SSH 里启动的 server 会随着连接断开一起结束。
 
 pane 里能看到两个环境变量：`KEEPANE`（socket 名）和 `KEEPANE_PANE`（pane 编号）。在 pane 里敲 `keepane` 命令会自动连到管着这个 pane 的 server（和 tmux 用 `$TMUX` 一个道理），所以 `keepane ls` 之类不用再写 `-L`。server 的日志在 `%LOCALAPPDATA%\keepane\server.log`，`KEEPANE_LOG=debug` 会记得更详细。超过 5 MB 会改名为 `server.log.1` 再开新文件，跑几个月的 server 日志也最多占 10 MB 左右。
 
