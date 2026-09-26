@@ -230,6 +230,7 @@ main {
 }
 
 .hero h1 {
+  text-wrap: balance;
   margin: 18px 0 14px;
   font-size: clamp(38px, 7vw, 68px);
   line-height: 1.05;
@@ -511,6 +512,19 @@ footer a:hover {
     grid-template-columns: minmax(0, 1fr);
   }
   .nav-link {
+    display: none;
+  }
+}
+
+.nw {
+  white-space: nowrap;
+}
+
+@media (max-width: 400px) {
+  .top nav {
+    gap: 8px;
+  }
+  .star-btn span {
     display: none;
   }
 }

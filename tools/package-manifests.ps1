@@ -137,20 +137,23 @@ PackageName: keepane
 PackageUrl: https://github.com/$Repo
 License: MIT
 LicenseUrl: https://github.com/$Repo/blob/master/LICENSE
-ShortDescription: A tmux for Windows - sessions that outlive the terminal, panes, windows, and a status line.
+ShortDescription: Panes that keep running and hand each other work - a terminal multiplexer where every pane is an actor with an inbox, with tmux keys and an MCP server for agents.
 Description: |-
-  keepane is a terminal multiplexer for Windows in the tmux mould: a detached
-  server keeps your shells running when the terminal closes or the RDP
-  session drops, and `keepane attach` brings them back. Panes, windows, a
-  status line, copy mode, tmux key bindings and tmux.conf syntax, plus
-  sessions that survive a reboot (the layout and each pane's output are
-  saved and restored).
+  keepane (keep pane) is a terminal multiplexer whose panes keep running
+  when the terminal closes and hand each other work. Every pane is an actor
+  with a name, an inbox and a work mode (normal, shell or ai): a script, a
+  person or an AI agent in one pane sends a message to another, and keepane
+  delivers it when that pane is free and records what became of it. Agents
+  use it through a built-in MCP server, and a dashboard shows every pane,
+  its inbox and its tasks. Panes, windows, copy mode, tmux key bindings and
+  tmux.conf syntax, plus sessions that survive a reboot.
 Moniker: keepane
 Tags:
 - terminal
 - multiplexer
 - tmux
-- console
+- agents
+- mcp
 - conpty
 ReleaseNotesUrl: https://github.com/$Repo/releases/tag/v$Version
 ManifestType: defaultLocale
@@ -168,7 +171,7 @@ foreach ($pair in @(
 
 $scoop = [ordered]@{
     version     = $Version
-    description = "A tmux for Windows: sessions that outlive the terminal, panes, windows, and a status line."
+    description = "Panes that keep running and hand each other work: a terminal multiplexer where every pane is an actor with an inbox, with tmux keys and an MCP server for agents."
     homepage    = "https://github.com/$Repo"
     license     = "MIT"
     url         = "$base/$zipName"

@@ -3,77 +3,107 @@
 [![CI](https://github.com/newdee/keepane/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/keepane/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/keepane)](https://github.com/newdee/keepane/releases)
 
-Windows 上的 tmux。[English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)**
+[English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)**
+
+keep pane：终端关了，pane 还在跑；pane 和 pane 之间，还能互相派活。
+
+keepane 是一个终端多路复用器。和 tmux 一样，它把一个终端分成多个窗口和 pane，终端关掉之后它们照样在跑，按键、命令和配置文件都沿用 tmux 的。不一样的是，每个 pane 同时是一个 actor，有自己的名字、收件箱和工作模式：一个 pane 里的脚本、人或者 AI agent，可以给另一个 pane 发消息派活，keepane 等那个 pane 空闲了再交给它，并记下后来怎么样了。agent 通过内置的 MCP 服务端使用这一切：自己开 pane、给它们派活、等结果回来。
 
 <p align="center">
-  <img src="docs/img/keepane-demo.gif" width="880"
-       alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
+  <img src="docs/img/keepane-messages.gif" width="880"
+       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；dashboard 显示所有 pane 和一个 agent 的收件箱，在管理模式下把一条消息置顶">
 </p>
 
-用过 tmux 的人换到 Windows，最想念的大概就是它：关掉终端窗口，里面跑的东西还在；一个窗口切成几块，各干各的；`prefix d` 走人，回来 `attach` 接着干。keepane 把这套搬到了 Windows 上，而且不是靠 Cygwin 或 MSYS 模拟出来的，是直接用 ConPTY 和 Win32 控制台 API 写的，PowerShell、WSL、cmd 都能在里面正常跑。
+- 用名字（`%builder`）、编号（`%7`）或完整地址（`$1:@2.%7`）找到任何窗口、任何 session 里的 pane。
+- 消息先在收件箱里排队，等对方空闲才送进去，不会插进正在跑的命令，也不会插进打到一半的那行字。
+- 三种工作模式决定 pane 怎么收消息：`normal` 留给程序自己取，`shell` 在提示符下执行，`ai` 等 agent 一轮结束后作为提示词送进去。
+- 每条消息都带同一行 JSON 信封，写明谁发的、当时什么模式、发给谁、属于哪个任务。
+- `C-b v` 打开 dashboard，看每个 pane 忙不忙、收件箱里有什么、做过什么；事件日志保留 30 天。
+- pane 一直在：脱离了再接回来，重启电脑后 `keepane resume` 恢复，手滑关掉的 pane 按 `C-b u` 找回，任意 pane 最近 30 天输出过什么都能翻出来。
+- 其余都是 tmux 的：`C-b` 前缀、分屏、copy mode、命令行、`.tmux.conf`、格式串、hook 和插件。
 
-- keepane 把键盘事件按 Windows 原生的格式（Windows Terminal 用的那套 win32-input-mode）转给每个 pane，所以 PSReadLine 的组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法、WSL 里的 vim 和 htop，表现和不用 keepane 时一样。
-- 按键和命令都沿用 tmux 的：`Ctrl+b` 前缀，`%` 和 `"` 分屏，`c` 开窗口，`d` 脱离，`[` 进 copy mode，`:` 敲命令。命令行也是那些名字：`new-session`、`attach`、`ls`、`send-keys`……配置文件是 `.tmux.conf` 的语法。
-- 每个 session 的布局会自动存盘，重启电脑后 `keepane resume` 就能恢复，连每个 pane 屏幕上的输出一起（`save-history`，默认 500 行）。
-- 没在看的窗口有输出就在状态栏标 `#`，响铃标 `!`，太久没动静标 `~`（`monitor-activity`），`prefix M-n` 直接跳过去。程序退出后 pane 也可以留着，写明退出码（`remain-on-exit`）。
-- 和 tmux 一样能装插件：插件就是一个目录加几个脚本，用 `run-shell`、hook 和状态栏格式串往里挂东西。
-- 每条命令什么时候开始、跑了多久、成没成，可以显示在它那一行的末尾（`prefix C-t`）。pane 里输出过的东西按天存盘，每个 pane 一天一个文件，留 30 天，`prefix /` 打开任意一天来看。手滑关掉的 pane 或窗口，10 秒内按 `prefix u` 就回来了。
-- `keepane web` 在终端里打出一个二维码，同一个 Wi-Fi 下手机扫一下，浏览器里就能看到所有 pane，点进去看屏幕、往里输入，手机上不用装任何东西。
+keepane 目前运行在 Windows 上（ConPTY），pane 里跑 PowerShell、WSL、cmd，每个按键都和不用 keepane 时一样送到程序。actor 这一层不依赖平台，Linux 和 macOS 在计划中。
 
-<p align="center">
-  <img src="docs/img/keepane-alerts.gif" width="880"
-       alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
-</p>
+## pane 是 actor
 
-## 原名 wmux
-
-0.13.1 及以前，这个项目叫 wmux。后来发现这个名字早就被占了好几次：GitHub、winget、crates.io 上都有别的终端多路复用器叫这个名字，有的比我们早、也更有名。从 0.14.0 起改名 keepane，取的是它最核心的用处：终端关了，pane 里的东西还在跑（keep + pane）。
-
-从 wmux 过来：
-
-- `keepane migrate` 一次搬完：还在运行的 wmux 服务端里的会话（先存盘、停掉旧服务端，再在 keepane 里恢复，布局、历史、目录都在；里面的程序会重新启动，和 `restart-server` 一样），wmux 存在 `%LOCALAPPDATA%\wmux` 下的东西（会话存档、历史记录、手机端密钥），开机启动、Windows Terminal 的 profile、通知链接。如果 keepane 里已经有同名会话，wmux 的那个会以 `<名字>-wmux` 恢复在旁边，两个都保留。wmux 服务端还在运行时启动 keepane，会提示你这件事。
-- 你的 `~/.wmux.conf` 照样生效，`WMUX_*` 环境变量、`~/.wmux/plugins` 和 `*.wmux` 插件文件也都认，想改名时再改成 `~/.keepane.conf`、`KEEPANE_*`、`~/.keepane/plugins`、`*.keepane`。
-- MSI 会替换掉"应用和功能"里的 wmux，0.10 到 0.13 的 `wmux update` 会直接装上 keepane。用 scoop 的话：`scoop uninstall wmux`，再装 keepane 的清单（见下文）。
-- 仓库搬到了 github.com/newdee/keepane（旧链接会跳转过去），网站在 dfine.tech/keepane。
-- `$PROFILE` 里的 `tmux` 或 `wmux` 别名要改成指向 keepane。
-
-## 在手机上用
-
-编译、部署或者 AI 助手在电脑上跑着，人走开了也想看一眼、回一句：
+每个 pane 都有名字、收件箱和工作模式。
 
 ```powershell
-keepane web
+keepane rename-pane -t %3 builder          # 之后用 -t %builder 就能找到它
+keepane set-work-mode -t %builder shell    # 它在提示符下执行收到的内容（谁能改模式见下文）
+keepane send-message -t %builder -w 30 "cargo test"
+#12 delivered to $1:@2.%3 (shell)
+keepane trace-message 12 -w 600            # 等它做完：输出、成败
 ```
 
-终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：列出所有 pane、每个 pane 里正在跑的程序，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），一眼就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 keepane 就把新内容推过来，不用等刷新；底部的输入框可以往里打字，还有一排手机键盘上没有的键（Esc、Tab、Shift+Tab、方向键、Ctrl+C、y / n / 1 / 2 / 3）。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane；⏱ 按钮在左边加一栏，显示每条命令开始的时间（点一下看日期、耗时和退出码，见下文）。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
+定位一个 pane 可以用 `%7`（编号）、`%builder`（名字）或完整地址 `$1:@2.%7`（session、窗口、pane 的编号，`whoami` 会打印出来）。完整地址代表"它应该在哪"：如果 pane 已经挪到别的窗口，消息会被拒绝，而不是跟着发过去。
 
-<p align="center">
-  <img src="docs/img/phone-zh.png" width="620"
-       alt="手机上的 keepane web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，左侧一栏是每条命令的时间，下方是一排按键和输入框">
-</p>
+pane 怎么处理消息取决于它的工作模式：
 
-二维码里是地址加一个密钥，密钥每次启动重新生成（128 位随机数）。除了页面本身，没有密钥什么都拿不到；手机只能看、往 pane 里输入、用那个 + 菜单，发不了任何自己的 keepane 命令。不启动就不开，按 Ctrl+C 就关。
+| 模式 | 什么时候算空闲 | 投递方式 |
+|---|---|---|
+| `normal`（默认） | 从不自己取 | 等 `read-message` 来取（窗口标记里出现 `@`） |
+| `shell` | keepane 自己的提示符钩子说 shell 回到了提示符 | 打进去并执行 |
+| `ai` | agent 说 `pane-ready`（每轮结束时的 hook） | 作为提示词打进去 |
 
-```powershell
-keepane web --read-only     # 只能看，不能输入
-keepane web --keep-key      # 下次还用同一个二维码，收藏的网页一直能用
-keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
+往 pane 里打过字，它就算忙，直到下一个信号，所以消息不会插进正在输入的那一行；keepane 投递的命令运行期间有人按键（在回答那个命令，或者提前打字——shell 会把提前打的字显示在下一个提示符后面），结束这条命令的那个提示符也不算空闲。你自己的命令运行期间提前打字，这一点拦不住。`ai` 模式的 pane 如果重新出现 shell 提示符（agent 已经退出），就什么也不投。消息只按发送时对方的模式投递：写给 agent 的文字，不会因为 pane 中途被切成 `shell` 模式而被当成命令执行。
+
+每条消息都用一个固定的单行信封写明来源，在任何地方显示都一模一样：
+
+```text
+{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
 ```
 
-用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络，绑定到它的地址。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
+shell 收到时它是命令前面的一段 PowerShell 注释（`<# … #> cargo test`），会留在历史里（多行命令会改写成一行、整段一起执行，所以它是一条命令、一个结果）；agent 收到的是信封、正文和结尾行 `{"keepane":1,"end":12}`。`task` 把一串消息归为一个任务（派活、由此引起的工作、回信）；`hop` 数经过了几手，超过 `message-hop-limit`（8）就拒收，两个 agent 不会无休止地互相回信。
+
+## agent 与 MCP
+
+`keepane mcp` 是给 pane 里的 agent 用的 MCP 服务端（stdio）。它从 `KEEPANE_PANE` 知道自己服务的是哪个 pane，所以 agent 发出的每条消息，发送方都是这个 pane。一共 20 个工具：
+
+| 工具 | 用途 |
+|---|---|
+| `whoami`、`list_panes` | 自己的 pane，以及所有 pane：地址、名字、模式、忙闲、收件箱、程序、状态 |
+| `send_message`、`reply`、`wait_message`、`current_message` | 派活、回复发送方、在一轮之内取下一条消息、查看正在处理的消息（以 keepane 记录的为准） |
+| `list_messages`、`trace_message`、`drop_message`、`move_message` | 收件箱，以及一条消息后来怎样了（shell 命令的输出也在里面） |
+| `create_session`、`create_window`、`split_pane`、`rename_pane`、`kill_pane` | 开 pane（可以带名字、模式和第一条消息），给任意 pane 改名、关掉任意 pane |
+| `set_status`、`set_work_mode` | 报告自己在做什么（dashboard 上显示）；改自己 pane 的模式 |
+| `list_tasks`、`show_task`、`query_events` | 消息链（任务）和事件日志 |
+
+通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini` 的是 `ai` 模式，跑 `pwsh`、`powershell` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。
+
+`keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。
+
+别的 agent 也一样能接：只要它能用 stdio 上的 MCP 服务端（`keepane mcp`），并且每轮结束时能运行一条命令（`keepane pane-ready -q`）。启动它之前在它的 pane 里运行 `keepane set-work-mode ai`，或者让 agent 来开这个 pane。
+
+只有一条规矩：pane 的工作模式只能在那个 pane 里切换。在某个 pane 里运行 `set-work-mode`，只能改它自己，所以任何 pane 里的程序（包括 agent）都不能把别的 pane 变成"收到什么就执行什么"的 shell；在 keepane 外面的终端、快捷键或 `C-b :` 命令行里可以改任何 pane。其余操作（改名、收件箱、关 pane）都开放：关掉的 pane 10 秒内可以用 `C-b u` 找回，Claude Code 调用你没放行过的 MCP 工具前也会先问你。这些规则防的是失误：以你身份运行的任何程序照样能连上服务端。
+
+## dashboard
+
+`C-b v`（或在任意终端里运行 `keepane dashboard`）列出所有 pane：模式、是否空闲、收件箱、它说自己在做什么。下面显示选中 pane 的事件（Enter）、消息（`m`）、全部任务（`t`）、实时屏幕（`v`）或带滚动历史的屏幕（`h`）。它只看不改；进入管理模式（`E`，顶栏变红，30 秒不按键自动退出）后，可以删除排队的消息（`d`，`u` 撤销）、移动（`K` `J`）或置顶（`g`）。
+
+消息和 pane 发生的一切都记在事件日志里：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停下时还在排队的消息不保留：会被丢弃，日志里写明。名字和工作模式随 session 一起保存。完整设计和每条规则的理由见 [docs/design/mailbox.md](docs/design/mailbox.md)。
 
 ## 安装
 
-到 [Releases](https://github.com/newdee/keepane/releases) 下载，两种都有：
+需要 Windows 10 1809 或更新（ConPTY 是那时候加的）。到 [Releases](https://github.com/newdee/keepane/releases) 下载：
 
-- `keepane-<版本>-windows-x86_64.msi`：双击装到 `Program Files`，自动加进系统 `PATH`，以后在“应用和功能”里卸载。要静默装就 `msiexec /i keepane-<版本>-windows-x86_64.msi /qn`。
-- `keepane-<版本>-windows-x86_64.zip`：就是一个 `keepane.exe`，解压放哪都行。
+- `keepane-v<版本>-windows-x86_64.zip`：里面是一个目录 `keepane-v<版本>-windows-x86_64`，`keepane.exe` 在这个目录里。解压到哪都行，把这个目录加进 `PATH`。不需要管理员权限。
+- `keepane-<版本>-windows-x86_64.msi`：装到 `Program Files`，所有用户都能用，自动加进系统 `PATH`，以后在"应用和功能"里卸载。需要管理员权限（静默安装：`msiexec /i keepane-<版本>-windows-x86_64.msi /qn`）。
 
-用 Scoop 的话，仓库里的清单直接装 zip，以后也跟着更新：
+用 Scoop 的话，仓库里的清单直接装 zip，同样不需要管理员权限，以后也跟着更新：
 
 ```powershell
 scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json
 ```
+
+通过 SSH 使用时，Windows 11 不允许 SSH 会话穿过普通用户创建的 junction，而 Scoop 的 `current` 目录正是一个 junction，shim 会报"无法遍历该路径，因为它包含不受信任的装入点"。让 Scoop 的 shim 直接指向版本目录：
+
+```powershell
+scoop config no_junction true
+scoop reset keepane
+```
+
+同样在 SSH 里，`keepane update` 装不了 MSI：Windows Installer 会在桌面上弹窗要权限，SSH 那头没人能点。这样连上的机器请用 zip 或 Scoop。
 
 WinGet 的清单（装 MSI）在 `packaging/winget/`，`winget validate` 通过；合进 winget-pkgs 之后 `winget install newdee.keepane` 就行，在那之前可以在克隆里 `winget install --manifest packaging/winget/manifests/n/newdee/keepane/<版本>`。细节见 `packaging/README.md`。
 
@@ -84,8 +114,6 @@ cargo install --git https://github.com/newdee/keepane --locked   # 直接装最�
 cargo install --path .                                         # 本地克隆
 ```
 
-需要 Windows 10 1809 或更新（ConPTY 是那时候加的）。
-
 自己打 MSI 也不用先装什么，脚本发现本机没有 WiX 会自己下一份临时用：
 
 ```powershell
@@ -94,6 +122,18 @@ pwsh -File installer/build-msi.ps1        # 产物在 target\keepane-<版本>-wi
 ```
 
 ## 日常用法
+
+<p align="center">
+  <img src="docs/img/keepane-demo.gif" width="880"
+       alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
+</p>
+
+<p align="center">
+  <img src="docs/img/keepane-alerts.gif" width="880"
+       alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
+</p>
+
+keepane 把键盘事件按 Windows 原生的格式（Windows Terminal 用的那套 win32-input-mode）转给每个 pane，所以 PSReadLine 的组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法、WSL 里的 vim 和 htop，表现和不用 keepane 时一样。它能跑在 Windows Terminal、传统控制台、VS Code 的终端，以及任何托管 Windows 控制台的程序里。
 
 ```powershell
 keepane                      # 新开一个 session 并进入
@@ -185,55 +225,6 @@ pane 里输出过的东西也会存到磁盘上（`log-history`，默认开）�
 
 用 `kill-pane` 或 `kill-window` 关掉的 pane 或窗口（`prefix x`、`prefix &`）会保留 10 秒，里面的程序继续跑。这期间按 `prefix u`（`undo-kill`）就放回原处。过了 10 秒就和以前一样彻底没了。秒数用 `undo-kill-time` 改；设成 0 就立刻结束，关程序是为了释放端口或文件的时候就该这样。一个 session 的最后一个 pane 不保留，因为 session 会跟着它一起结束。
 
-## pane 之间互相发消息
-
-<p align="center">
-  <img src="docs/img/keepane-messages.gif" width="880"
-       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；dashboard 显示所有 pane 和一个 agent 的收件箱，在管理模式下把一条消息置顶">
-</p>
-
-每个 pane 可以有名字、工作模式和收件箱。一个 pane（脚本、人、Claude Code 这样的 agent）给另一个发消息，keepane 把它排进队列，等对方空闲时打进去，并记下它后来怎么样了。不同窗口里的 agent 可以这样互相派活，agent 也可以自己开 pane 来干活。
-
-```powershell
-keepane rename-pane -t %3 builder          # 之后用 -t %builder 就能找到它
-keepane set-work-mode -t %builder shell    # 它在提示符下执行收到的内容
-keepane send-message -t %builder -w 30 "cargo test"
-#12 delivered to $1:@2.%3 (shell)
-keepane trace-message 12 -w 600            # 等它做完：输出、成败
-```
-
-定位一个 pane 可以用 `%7`（编号）、`%builder`（名字）或完整地址 `$1:@2.%7`（session、窗口、pane 的编号，`whoami` 会打印出来）。完整地址代表"它应该在哪"：如果 pane 已经挪到别的窗口，消息会被拒绝，而不是跟着发过去。
-
-pane 怎么处理消息取决于它的工作模式：
-
-| 模式 | 什么时候算空闲 | 投递方式 |
-|---|---|---|
-| `normal`（默认） | 从不自己取 | 等 `read-message` 来取（窗口标记里出现 `@`） |
-| `shell` | keepane 自己的提示符钩子说 shell 回到了提示符 | 打进去并执行 |
-| `ai` | agent 说 `pane-ready`（每轮结束时的 hook） | 作为提示词打进去 |
-
-往 pane 里打过字，它就算忙，直到下一个信号，所以消息不会插进正在输入的那一行；keepane 投递的命令运行期间有人按键（在回答那个命令，或者提前打字——shell 会把提前打的字显示在下一个提示符后面），结束这条命令的那个提示符也不算空闲。你自己的命令运行期间提前打字，这一点拦不住。`ai` 模式的 pane 如果重新出现 shell 提示符（agent 已经退出），就什么也不投。消息只按发送时对方的模式投递：写给 agent 的文字，不会因为 pane 中途被切成 `shell` 模式而被当成命令执行。
-
-每条消息都用一个固定的单行信封写明来源，在任何地方显示都一模一样：
-
-```text
-{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
-```
-
-shell 收到时它是命令前面的一段 PowerShell 注释（`<# … #> cargo test`），会留在历史里（多行命令会改写成一行、整段一起执行，所以它是一条命令、一个结果）；agent 收到的是信封、正文和结尾行 `{"keepane":1,"end":12}`。`task` 把一串消息归为一个任务（派活、由此引起的工作、回信）；`hop` 数经过了几手，超过 `message-hop-limit`（8）就拒收，两个 agent 不会无休止地互相回信。
-
-### agent
-
-`keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。
-
-通过 MCP，agent 可以发消息和 `reply`、在一轮之内 `wait_message` 等回信、`trace_message`、报告自己在做什么（`set_status`），开 session、窗口和 pane（`create_session`、`create_window`、`split_pane`，可以带名字、模式和第一条任务），也能关 pane。它能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。pane 的工作模式只能在那个 pane 里切换：在某个 pane 里运行 `set-work-mode`，只能改它自己，所以任何 pane 里的程序（包括 agent）都不能把别的 pane 变成"收到什么就执行什么"的 shell；在 keepane 外面的终端、快捷键或 `C-b :` 命令行里可以改任何 pane。其余操作（改名、收件箱、关 pane）都开放：关掉的 pane 10 秒内可以用 `C-b u` 找回，Claude Code 调用你没放行过的 MCP 工具前也会先问你。这些规则防的是失误：以你身份运行的任何程序照样能连上服务端。
-
-### dashboard
-
-`C-b v`（或在任意终端里运行 `keepane dashboard`）列出所有 pane：模式、是否空闲、收件箱、它说自己在做什么。下面显示选中 pane 的事件（Enter）、消息（`m`）、全部任务（`t`）、实时屏幕（`v`）或带滚动历史的屏幕（`h`）。它只看不改；进入管理模式（`E`，顶栏变红，30 秒不按键自动退出）后，可以删除排队的消息（`d`，`u` 撤销）、移动（`K` `J`）或置顶（`g`）。
-
-消息和 pane 发生的一切都记在事件日志里：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停下时还在排队的消息不保留：会被丢弃，日志里写明。名字和工作模式随 session 一起保存。完整设计和每条规则的理由见 [docs/design/mailbox.md](docs/design/mailbox.md)。
-
 ## 重启之后接着用
 
 每个 session 的结构（有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录）都会存成一个文件，放在 `%LOCALAPPDATA%\keepane\sessions` 下面。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启、崩溃还是手滑 `kill-session`，文件都还在：
@@ -304,6 +295,31 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 ```
 
 `list-panes` 能看到每个 pane 记的目录，状态栏里用 `#{pane_current_path}` 显示。
+
+## 在手机上用
+
+编译、部署或者 AI 助手在电脑上跑着，人走开了也想看一眼、回一句：
+
+```powershell
+keepane web
+```
+
+终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：列出所有 pane、每个 pane 里正在跑的程序，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），一眼就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 keepane 就把新内容推过来，不用等刷新；底部的输入框可以往里打字，还有一排手机键盘上没有的键（Esc、Tab、Shift+Tab、方向键、Ctrl+C、y / n / 1 / 2 / 3）。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane；⏱ 按钮在左边加一栏，显示每条命令开始的时间（点一下看日期、耗时和退出码，见“命令时间和历史”一节）。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
+
+<p align="center">
+  <img src="docs/img/phone-zh.png" width="620"
+       alt="手机上的 keepane web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，左侧一栏是每条命令的时间，下方是一排按键和输入框">
+</p>
+
+二维码里是地址加一个密钥，密钥每次启动重新生成（128 位随机数）。除了页面本身，没有密钥什么都拿不到；手机只能看、往 pane 里输入、用那个 + 菜单，发不了任何自己的 keepane 命令。不启动就不开，按 Ctrl+C 就关。
+
+```powershell
+keepane web --read-only     # 只能看，不能输入
+keepane web --keep-key      # 下次还用同一个二维码，收藏的网页一直能用
+keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
+```
+
+用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络，绑定到它的地址。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
 
 ## 配置
 
@@ -401,7 +417,7 @@ set -g status-interval 5
 bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail 30"
 ```
 
-脚本和按键绑定里常用、但不那么显眼的几个命令（`keepane list-commands` 会列出全部 85 个，命令名写前缀就行）：
+脚本和按键绑定里常用、但不那么显眼的几个命令（`keepane list-commands` 会全部列出来，命令名写前缀就行）：
 
 - `pipe-pane [-o] [-I] [-O] [-t 目标] [命令]`：把 pane 打印的所有东西灌进一个命令的标准输入（`-O`，默认）；不给命令就是停。`keepane pipe-pane "$input | Add-Content build.log"` 就能一边编译一边留日志（PowerShell 会先把输入读完再跑，所以这个文件是管道停下时才写；想逐行落盘用 `cmd.exe /c findstr ... > 文件` 这种命令）。`-I` 反过来：命令打印什么就往 pane 里敲什么，命令输出完管道就结束（`-IO` 两个方向都要）。
 - `wait-for [-L|-U|-S] 通道`：挂在那儿等别人发信号（或者解锁），两个脚本可以互相等：一边 `keepane wait-for ready`，另一边 `keepane wait-for -S ready` 放行。
@@ -446,8 +462,22 @@ cargo clippy --all-targets
 
 ## 还没做的
 
+目前只有 Windows 版。pane、消息和事件日志的代码不依赖平台；移植到 Linux 或 macOS，要补的是终端、进程间通信的管道和 shell 钩子这几块。
+
 和 tmux 比：多个客户端接同一个 session 时窗口尺寸是一样的（`window-size latest|smallest|largest|manual` 决定听谁的：最后在用的那个、最小的、最大的、或者谁都不听只认 `resize-window`）；比窗口小的客户端看到的是自己的一块视口，`Shift`+方向键（`refresh-client -U/-D/-L/-R`）平移，敲键时跟着光标走；钩子只有上面列的那几个；`choose-tree` 的过滤是按子串，不是 tmux 的格式串；`display-popup` 里前缀键还是 keepane 的（连按两次前缀可以把它送给弹窗里的程序）。
 
 pane 消息：`shell` 工作模式依赖 keepane 的 PowerShell 提示符钩子，所以 cmd 和 WSL 里的 shell 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。dashboard 还没有上手机页面。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。
+
+## 原名 wmux
+
+0.13.1 及以前，这个项目叫 wmux。后来发现这个名字早就被占了好几次：GitHub、winget、crates.io 上都有别的终端多路复用器叫这个名字，有的比我们早、也更有名。从 0.14.0 起改名 keepane，取的是它最核心的用处：终端关了，pane 里的东西还在跑（keep + pane）。
+
+从 wmux 过来：
+
+- `keepane migrate` 一次搬完：还在运行的 wmux 服务端里的会话（先存盘、停掉旧服务端，再在 keepane 里恢复，布局、历史、目录都在；里面的程序会重新启动，和 `restart-server` 一样），wmux 存在 `%LOCALAPPDATA%\wmux` 下的东西（会话存档、历史记录、手机端密钥），开机启动、Windows Terminal 的 profile、通知链接。如果 keepane 里已经有同名会话，wmux 的那个会以 `<名字>-wmux` 恢复在旁边，两个都保留。wmux 服务端还在运行时启动 keepane，会提示你这件事。
+- 你的 `~/.wmux.conf` 照样生效，`WMUX_*` 环境变量、`~/.wmux/plugins` 和 `*.wmux` 插件文件也都认，想改名时再改成 `~/.keepane.conf`、`KEEPANE_*`、`~/.keepane/plugins`、`*.keepane`。
+- MSI 会替换掉"应用和功能"里的 wmux，0.10 到 0.13 的 `wmux update` 会直接装上 keepane。用 scoop 的话：`scoop uninstall wmux`，再装 keepane 的清单（见“安装”一节）。
+- 仓库搬到了 github.com/newdee/keepane（旧链接会跳转过去），网站在 dfine.tech/keepane。
+- `$PROFILE` 里的 `tmux` 或 `wmux` 别名要改成指向 keepane。

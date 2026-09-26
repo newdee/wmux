@@ -1,4 +1,4 @@
-//! keepane: a tmux-like terminal multiplexer for Windows (ConPTY, PowerShell, WSL).
+//! keepane: a terminal multiplexer whose panes keep running and hand each other work.
 
 use anyhow::Result;
 use keepane::{client, logger, server};

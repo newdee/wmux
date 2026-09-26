@@ -17,7 +17,7 @@
     <Package InstallerVersion="500"
              Compressed="yes"
              InstallScope="perMachine"
-             Description="keepane $(var.Version) - a tmux-style terminal multiplexer for Windows" />
+             Description="keepane $(var.Version) - panes that keep running and hand each other work" />
 
     <!-- Installing a newer version replaces the old one in place. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of keepane is already installed." />

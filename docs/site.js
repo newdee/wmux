@@ -4,9 +4,9 @@ const ZH = {
   "nav.tour": "功能",
   "nav.download": "下载",
   "hero.eyebrow": "开源 · 原生 Windows",
-  "hero.title": "Windows 上的 tmux。",
+  "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相派活。</span>",
   "hero.lede":
-    "把一个终端分成几个 pane，用 h j k l 在它们之间移动。关掉窗口，程序照样在跑；之后可以重新接上，也可以在手机上看一眼。PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。pane 之间还能互相派活：一个里面是 agent，另一个里面是 shell。",
+    "每个 pane 都是一个 actor，有名字、收件箱和工作模式。一个 pane 里的脚本、人或 agent 给另一个 pane 派活，keepane 等它空闲了再交过去，并记下后来怎样了；agent 通过内置的 MCP 服务端做这些事。外面是 tmux 那一套：分屏，用 h j k l 移动，关掉窗口程序照样在跑，之后重新接上，或者在手机上看一眼。PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
   "hero.download": "下载 Windows 版",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe · 原名 wmux",

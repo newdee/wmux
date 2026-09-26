@@ -5,132 +5,189 @@
 
 [中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)**
 
-A tmux-style terminal multiplexer for Windows. Sessions survive closing the
-terminal, panes and windows split the screen, and PowerShell, WSL and cmd all
-run inside panes with full key fidelity.
+keep pane: panes that keep running when the terminal is gone, and that hand
+each other work.
+
+keepane is a terminal multiplexer. Like tmux, it splits a terminal into
+windows and panes that outlive it, with tmux's keys, commands and config
+file. Unlike tmux, every pane is also an actor with a name, an inbox and a
+work mode: a script, a person or an AI agent in one pane can send work to
+another, keepane hands it over when that pane is free, and it records what
+became of it. Agents reach all of this through a built-in MCP server, so an
+agent can open panes of its own, give them work and wait for the results.
 
 <p align="center">
-  <img src="docs/img/keepane-demo.gif" width="880"
-       alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
+  <img src="docs/img/keepane-messages.gif" width="880"
+       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows every pane and an agent's inbox, a message put first in manage mode">
 </p>
 
-- It is built on ConPTY and the Win32 console API, with no Cygwin, MSYS or
-  WSL underneath. It runs in Windows Terminal, the classic console host,
-  VS Code's terminal, and anything else that hosts a Windows console.
-- Keystrokes reach panes as raw Windows key events (the win32-input-mode
-  protocol Windows Terminal uses), so PSReadLine chords, `Ctrl+Space`,
-  `Shift+Enter`, arrows with modifiers, IME input and WSL/Linux TUIs behave
-  as they do outside keepane.
-- The keys and commands are tmux's: `C-b` prefix, `%` / `"` to split, `c`
-  for a new window, `d` to detach, `[` for copy mode, `:` for a command
-  prompt, the same command names on the CLI (`new-session`, `attach`, `ls`,
-  `send-keys`, ...), and a `.tmux.conf`-style config file.
-- A window you are not looking at is marked when it prints, rings or goes
-  quiet (`monitor-activity`; `C-b M-n` jumps to it). A pane whose program
-  dies can keep its output and exit code (`remain-on-exit`), and a resumed
-  session comes back with what each pane had on screen (`save-history`).
-- Each command's start time, duration and result can be shown at the end
-  of its line (`C-b C-t`). What panes print is kept on disk, a file per
-  pane per day for 30 days, and `C-b /` opens any day in a viewer. A pane
-  or window closed by mistake comes back with `C-b u` within 10 seconds.
-- `keepane web` prints a QR code. Scan it on the same Wi-Fi and the phone's
-  browser lists every pane, shows any of them as it appears on screen, and
-  lets you type into it, with nothing to install on the phone.
+- A pane is found by its name (`%builder`), its id (`%7`) or its full
+  address (`$1:@2.%7`), from any window or session.
+- A message waits in the pane's inbox until the pane is free, so it never
+  lands in the middle of a running command or of a line being typed.
+- Three work modes decide how a pane takes its messages: `normal` leaves
+  them for the program to read, `shell` runs them at the prompt, and `ai`
+  types them in as a prompt once the agent has finished its turn.
+- Every message carries the same one-line JSON envelope: who sent it, in
+  which mode, to whom, and as part of which task.
+- `C-b v` opens a dashboard of every pane: busy or free, what waits in its
+  inbox, what it has done. An event log keeps all of it for 30 days.
+- The panes keep running: detach and attach again, bring the sessions back
+  after a reboot (`keepane resume`), undo a pane closed by mistake
+  (`C-b u`), read what any pane printed on any of the last 30 days.
+- The rest is tmux's: the `C-b` prefix, splits, copy mode, the command
+  line, `.tmux.conf`, format strings, hooks and plugins.
 
-<p align="center">
-  <img src="docs/img/keepane-alerts.gif" width="880"
-       alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
-</p>
+keepane runs on Windows today, on ConPTY, with PowerShell, WSL and cmd in
+its panes and every key reaching them as it would outside. The actor layer
+does not depend on the platform; Linux and macOS are planned.
 
-## Formerly wmux
+## Panes are actors
 
-Up to 0.13.1 this project was called wmux. That name turned out to be taken
-several times over: other terminal multiplexers on GitHub, on winget and on
-crates.io go by it, some of them older and better known. From 0.14.0 it is
-keepane, after what it does: the panes keep running when the terminal is
-gone.
-
-Coming from wmux:
-
-- `keepane migrate` moves everything in one go: the sessions of a wmux
-  server still running (saved, the old server stopped, restored in keepane
-  with their layout, history and directories; the programs in them start
-  again, as with `restart-server`), what wmux saved under
-  `%LOCALAPPDATA%\wmux` (sessions, history, the phone key), the start at
-  logon, the Windows Terminal profile and the notification link. A wmux
-  session whose name keepane already runs comes back beside it as
-  `<name>-wmux`. Starting keepane while a wmux server still runs says so.
-- Your `~/.wmux.conf` keeps working, and so do `WMUX_*` environment
-  variables, `~/.wmux/plugins` and `*.wmux` plugin files, until you rename
-  them (`~/.keepane.conf`, `KEEPANE_*`, `~/.keepane/plugins`,
-  `*.keepane`).
-- The MSI replaces the wmux one in "Apps & features", and `wmux update`
-  (0.10 to 0.13) installs keepane. With scoop, `scoop uninstall wmux` and
-  install the keepane manifest (below).
-- The repository is now github.com/newdee/keepane (the old links lead
-  there) and the site dfine.tech/keepane.
-- A `tmux` or `wmux` alias in your `$PROFILE` needs to point at keepane.
-
-## On your phone
-
-Leave a build, a deploy or an agent running, and check on it from the sofa:
+Each pane has a name, an inbox and a work mode.
 
 ```powershell
-keepane web
+keepane rename-pane -t %3 builder          # -t %builder finds it from now on
+keepane set-work-mode -t %builder shell    # it runs what it gets, at its prompt (see below for who may change a mode)
+keepane send-message -t %builder -w 30 "cargo test"
+#12 delivered to $1:@2.%3 (shell)
+keepane trace-message 12 -w 600            # waits until it is done: output, success
 ```
 
-prints a QR code in the terminal. Scan it with the phone's camera (same
-network) and the browser opens a page that lists every pane with the program
-running in it, and with the window's alert marks from the status line (`#`
-printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so
-you can see which job finished. Tap one to see its screen, colours and all;
-keepane sends it again whenever it changes, so there is no refresh to wait for;
-type into it from the box at the bottom, or with the row of keys the phone
-keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
-+ menu splits the pane, opens a window or closes the pane; the ⏱ button adds
-a column with the time each command started (tap one for its date, how long
-it took and its exit code; see below). Everything runs
-on the computer; the phone only shows and types. "Add to Home Screen" makes
-it open like an app.
+A pane is found by `%7` (its id), `%builder` (its name), or its full
+address `$1:@2.%7` (session, window and pane ids, which `whoami` prints).
+An address says where the pane is expected to be: if it has moved to
+another window since, the message is refused rather than sent where it went.
 
-<p align="center">
-  <img src="docs/img/phone.png" width="620"
-       alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
-</p>
+What a pane does with a message depends on its work mode:
 
-The code carries the address and a key made fresh at each start (128 random
-bits); nothing but the page itself answers without it, and the phone can only
-look, type into a pane and use that menu: no command of its own reaches keepane.
-It is off until started and stops with Ctrl+C.
+| Mode | Free when | Delivery |
+|---|---|---|
+| `normal` (default) | never on its own | waits for `read-message` (the window gets `@` in its flags) |
+| `shell` | keepane's own prompt hook says the shell is at its prompt | typed in and run |
+| `ai` | the agent says `pane-ready` (a hook at the end of each turn) | typed in as a prompt |
 
-```powershell
-keepane web --read-only     # look, but not type
-keepane web --keep-key      # the same code next time, so a bookmark keeps working
-keepane web --port 8080 --bind 192.168.1.23   # another port, or another network card
+Keys typed into a pane make it busy until its next signal, so a message
+does not land in a line being typed; keys typed while a command keepane gave
+it runs (an answer to it, or typing ahead, which the shell shows at its next
+prompt) keep it busy past that prompt too. Typing ahead during a command of
+your own is not caught. An `ai` pane that shows a shell
+prompt again (its agent exited) takes nothing. A message is delivered only
+in the mode it was sent for: text written for an agent is never run as a
+command because the pane was switched to `shell` meanwhile.
+
+Every message carries its source in a fixed one-line envelope, the same
+wherever it is shown:
+
+```text
+{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
 ```
 
-It is plain HTTP, meant for your own network: on a shared one, someone
-watching the traffic could read the key. From elsewhere, put a private
-network such as Tailscale in between and bind to its address. Windows asks
-once whether keepane may use the network; allow it for private networks.
+A shell gets it as a PowerShell comment before the command (`<# … #>
+cargo test`), so it stays in the history (a command of several lines is sent
+as one line that runs them together, so it is one command with one result); an agent gets it, the text, and an
+end line `{"keepane":1,"end":12}`. `task` groups a chain (an order, the work
+it caused, the answers); `hop` counts the links, and a chain longer than
+`message-hop-limit` (8) is refused, so two agents cannot answer each other
+for ever.
+
+## Agents and MCP
+
+`keepane mcp` is an MCP server (stdio) for the agent in a pane. It takes the
+pane it serves from `KEEPANE_PANE`, so what the agent sends goes out with
+that pane as the sender. Its 20 tools:
+
+| Tools | For |
+|---|---|
+| `whoami`, `list_panes` | its own pane, and every pane: address, name, mode, free or busy, inbox, program, status |
+| `send_message`, `reply`, `wait_message`, `current_message` | send work, answer the sender, take the next message within a turn, see the message being worked on as keepane recorded it |
+| `list_messages`, `trace_message`, `drop_message`, `move_message` | the inboxes, and what became of a message (a shell command's output included) |
+| `create_session`, `create_window`, `split_pane`, `rename_pane`, `kill_pane` | make panes (each with a name, a mode and a first message), name any pane, close any pane |
+| `set_status`, `set_work_mode` | say what it is doing (the dashboard shows it); change its own pane's mode |
+| `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
+
+A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`
+or `gemini`, in `shell` mode when it runs `pwsh` or `powershell`, and in
+`normal` mode otherwise, unless a mode is given. What an agent may start is
+limited to `agent-commands` (`pwsh powershell claude codex`), and how many
+panes it and the panes it made may make to `agent-pane-limit` (8).
+
+`keepane setup claude` prints what Claude Code needs; `--install` does it:
+two hooks in `~/.claude/settings.json` (backed up first) that run `keepane
+pane-ready -q` when a session starts and when a turn ends, and keepane's MCP
+server (`claude mcp add --scope user keepane -- keepane mcp`). The hook is
+quiet outside keepane and ignored in panes not in `ai` mode. Writing the hook
+yourself, leave the program path unquoted (or write `& "C:\path\keepane.exe"
+pane-ready -q`): Claude Code on Windows may run hooks in PowerShell, where a
+quoted path followed by arguments is a syntax error.
+
+Another agent works the same way if it can use an MCP server over stdio
+(`keepane mcp`) and run a command at the end of each turn (`keepane
+pane-ready -q`). Run `keepane set-work-mode ai` in its pane before starting
+it, or let an agent make the pane.
+
+There is one rule: a pane's work mode is changed in that pane. From one
+pane, `set-work-mode` changes only that pane, so nothing running in a pane
+(an agent included) turns another into a shell that runs what it is sent;
+from a terminal outside keepane, a key or the `C-b :` prompt, any pane's
+mode can be changed. Everything else (names, inboxes, closing panes) is
+open: a closed pane can be brought back with `C-b u` for 10 seconds, and
+Claude Code asks you before each MCP call you have not allowed. These rules
+guard against mistakes: any program running as you can still reach the
+server.
+
+## The dashboard
+
+`C-b v` (or `keepane dashboard` in any terminal) shows every pane: its
+mode, whether it is free, its inbox, what it says it is doing. Below, for
+the chosen pane: its events (Enter), messages (`m`), every task (`t`), its
+screen live (`v`) or with its scrollback (`h`). It only watches; in manage
+mode (`E`, red, ends after 30 s without a key) queued messages can be
+deleted (`d`, `u` undoes), moved (`K` `J`) or put first (`g`).
+
+Everything that happens to messages and panes is kept in an event log,
+`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, for 30 days
+(`event-log`, `event-log-days`, `event-log-max`). `list-tasks`,
+`show-task`, `trace-message` and `list-events` read it. Messages still
+queued when the server stops are not kept: they are dropped, and the log
+says so. Names and work modes are saved with the session. The design and
+why each rule is so: [docs/design/mailbox.md](docs/design/mailbox.md).
 
 ## Install
 
-From the [releases page](https://github.com/newdee/keepane/releases):
+keepane needs Windows 10 1809 or newer (ConPTY). From the
+[releases page](https://github.com/newdee/keepane/releases):
 
-- `keepane-<version>-windows-x86_64.msi` installs into `Program Files`, puts
-  `keepane` on the system `PATH` and uninstalls from "Apps & features"
+- `keepane-v<version>-windows-x86_64.zip` holds one folder,
+  `keepane-v<version>-windows-x86_64`, with `keepane.exe` in it: unzip it
+  anywhere and put that folder on your `PATH`. No administrator rights
+  needed.
+- `keepane-<version>-windows-x86_64.msi` installs into `Program Files` for
+  every user, puts `keepane` on the system `PATH` and uninstalls from "Apps &
+  features". It needs administrator rights
   (`msiexec /i keepane-<version>-windows-x86_64.msi /qn` for an unattended
   install).
-- `keepane-<version>-windows-x86_64.zip` is the same `keepane.exe` to unzip
-  wherever you like.
 
-With Scoop, the manifest in this repository installs the zip and keeps
-it current:
+With Scoop, the manifest in this repository installs the zip, with no
+administrator rights either, and keeps it current:
 
 ```powershell
 scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json
 ```
+
+Over SSH, Windows 11 does not follow a junction made without administrator
+rights, and Scoop's `current` folder is one: the shim fails with "The path
+cannot be traversed because it contains an untrusted mount point". Point
+Scoop's shims at the version folder instead:
+
+```powershell
+scoop config no_junction true
+scoop reset keepane
+```
+
+Also over SSH, `keepane update` cannot install an MSI: Windows Installer asks
+for permission on the desktop, where nobody is there to answer. Use the zip
+or Scoop on a machine you reach that way.
 
 WinGet manifests for the MSI are in `packaging/winget/` (validated with
 `winget validate`); `winget install newdee.keepane` works once they are
@@ -145,8 +202,6 @@ cargo install --git https://github.com/newdee/keepane --locked   # latest master
 cargo install --path .                                         # a local clone
 ```
 
-Requires Windows 10 1809 or newer (ConPTY).
-
 Building the installer yourself needs nothing but the repository; WiX is
 downloaded on demand if it is not already installed:
 
@@ -155,7 +210,23 @@ cargo build --release
 pwsh -File installer/build-msi.ps1        # target\keepane-<version>-windows-x86_64.msi
 ```
 
-## Use
+## Everyday use
+
+<p align="center">
+  <img src="docs/img/keepane-demo.gif" width="880"
+       alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
+</p>
+
+<p align="center">
+  <img src="docs/img/keepane-alerts.gif" width="880"
+       alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
+</p>
+
+Keystrokes reach panes as raw Windows key events (the win32-input-mode
+protocol Windows Terminal uses), so PSReadLine chords, `Ctrl+Space`,
+`Shift+Enter`, arrows with modifiers, IME input and WSL/Linux TUIs behave as
+they do outside keepane. It runs in Windows Terminal, the classic console
+host, VS Code's terminal, and anything else that hosts a Windows console.
 
 ```powershell
 keepane                      # new session, attached
@@ -303,107 +374,6 @@ A pane or window closed with `kill-pane` or `kill-window` (`C-b x`,
 want when you kill something to free a port or a file. The last pane of a
 session is not kept, because the session ends with it.
 
-## Panes that talk to each other
-
-<p align="center">
-  <img src="docs/img/keepane-messages.gif" width="880"
-       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows every pane and an agent's inbox, a message put first in manage mode">
-</p>
-
-Every pane can have a name, a work mode and an inbox. A pane (a script, a
-person, an agent such as Claude Code) sends another a message; keepane
-queues it, types it in when the other pane is free, and records what
-became of it. Agents in different windows can hand each other work this
-way, and an agent can make its own panes to work in.
-
-```powershell
-keepane rename-pane -t %3 builder          # -t %builder finds it from now on
-keepane set-work-mode -t %builder shell    # it runs what it gets, at its prompt
-keepane send-message -t %builder -w 30 "cargo test"
-#12 delivered to $1:@2.%3 (shell)
-keepane trace-message 12 -w 600            # waits until it is done: output, success
-```
-
-A pane is found by `%7` (its id), `%builder` (its name), or its full
-address `$1:@2.%7` (session, window and pane ids, which `whoami` prints).
-An address says where the pane is expected to be: if it has moved to
-another window since, the message is refused rather than sent where it went.
-
-What a pane does with a message depends on its work mode:
-
-| Mode | Free when | Delivery |
-|---|---|---|
-| `normal` (default) | never on its own | waits for `read-message` (the window gets `@` in its flags) |
-| `shell` | keepane's own prompt hook says the shell is at its prompt | typed in and run |
-| `ai` | the agent says `pane-ready` (a hook at the end of each turn) | typed in as a prompt |
-
-Keys typed into a pane make it busy until its next signal, so a message
-does not land in a line being typed; keys typed while a command keepane gave
-it runs (an answer to it, or typing ahead, which the shell shows at its next
-prompt) keep it busy past that prompt too. Typing ahead during a command of
-your own is not caught. An `ai` pane that shows a shell
-prompt again (its agent exited) takes nothing. A message is delivered only
-in the mode it was sent for: text written for an agent is never run as a
-command because the pane was switched to `shell` meanwhile.
-
-Every message carries its source in a fixed one-line envelope, the same
-wherever it is shown:
-
-```text
-{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
-```
-
-A shell gets it as a PowerShell comment before the command (`<# … #>
-cargo test`), so it stays in the history (a command of several lines is sent
-as one line that runs them together, so it is one command with one result); an agent gets it, the text, and an
-end line `{"keepane":1,"end":12}`. `task` groups a chain (an order, the work
-it caused, the answers); `hop` counts the links, and a chain longer than
-`message-hop-limit` (8) is refused, so two agents cannot answer each other
-for ever.
-
-### Agents
-
-`keepane setup claude` prints what Claude Code needs; `--install` does it:
-two hooks in `~/.claude/settings.json` (backed up first) that run `keepane
-pane-ready -q` when a session starts and when a turn ends, and keepane's MCP
-server (`claude mcp add --scope user keepane -- keepane mcp`). The hook is
-quiet outside keepane and ignored in panes not in `ai` mode. Writing the hook
-yourself, leave the program path unquoted (or write `& "C:\path\keepane.exe"
-pane-ready -q`): Claude Code on Windows may run hooks in PowerShell, where a
-quoted path followed by arguments is a syntax error.
-
-Through MCP an agent can send and `reply`, `wait_message` for an answer
-inside its turn, `trace_message`, report what it is doing (`set_status`),
-make sessions, windows and panes (`create_session`, `create_window`,
-`split_pane`, with a name, a mode and a first message) and close the ones
-it made (or any other). What it may start is limited to `agent-commands` (`pwsh
-powershell claude codex`), how many panes it and the panes it made may
-make to `agent-pane-limit` (8). A pane's work mode is changed in that pane:
-from one pane, `set-work-mode` changes only that pane, so nothing running
-in a pane (an agent included) turns another into a shell that runs what it
-is sent; from a terminal outside keepane, a key or the `C-b :` prompt, any.
-Everything else (names, inboxes, closing panes) is open: a closed pane can
-be brought back with `C-b u` for 10 seconds, and Claude Code asks you before
-each MCP call you have not allowed. These
-rules guard against mistakes: any program running as you can still reach the server.
-
-### The dashboard
-
-`C-b v` (or `keepane dashboard` in any terminal) shows every pane: its
-mode, whether it is free, its inbox, what it says it is doing. Below, for
-the chosen pane: its events (Enter), messages (`m`), every task (`t`), its
-screen live (`v`) or with its scrollback (`h`). It only watches; in manage
-mode (`E`, red, ends after 30 s without a key) queued messages can be
-deleted (`d`, `u` undoes), moved (`K` `J`) or put first (`g`).
-
-Everything that happens to messages and panes is kept in an event log,
-`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, for 30 days
-(`event-log`, `event-log-days`, `event-log-max`). `list-tasks`,
-`show-task`, `trace-message` and `list-events` read it. Messages still
-queued when the server stops are not kept: they are dropped, and the log
-says so. Names and work modes are saved with the session. The design and
-why each rule is so: [docs/design/mailbox.md](docs/design/mailbox.md).
-
 ## Resume after a reboot
 
 Every session is saved to its own file under `%LOCALAPPDATA%\keepane\sessions`
@@ -527,6 +497,49 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 
 `list-panes` shows the recorded directory, and `#{pane_current_path}` puts
 it on the status line.
+
+## On your phone
+
+Leave a build, a deploy or an agent running, and check on it from the sofa:
+
+```powershell
+keepane web
+```
+
+prints a QR code in the terminal. Scan it with the phone's camera (same
+network) and the browser opens a page that lists every pane with the program
+running in it, and with the window's alert marks from the status line (`#`
+printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so
+you can see which job finished. Tap one to see its screen, colours and all;
+keepane sends it again whenever it changes, so there is no refresh to wait for;
+type into it from the box at the bottom, or with the row of keys the phone
+keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
++ menu splits the pane, opens a window or closes the pane; the ⏱ button adds
+a column with the time each command started (tap one for its date, how long
+it took and its exit code; see "Command times and history"). Everything runs
+on the computer; the phone only shows and types. "Add to Home Screen" makes
+it open like an app.
+
+<p align="center">
+  <img src="docs/img/phone.png" width="620"
+       alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
+</p>
+
+The code carries the address and a key made fresh at each start (128 random
+bits); nothing but the page itself answers without it, and the phone can only
+look, type into a pane and use that menu: no command of its own reaches keepane.
+It is off until started and stops with Ctrl+C.
+
+```powershell
+keepane web --read-only     # look, but not type
+keepane web --keep-key      # the same code next time, so a bookmark keeps working
+keepane web --port 8080 --bind 192.168.1.23   # another port, or another network card
+```
+
+It is plain HTTP, meant for your own network: on a shared one, someone
+watching the traffic could read the key. From elsewhere, put a private
+network such as Tailscale in between and bind to its address. Windows asks
+once whether keepane may use the network; allow it for private networks.
 
 ## Configuration
 
@@ -707,7 +720,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 ```
 
 Commands a script or a binding reaches for, beyond the obvious ones
-(`keepane list-commands` prints all 85, and any unambiguous prefix works):
+(`keepane list-commands` prints them all, and any unambiguous prefix works):
 
 - `pipe-pane [-o] [-I] [-O] [-t target] [command]` copies everything a pane
   prints into a command's standard input (`-O`, the default); with no
@@ -825,6 +838,10 @@ covered without a human at the keyboard.
 
 ## Not (yet) implemented
 
+keepane runs only on Windows so far. The panes, the messages and the event
+log are platform-neutral code; the terminal, the pipe and the shell hook
+are what a Linux or macOS port has to supply.
+
 Relative to tmux: multiple clients on the same session share one window
 size (`window-size latest|smallest|largest|manual` picks which client sets
 it: the one used last, the smallest, the largest, or none but
@@ -841,3 +858,32 @@ cmd and WSL shells do not take messages on their own yet (they can
 must be restarted for it. The dashboard is not on the phone page yet.
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.
+
+## Formerly wmux
+
+Up to 0.13.1 this project was called wmux. That name turned out to be taken
+several times over: other terminal multiplexers on GitHub, on winget and on
+crates.io go by it, some of them older and better known. From 0.14.0 it is
+keepane, after what it does: the panes keep running when the terminal is
+gone.
+
+Coming from wmux:
+
+- `keepane migrate` moves everything in one go: the sessions of a wmux
+  server still running (saved, the old server stopped, restored in keepane
+  with their layout, history and directories; the programs in them start
+  again, as with `restart-server`), what wmux saved under
+  `%LOCALAPPDATA%\wmux` (sessions, history, the phone key), the start at
+  logon, the Windows Terminal profile and the notification link. A wmux
+  session whose name keepane already runs comes back beside it as
+  `<name>-wmux`. Starting keepane while a wmux server still runs says so.
+- Your `~/.wmux.conf` keeps working, and so do `WMUX_*` environment
+  variables, `~/.wmux/plugins` and `*.wmux` plugin files, until you rename
+  them (`~/.keepane.conf`, `KEEPANE_*`, `~/.keepane/plugins`,
+  `*.keepane`).
+- The MSI replaces the wmux one in "Apps & features", and `wmux update`
+  (0.10 to 0.13) installs keepane. With scoop, `scoop uninstall wmux` and
+  install the keepane manifest (see Install).
+- The repository is now github.com/newdee/keepane (the old links lead
+  there) and the site dfine.tech/keepane.
+- A `tmux` or `wmux` alias in your `$PROFILE` needs to point at keepane.

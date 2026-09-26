@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>keepane · tmux for Windows</title>
+    <title>keepane · panes that keep running and hand each other work</title>
     <meta
       name="description"
-      content="A tmux-style terminal multiplexer for Windows. Split panes, detach and reattach, and pick a session back up after a reboot. Native ConPTY, no Cygwin, no WSL required."
+      content="keepane (keep pane) is a terminal multiplexer whose panes keep running when the terminal closes and hand each other work: every pane is an actor with a name, an inbox and a work mode, with tmux's keys and commands and an MCP server for agents."
     />
     <meta property="og:title" content="keepane" />
-    <meta property="og:description" content="tmux for Windows: split panes, sessions that outlive the terminal, and the same keys and commands as tmux." />
+    <meta property="og:description" content="Panes that keep running and hand each other work: every pane an actor with an inbox, tmux's keys and commands, an MCP server for agents." />
     <meta property="og:image" content="img/panes.png" />
     <meta name="theme-color" content="#0d1017" />
     <!-- fonts ship with the page: a stylesheet from Google's CDN blocks
@@ -25,7 +25,7 @@
         <a class="nav-link" href="#tour" data-i18n="nav.tour">Tour</a>
         <button id="lang" class="lang-btn" type="button">中文</button>
         <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="nav.download">Download</a>
-        <a class="star-btn" href="https://github.com/newdee/keepane">
+        <a class="star-btn" href="https://github.com/newdee/keepane" aria-label="GitHub">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path
               fill="currentColor"
@@ -40,12 +40,13 @@
     <main id="top">
       <section class="hero">
         <span class="eyebrow" data-i18n="hero.eyebrow">Open source · Native Windows</span>
-        <h1 data-i18n="hero.title">tmux, on Windows.</h1>
+        <h1 data-i18n="hero.title">Panes that keep running, and hand each other work.</h1>
         <p class="lede" data-i18n="hero.lede">
-          Split a terminal into panes and move between them with <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
-          Close the window and everything keeps running; attach again later, or check on it from your phone.
-          PowerShell, cmd and WSL run inside panes, and every keystroke reaches them unchanged.
-          Panes can hand each other work, too: an agent in one, a shell in another.
+          Every pane is an actor with a name, an inbox and a work mode. A script, a person or an agent in one pane
+          sends work to another; keepane hands it over when that pane is free and keeps a record of what became of it.
+          Agents do it through a built-in MCP server. Around that, tmux's way of working: split, move with
+          <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>, close the window and everything keeps running, attach again
+          later or check on it from your phone. PowerShell, cmd and WSL run inside panes, and every keystroke reaches them unchanged.
         </p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>

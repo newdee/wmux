@@ -1,6 +1,6 @@
 {
   "version": "0.15.0",
-  "description": "A tmux for Windows: sessions that outlive the terminal, panes, windows, and a status line.",
+  "description": "Panes that keep running and hand each other work: a terminal multiplexer where every pane is an actor with an inbox, with tmux keys and an MCP server for agents.",
   "homepage": "https://github.com/newdee/keepane",
   "license": "MIT",
   "url": "https://github.com/newdee/keepane/releases/download/v0.15.0/keepane-v0.15.0-windows-x86_64.zip",

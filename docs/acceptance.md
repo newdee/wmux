@@ -2505,3 +2505,23 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 1 | 机制通路 | 新单元测试（恰满一行、短于一行、跨三行）；改回向上取整即失败 | 干净（1/3） |
 | 2 | 边界 | 提示符长度 +0…+15 共 16 种：16/16 通过 | 干净（2/3） |
 | 3 | 可复现性 | fmt/clippy 0；全量 201/9/83；e2e 再跑两次 83/83 ×2 | 干净（3/3） |
+
+## 57. README 与项目描述改为新定位（keep pane，pane 是 actor）
+
+定位从"Windows 上的 tmux"改为"keep pane：pane 一直在跑，还能互相派活"。README 中英文重排：开头讲 actor、三种模式、信封；接着是 agent 与 MCP（20 个工具分组列出）、dashboard、安装（zip/Scoop 免管理员，SSH 下的 `no_junction` 与 MSI 限制），然后才是 tmux 那一套；"原名 wmux"挪到文末。项目描述统一为同一句：Cargo、scoop 清单、MSI、winget 生成器、crate 文档、网站 title/meta/hero（中英）。旧段落按行号原样搬运，搬运脚本逐行断言起始内容。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性（claim 对代码） | 手机一节搬到后面后"见下文"失效（中英各 1）；"原名 wmux"里"见下文"方向反了（中英各 1）；MCP 表把 `rename_pane`/`kill_pane` 写成"自己的 pane"；"全部 85 个命令"实际 116 | **有问题**，全部修正，命令数不再写死 |
+| 2 | 机制通路 | fmt/clippy 0；全量 201/9/83；生成器 scoop 清单与仓库逐字节一致；winget validate 通过；README 示例在临时 socket 实跑：rename→`builder shell`、send→`#1 delivered`、trace→done 输出 `readme-check-ok`；MCP tools/list = 20 | 干净（1/3） |
+| 3 | 中英一致 | 逐节比对反引号词：改动各节只有占位符翻译与跨行代码的分词差异；其余差异为原样搬运的旧行 | 干净（2/3） |
+| 4 | 新用户路径 | zip 实名带 `v`（`keepane-v0.15.0-…zip`），且内含一层目录，README 写法会让人把外层目录加进 PATH | **有问题**，写明目录名；已核实 release 资产名与 zip 布局 |
+| 5 | 可复现性 | GitHub GFM 渲染两次哈希相同（EN `CD6A4AC96EAE`，ZH `C0E39D2FCF66`）；h2 14、表 3、图 7、正文漏出反引号 0 | 干净（1/3） |
+| 6 | 静态一致性（全仓） | 网站 title/meta/og/hero 仍是"tmux for Windows"（4 处） | **有问题**，改 title、meta、og、hero 标题与导语（中英） |
+| 7 | 静态一致性 | 旧定位残留 0；网站 i18n 键 77/77，无缺无余；新描述在 8 处一致 | 干净（1/3） |
+| 8 | 视觉 | 500px 中文标题折成"…互相 / 派活。"；375px 顶栏溢出 20px（旧问题） | **有问题**，标题按意群不断行 + `text-wrap: balance`；≤400px 顶栏收紧、GitHub 只留图标（补 aria-label）。复测 320/360/375/414/768/1280 × 中英：溢出 0 |
+| 9 | 代码正确性 | fmt/clippy 0；全量 201/9/83；通读非 README diff 无问题 | 干净（1/3） |
+| 10 | 边界 | 描述长度 Cargo/scoop 161、winget Short 162（上限 256）；scoop JSON、cargo metadata 可解析；MSI 实际打包，摘要为新描述 | 干净（2/3） |
+| 11 | 可复现性 | 清单生成两次 4 个文件哈希相同；README 重新渲染与第 5 轮哈希一致 | 干净（3/3） |
+
+遗留：GitHub 仓库 About 描述需推送时一并改（`gh repo edit`）；网站章节顺序仍以 tmux 功能开头，actor 章节在第 07 章；winget PR #441466 里 0.15.0 的描述是旧的，不改（下个版本由生成器带上）。另：SSH 里 `C-b q` 不显示编号，本机 ConPTY 字节输入复现正常（按后 20 个带色格子），疑为 Mac 端 tmux 截走 `C-b`，待用户 `show-keys` 确认。
