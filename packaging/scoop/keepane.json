@@ -1,11 +1,11 @@
 {
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "Panes that keep running and hand each other work: a terminal multiplexer where every pane is an actor with an inbox, with tmux keys and an MCP server for agents.",
   "homepage": "https://github.com/newdee/keepane",
   "license": "MIT",
-  "url": "https://github.com/newdee/keepane/releases/download/v0.15.0/keepane-v0.15.0-windows-x86_64.zip",
-  "hash": "36a95817315b0524cb54ec088792aacc6f17ab7b31e56354312351ffb64c50ac",
-  "extract_dir": "keepane-v0.15.0-windows-x86_64",
+  "url": "https://github.com/newdee/keepane/releases/download/v0.15.1/keepane-v0.15.1-windows-x86_64.zip",
+  "hash": "2a2b7a29ba22a801a1d68a90411555761f5030e9ab7c1b0a29d494bbbc292a0a",
+  "extract_dir": "keepane-v0.15.1-windows-x86_64",
   "bin": "keepane.exe",
   "checkver": "github",
   "autoupdate": {
