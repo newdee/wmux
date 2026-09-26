@@ -5,50 +5,40 @@
 
 [中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)**
 
-keep pane: panes that keep running when the terminal is gone, and that hand
-each other work.
-
-keepane is a terminal multiplexer. Like tmux, it splits a terminal into
-windows and panes that outlive it, with tmux's keys, commands and config
-file. Unlike tmux, every pane is also an actor with a name, an inbox and a
-work mode: a script, a person or an AI agent in one pane can send work to
-another, keepane hands it over when that pane is free, and it records what
-became of it. Agents reach all of this through a built-in MCP server, so an
-agent can open panes of its own, give them work and wait for the results.
+A terminal multiplexer whose panes keep running after you detach, and can
+pass messages to each other. tmux's keys, commands and config work as they
+are.
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"
        alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows every pane and an agent's inbox, a message put first in manage mode">
 </p>
 
-- A pane is found by its name (`%builder`), its id (`%7`) or its full
-  address (`$1:@2.%7`), from any window or session.
-- A message waits in the pane's inbox until the pane is free, so it never
-  lands in the middle of a running command or of a line being typed.
-- Three work modes decide how a pane takes its messages: `normal` leaves
-  them for the program to read, `shell` runs them at the prompt, and `ai`
-  types them in as a prompt once the agent has finished its turn.
-- Every message carries the same one-line JSON envelope: who sent it, in
-  which mode, to whom, and as part of which task.
-- `C-b v` opens a dashboard of every pane: busy or free, what waits in its
-  inbox, what it has done. An event log keeps all of it for 30 days.
-- The panes keep running: detach and attach again, bring the sessions back
-  after a reboot (`keepane resume`), undo a pane closed by mistake
-  (`C-b u`), read what any pane printed on any of the last 30 days.
+- Detach and the panes keep running. After a reboot `keepane resume` puts
+  the layout back, and a pane closed by mistake comes back with `C-b u`.
+- Name a pane and send it a message. The message waits until the pane is
+  ready: a shell runs it at its next prompt, a program reads it when it
+  asks, and nothing is typed into a command that is still running.
+- Every message carries the same one-line envelope (who sent it, to
+  whom, as part of which task), and an event log keeps what became of it
+  for 30 days. `C-b v` shows all of it.
+- Scripts, people and AI agents send the same messages; an agent can also
+  use them through a built-in MCP server.
 - The rest is tmux's: the `C-b` prefix, splits, copy mode, the command
   line, `.tmux.conf`, format strings, hooks and plugins.
 
 keepane runs on Windows today, on ConPTY, with PowerShell, WSL and cmd in
-its panes and every key reaching them as it would outside. The actor layer
-does not depend on the platform; Linux and macOS are planned.
+its panes. The messaging does not depend on the platform; Linux and macOS
+are planned.
 
-## Panes are actors
+## Send work between panes
 
-Each pane has a name, an inbox and a work mode.
+Each pane can have a name and an inbox. A message waits in the inbox until
+the pane is ready, then arrives the way the pane's work mode says.
 
 ```powershell
 keepane rename-pane -t %3 builder          # -t %builder finds it from now on
-keepane set-work-mode -t %builder shell    # it runs what it gets, at its prompt (see below for who may change a mode)
+keepane set-work-mode -t %builder shell    # it runs what it gets, at its prompt (from outside keepane; inside, a pane sets its own)
 keepane send-message -t %builder -w 30 "cargo test"
 #12 delivered to $1:@2.%3 (shell)
 keepane trace-message 12 -w 600            # waits until it is done: output, success
@@ -61,7 +51,7 @@ another window since, the message is refused rather than sent where it went.
 
 What a pane does with a message depends on its work mode:
 
-| Mode | Free when | Delivery |
+| Mode | Ready when | Delivery |
 |---|---|---|
 | `normal` (default) | never on its own | waits for `read-message` (the window gets `@` in its flags) |
 | `shell` | keepane's own prompt hook says the shell is at its prompt | typed in and run |
@@ -91,50 +81,14 @@ it caused, the answers); `hop` counts the links, and a chain longer than
 `message-hop-limit` (8) is refused, so two agents cannot answer each other
 for ever.
 
-## Agents and MCP
-
-`keepane mcp` is an MCP server (stdio) for the agent in a pane. It takes the
-pane it serves from `KEEPANE_PANE`, so what the agent sends goes out with
-that pane as the sender. Its 20 tools:
-
-| Tools | For |
-|---|---|
-| `whoami`, `list_panes` | its own pane, and every pane: address, name, mode, free or busy, inbox, program, status |
-| `send_message`, `reply`, `wait_message`, `current_message` | send work, answer the sender, take the next message within a turn, see the message being worked on as keepane recorded it |
-| `list_messages`, `trace_message`, `drop_message`, `move_message` | the inboxes, and what became of a message (a shell command's output included) |
-| `create_session`, `create_window`, `split_pane`, `rename_pane`, `kill_pane` | make panes (each with a name, a mode and a first message), name any pane, close any pane |
-| `set_status`, `set_work_mode` | say what it is doing (the dashboard shows it); change its own pane's mode |
-| `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
-
-A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`
-or `gemini`, in `shell` mode when it runs `pwsh` or `powershell`, and in
-`normal` mode otherwise, unless a mode is given. What an agent may start is
-limited to `agent-commands` (`pwsh powershell claude codex`), and how many
-panes it and the panes it made may make to `agent-pane-limit` (8).
-
-`keepane setup claude` prints what Claude Code needs; `--install` does it:
-two hooks in `~/.claude/settings.json` (backed up first) that run `keepane
-pane-ready -q` when a session starts and when a turn ends, and keepane's MCP
-server (`claude mcp add --scope user keepane -- keepane mcp`). The hook is
-quiet outside keepane and ignored in panes not in `ai` mode. Writing the hook
-yourself, leave the program path unquoted (or write `& "C:\path\keepane.exe"
-pane-ready -q`): Claude Code on Windows may run hooks in PowerShell, where a
-quoted path followed by arguments is a syntax error.
-
-Another agent works the same way if it can use an MCP server over stdio
-(`keepane mcp`) and run a command at the end of each turn (`keepane
-pane-ready -q`). Run `keepane set-work-mode ai` in its pane before starting
-it, or let an agent make the pane.
-
-There is one rule: a pane's work mode is changed in that pane. From one
-pane, `set-work-mode` changes only that pane, so nothing running in a pane
-(an agent included) turns another into a shell that runs what it is sent;
-from a terminal outside keepane, a key or the `C-b :` prompt, any pane's
-mode can be changed. Everything else (names, inboxes, closing panes) is
-open: a closed pane can be brought back with `C-b u` for 10 seconds, and
-Claude Code asks you before each MCP call you have not allowed. These rules
-guard against mistakes: any program running as you can still reach the
-server.
+A pane's work mode is changed in that pane. From one pane,
+`set-work-mode` changes only that pane, so nothing running in a pane turns
+another into a shell that runs what it is sent; from a terminal outside
+keepane, a key or the `C-b :` prompt, any pane's mode can be changed. That
+is the only restriction: names, inboxes and closing panes are open to
+everyone, and a closed pane can be brought back with `C-b u` for 10
+seconds. It guards against mistakes: any program running as you can still
+reach the server.
 
 ## The dashboard
 
@@ -497,6 +451,45 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 
 `list-panes` shows the recorded directory, and `#{pane_current_path}` puts
 it on the status line.
+
+## Using it from an AI agent
+
+An agent in a pane sends and takes the same messages as anything else. Two
+things make that work: a hook that runs `keepane pane-ready -q` when the
+agent finishes a turn (so the pane counts as ready in `ai` mode), and
+`keepane mcp`, an MCP server (stdio) offering the commands above as tools.
+It takes the pane it serves from `KEEPANE_PANE`, so what the agent sends
+goes out with that pane as the sender.
+
+`keepane setup claude` prints what Claude Code needs; `--install` does it:
+two hooks in `~/.claude/settings.json` (backed up first) that run `keepane
+pane-ready -q` when a session starts and when a turn ends, and keepane's MCP
+server (`claude mcp add --scope user keepane -- keepane mcp`). The hook is
+quiet outside keepane and ignored in panes not in `ai` mode. Writing the hook
+yourself, leave the program path unquoted (or write `& "C:\path\keepane.exe"
+pane-ready -q`): Claude Code on Windows may run hooks in PowerShell, where a
+quoted path followed by arguments is a syntax error. Another agent works the
+same way if it can run a command at the end of each turn and use an MCP
+server over stdio; run `keepane set-work-mode ai` in its pane before
+starting it.
+
+The 20 tools:
+
+| Tools | For |
+|---|---|
+| `whoami`, `list_panes` | its own pane, and every pane: address, name, mode, free or busy, inbox, program, status |
+| `send_message`, `reply`, `wait_message`, `current_message` | send a message, answer the sender, take the next message within a turn, see the message being worked on as keepane recorded it |
+| `list_messages`, `trace_message`, `drop_message`, `move_message` | the inboxes, and what became of a message (a shell command's output included) |
+| `create_session`, `create_window`, `split_pane`, `rename_pane`, `kill_pane` | make panes (each with a name, a mode and a first message), name any pane, close any pane |
+| `set_status`, `set_work_mode` | say what it is doing (the dashboard shows it); change its own pane's mode |
+| `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
+
+A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`
+or `gemini`, in `shell` mode when it runs `pwsh` or `powershell`, and in
+`normal` mode otherwise, unless a mode is given. What an agent may start is
+limited to `agent-commands` (`pwsh powershell claude codex`), and how many
+panes it and the panes it made may make to `agent-pane-limit` (8). Claude
+Code asks you before each MCP call you have not allowed.
 
 ## On your phone
 

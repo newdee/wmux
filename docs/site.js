@@ -4,9 +4,9 @@ const ZH = {
   "nav.tour": "功能",
   "nav.download": "下载",
   "hero.eyebrow": "开源 · 原生 Windows",
-  "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相派活。</span>",
+  "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相传消息。</span>",
   "hero.lede":
-    "每个 pane 都是一个 actor，有名字、收件箱和工作模式。一个 pane 里的脚本、人或 agent 给另一个 pane 派活，keepane 等它空闲了再交过去，并记下后来怎样了；agent 通过内置的 MCP 服务端做这些事。外面是 tmux 那一套：分屏，用 h j k l 移动，关掉窗口程序照样在跑，之后重新接上，或者在手机上看一眼。PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
+    "关掉窗口，pane 照样在跑；之后重新接上，或者在手机上看一眼。给 pane 起个名字就能给它发消息：消息等到它准备好，shell 在提示符下执行，程序在自己来取时读到。脚本、人和 AI agent 发的是同一种消息。tmux 的按键和命令照用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
   "hero.download": "下载 Windows 版",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe · 原名 wmux",
@@ -80,7 +80,7 @@ const ZH = {
     "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
   "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
 
-  "cm.title": "pane 之间互相派活",
+  "cm.title": "在 pane 之间派活",
   "cm.sub":
     "给 pane 起个名字、设个工作模式，就能给它发消息：shell 在提示符下执行，agent 在空闲时收到。<kbd>C-b v</kbd> 看所有 pane 和它们的收件箱。",
   "cm.caption":

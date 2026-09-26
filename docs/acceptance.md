@@ -2541,3 +2541,20 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 
 遗留：用户机器上现在的 server 仍是 0.15.0 起的，还在 SSH 的 job 里，发版前断线仍会丢；自动存档在，`keepane resume` 可恢复布局。
 
+
+## 59. README 去掉 AI 产品腔：先讲 pane 一直在，再讲传消息，agent 放后面
+
+用户转来的评审：第一段 actor / inbox / work mode / hand each other work 连用，像 agent 框架的概念体系；"Agents and MCP"太靠前。用户选定：第一句不写 Windows、不以 tmux 定位，写"panes keep running after you detach and can pass messages to each other"，tmux 作为"键和命令照用"。叙事改为：pane 一直在 → 在 pane 之间派活（Send work between panes）→ dashboard → 安装 → 日常用法 → …… → 在 AI agent 里用（第 455 行，原第 94 行）。模式规矩挪进派活一节（它对谁都适用）。项目描述同步：Cargo、scoop、winget 生成器、MSI、crate 文档、网站 title/meta/og/hero、第 07 章标题。`work mode` 是命令名（`set-work-mode`），文档里保留。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 表述属实与术语 | 示例第二行在 pane 里运行会被拒（删了"见下文"后读者不知道）；表头写 Free，前文一律 ready | **有问题**，注释写明在外面运行；表头改 Ready / 准备好 |
+| 2 | 机制通路 | fmt/clippy 0；全量 201/10/83；GFM 渲染 h2 14、表 3、图 7、漏出反引号 0（中英）；网站 i18n 77/77；中英章节一一对应 | 干净（1/3） |
+| 3 | AI 味（量化） | 前 100 行：actor 3→0，MCP 4→1，agent 13→8（余下都是 `ai` 模式的具体机制）；agent 一节 94→455 行；交叉引用 4 处仍有效 | 干净（2/3） |
+| 4 | 视觉 | 中文标题"还能互相传消息。"比原来长一字，320px 下超出标题框（scrollWidth > clientWidth） | **有问题**，≤400px 标题字号 34px |
+| 5 | 视觉复测 | 320/360/375/414/768/1280 × 中英：页面溢出 0、标题溢出 0，不断行段右缘均在框内 | 干净（1/3） |
+| 6 | 机制通路（发布物） | 生成 0.15.1 清单：winget validate 通过；scoop zip 哈希、winget MSI 哈希与 release 上 .sha256 一致；新描述进入两份清单 | 干净（2/3） |
+| 7 | 可复现性 | 清单再生成 4 个文件哈希不变；README 渲染两次哈希相同（EN 298F1C24D842，ZH 36771C221459）；全量 201/10/83 | 干净（3/3） |
+
+遗留：0.15.1 的 MSI 摘要描述是 tag 时的旧句（"hand each other work"），下个版本随新 wxs 更新；GitHub About 待 `gh auth login` 后改；winget PR #441466 仍是 0.15.0。
+

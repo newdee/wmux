@@ -521,6 +521,9 @@ footer a:hover {
 }
 
 @media (max-width: 400px) {
+  .hero h1 {
+    font-size: 34px;
+  }
   .top nav {
     gap: 8px;
   }

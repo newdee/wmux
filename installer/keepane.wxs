@@ -17,7 +17,7 @@
     <Package InstallerVersion="500"
              Compressed="yes"
              InstallScope="perMachine"
-             Description="keepane $(var.Version) - panes that keep running and hand each other work" />
+             Description="keepane $(var.Version) - panes that keep running and pass messages to each other" />
 
     <!-- Installing a newer version replaces the old one in place. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of keepane is already installed." />

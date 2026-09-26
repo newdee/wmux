@@ -5,32 +5,28 @@
 
 [English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)**
 
-keep pane：终端关了，pane 还在跑；pane 和 pane 之间，还能互相派活。
-
-keepane 是一个终端多路复用器。和 tmux 一样，它把一个终端分成多个窗口和 pane，终端关掉之后它们照样在跑，按键、命令和配置文件都沿用 tmux 的。不一样的是，每个 pane 同时是一个 actor，有自己的名字、收件箱和工作模式：一个 pane 里的脚本、人或者 AI agent，可以给另一个 pane 发消息派活，keepane 等那个 pane 空闲了再交给它，并记下后来怎么样了。agent 通过内置的 MCP 服务端使用这一切：自己开 pane、给它们派活、等结果回来。
+keepane 是一个终端多路复用器：脱离之后 pane 照样在跑，pane 之间还能互相传消息。tmux 的按键、命令和配置文件照用。
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"
        alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；dashboard 显示所有 pane 和一个 agent 的收件箱，在管理模式下把一条消息置顶">
 </p>
 
-- 用名字（`%builder`）、编号（`%7`）或完整地址（`$1:@2.%7`）找到任何窗口、任何 session 里的 pane。
-- 消息先在收件箱里排队，等对方空闲才送进去，不会插进正在跑的命令，也不会插进打到一半的那行字。
-- 三种工作模式决定 pane 怎么收消息：`normal` 留给程序自己取，`shell` 在提示符下执行，`ai` 等 agent 一轮结束后作为提示词送进去。
-- 每条消息都带同一行 JSON 信封，写明谁发的、当时什么模式、发给谁、属于哪个任务。
-- `C-b v` 打开 dashboard，看每个 pane 忙不忙、收件箱里有什么、做过什么；事件日志保留 30 天。
-- pane 一直在：脱离了再接回来，重启电脑后 `keepane resume` 恢复，手滑关掉的 pane 按 `C-b u` 找回，任意 pane 最近 30 天输出过什么都能翻出来。
+- 脱离之后 pane 照样在跑。重启电脑后 `keepane resume` 把布局放回来，手滑关掉的 pane 按 `C-b u` 找回。
+- 给 pane 起个名字，就能给它发消息。消息会等到对方准备好：shell 在下一个提示符执行它，程序在自己来取的时候读到它，不会打进一条还在跑的命令里。
+- 每条消息都带同样的一行信封（谁发的、发给谁、属于哪个任务），事件日志记下它后来怎样了，保留 30 天。`C-b v` 全都能看到。
+- 脚本、人和 AI agent 发的是同一种消息；agent 还可以通过内置的 MCP 服务端来用。
 - 其余都是 tmux 的：`C-b` 前缀、分屏、copy mode、命令行、`.tmux.conf`、格式串、hook 和插件。
 
-keepane 目前运行在 Windows 上（ConPTY），pane 里跑 PowerShell、WSL、cmd，每个按键都和不用 keepane 时一样送到程序。actor 这一层不依赖平台，Linux 和 macOS 在计划中。
+keepane 目前运行在 Windows 上（ConPTY），pane 里跑 PowerShell、WSL、cmd。消息这一层不依赖平台，Linux 和 macOS 在计划中。
 
-## pane 是 actor
+## 在 pane 之间派活
 
-每个 pane 都有名字、收件箱和工作模式。
+每个 pane 可以有名字和收件箱。消息在收件箱里等到 pane 准备好，再按这个 pane 的工作模式送进去。
 
 ```powershell
 keepane rename-pane -t %3 builder          # 之后用 -t %builder 就能找到它
-keepane set-work-mode -t %builder shell    # 它在提示符下执行收到的内容（谁能改模式见下文）
+keepane set-work-mode -t %builder shell    # 它在提示符下执行收到的内容（在 keepane 外面运行；在 pane 里只能设它自己）
 keepane send-message -t %builder -w 30 "cargo test"
 #12 delivered to $1:@2.%3 (shell)
 keepane trace-message 12 -w 600            # 等它做完：输出、成败
@@ -40,7 +36,7 @@ keepane trace-message 12 -w 600            # 等它做完：输出、成败
 
 pane 怎么处理消息取决于它的工作模式：
 
-| 模式 | 什么时候算空闲 | 投递方式 |
+| 模式 | 什么时候算准备好 | 投递方式 |
 |---|---|---|
 | `normal`（默认） | 从不自己取 | 等 `read-message` 来取（窗口标记里出现 `@`） |
 | `shell` | keepane 自己的提示符钩子说 shell 回到了提示符 | 打进去并执行 |
@@ -56,26 +52,7 @@ pane 怎么处理消息取决于它的工作模式：
 
 shell 收到时它是命令前面的一段 PowerShell 注释（`<# … #> cargo test`），会留在历史里（多行命令会改写成一行、整段一起执行，所以它是一条命令、一个结果）；agent 收到的是信封、正文和结尾行 `{"keepane":1,"end":12}`。`task` 把一串消息归为一个任务（派活、由此引起的工作、回信）；`hop` 数经过了几手，超过 `message-hop-limit`（8）就拒收，两个 agent 不会无休止地互相回信。
 
-## agent 与 MCP
-
-`keepane mcp` 是给 pane 里的 agent 用的 MCP 服务端（stdio）。它从 `KEEPANE_PANE` 知道自己服务的是哪个 pane，所以 agent 发出的每条消息，发送方都是这个 pane。一共 20 个工具：
-
-| 工具 | 用途 |
-|---|---|
-| `whoami`、`list_panes` | 自己的 pane，以及所有 pane：地址、名字、模式、忙闲、收件箱、程序、状态 |
-| `send_message`、`reply`、`wait_message`、`current_message` | 派活、回复发送方、在一轮之内取下一条消息、查看正在处理的消息（以 keepane 记录的为准） |
-| `list_messages`、`trace_message`、`drop_message`、`move_message` | 收件箱，以及一条消息后来怎样了（shell 命令的输出也在里面） |
-| `create_session`、`create_window`、`split_pane`、`rename_pane`、`kill_pane` | 开 pane（可以带名字、模式和第一条消息），给任意 pane 改名、关掉任意 pane |
-| `set_status`、`set_work_mode` | 报告自己在做什么（dashboard 上显示）；改自己 pane 的模式 |
-| `list_tasks`、`show_task`、`query_events` | 消息链（任务）和事件日志 |
-
-通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini` 的是 `ai` 模式，跑 `pwsh`、`powershell` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。
-
-`keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。
-
-别的 agent 也一样能接：只要它能用 stdio 上的 MCP 服务端（`keepane mcp`），并且每轮结束时能运行一条命令（`keepane pane-ready -q`）。启动它之前在它的 pane 里运行 `keepane set-work-mode ai`，或者让 agent 来开这个 pane。
-
-只有一条规矩：pane 的工作模式只能在那个 pane 里切换。在某个 pane 里运行 `set-work-mode`，只能改它自己，所以任何 pane 里的程序（包括 agent）都不能把别的 pane 变成"收到什么就执行什么"的 shell；在 keepane 外面的终端、快捷键或 `C-b :` 命令行里可以改任何 pane。其余操作（改名、收件箱、关 pane）都开放：关掉的 pane 10 秒内可以用 `C-b u` 找回，Claude Code 调用你没放行过的 MCP 工具前也会先问你。这些规则防的是失误：以你身份运行的任何程序照样能连上服务端。
+pane 的工作模式只能在那个 pane 里切换。在某个 pane 里运行 `set-work-mode`，只能改它自己，所以任何 pane 里的程序都不能把别的 pane 变成"收到什么就执行什么"的 shell；在 keepane 外面的终端、快捷键或 `C-b :` 命令行里可以改任何 pane。只有这一条限制：改名、收件箱、关 pane 对谁都开放，关掉的 pane 10 秒内可以用 `C-b u` 找回。这条规矩防的是失误：以你身份运行的任何程序照样能连上服务端。
 
 ## dashboard
 
@@ -295,6 +272,25 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 ```
 
 `list-panes` 能看到每个 pane 记的目录，状态栏里用 `#{pane_current_path}` 显示。
+
+## 在 AI agent 里用
+
+pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需要两样东西：一个在 agent 每轮结束时运行 `keepane pane-ready -q` 的 hook（这样 `ai` 模式的 pane 才算准备好了），以及 `keepane mcp`，一个把上面那些命令作为工具提供的 MCP 服务端（stdio）。它从 `KEEPANE_PANE` 知道自己服务的是哪个 pane，所以 agent 发出的消息，发送方就是这个 pane。
+
+`keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
+
+20 个工具：
+
+| 工具 | 用途 |
+|---|---|
+| `whoami`、`list_panes` | 自己的 pane，以及所有 pane：地址、名字、模式、忙闲、收件箱、程序、状态 |
+| `send_message`、`reply`、`wait_message`、`current_message` | 发消息、回复发送方、在一轮之内取下一条消息、查看正在处理的消息（以 keepane 记录的为准） |
+| `list_messages`、`trace_message`、`drop_message`、`move_message` | 收件箱，以及一条消息后来怎样了（shell 命令的输出也在里面） |
+| `create_session`、`create_window`、`split_pane`、`rename_pane`、`kill_pane` | 开 pane（可以带名字、模式和第一条消息），给任意 pane 改名、关掉任意 pane |
+| `set_status`、`set_work_mode` | 报告自己在做什么（dashboard 上显示）；改自己 pane 的模式 |
+| `list_tasks`、`show_task`、`query_events` | 消息链（任务）和事件日志 |
+
+通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini` 的是 `ai` 模式，跑 `pwsh`、`powershell` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（`pwsh powershell claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
 
 ## 在手机上用
 

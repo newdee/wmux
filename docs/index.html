@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>keepane · panes that keep running and hand each other work</title>
+    <title>keepane · panes that keep running and pass messages</title>
     <meta
       name="description"
-      content="keepane (keep pane) is a terminal multiplexer whose panes keep running when the terminal closes and hand each other work: every pane is an actor with a name, an inbox and a work mode, with tmux's keys and commands and an MCP server for agents."
+      content="keepane is a terminal multiplexer whose panes keep running after you detach and can pass messages to each other: a message waits until the pane is ready, then a shell runs it or a program reads it. tmux's keys and commands work as they are."
     />
     <meta property="og:title" content="keepane" />
-    <meta property="og:description" content="Panes that keep running and hand each other work: every pane an actor with an inbox, tmux's keys and commands, an MCP server for agents." />
+    <meta property="og:description" content="A terminal multiplexer whose panes keep running after you detach and can pass messages to each other, with tmux's keys and commands." />
     <meta property="og:image" content="img/panes.png" />
     <meta name="theme-color" content="#0d1017" />
     <!-- fonts ship with the page: a stylesheet from Google's CDN blocks
@@ -40,13 +40,13 @@
     <main id="top">
       <section class="hero">
         <span class="eyebrow" data-i18n="hero.eyebrow">Open source · Native Windows</span>
-        <h1 data-i18n="hero.title">Panes that keep running, and hand each other work.</h1>
+        <h1 data-i18n="hero.title">Panes that keep running, and talk to each other.</h1>
         <p class="lede" data-i18n="hero.lede">
-          Every pane is an actor with a name, an inbox and a work mode. A script, a person or an agent in one pane
-          sends work to another; keepane hands it over when that pane is free and keeps a record of what became of it.
-          Agents do it through a built-in MCP server. Around that, tmux's way of working: split, move with
-          <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>, close the window and everything keeps running, attach again
-          later or check on it from your phone. PowerShell, cmd and WSL run inside panes, and every keystroke reaches them unchanged.
+          Close the window and the panes keep running; attach again later, or check on them from your phone.
+          Name a pane and send it a message: it waits until the pane is ready, then a shell runs it at its prompt
+          or a program reads it when it asks. Scripts, people and AI agents send the same messages.
+          tmux's keys and commands work as they are, <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> included, and PowerShell,
+          cmd and WSL run inside panes with every keystroke intact.
         </p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>
@@ -214,7 +214,7 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">07</span>
-          <h2 data-i18n="cm.title">Panes that hand each other work</h2>
+          <h2 data-i18n="cm.title">Send work between panes</h2>
           <p data-i18n="cm.sub">
             Give a pane a name and a work mode, and send it messages: a shell runs them at its prompt, an agent gets them
             when it is free. <kbd>C-b v</kbd> shows every pane and its inbox.

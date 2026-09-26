@@ -1,4 +1,4 @@
-//! keepane: a terminal multiplexer whose panes keep running and hand each other work.
+//! keepane: a terminal multiplexer whose panes keep running and pass messages to each other.
 
 pub mod client;
 pub mod clipboard;
