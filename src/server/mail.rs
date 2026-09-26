@@ -317,7 +317,7 @@ impl Server {
         };
         let (mut ok, mut output) = (None, None);
         if m.via == WorkMode::Shell && end == End::Done {
-            let from = p.delivered_line.unwrap_or(0);
+            let (typed, from) = p.delivered_line.unwrap_or((0, 0));
             // The last command the hook reported, if it ran on or after
             // the line this one was typed on.
             ok = p
@@ -325,15 +325,11 @@ impl Server {
                 .iter()
                 .rev()
                 .find(|k| k.end.is_some())
-                .filter(|k| k.line >= from)
+                .filter(|k| k.line >= typed)
                 .and_then(|k| k.exit)
                 .map(|c| c == 0);
             let to = p.cursor_line();
-            let (text, cut) = p.text_between(from, to, max + 4096);
-            // The first line is the command as typed (however many rows it
-            // wrapped over); what follows is what it printed.
-            let body = text.split_once('\n').map_or("", |(_, rest)| rest);
-            let (mut body, mut cut) = (body.to_string(), cut);
+            let (mut body, mut cut) = p.text_between(from, to, max + 4096);
             if body.len() > max {
                 let mut e = max;
                 while !body.is_char_boundary(e) {

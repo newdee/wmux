@@ -366,10 +366,10 @@ pub struct Pane {
     /// keepane's prompt came through since the server last looked; the
     /// server takes it and tells the actor.
     pub prompted: bool,
-    /// Where the message delivered last was typed (`scrolled_total() +
-    /// row`): what the shell printed from there to its next prompt is the
-    /// command's output.
-    pub delivered_line: Option<u64>,
+    /// Where the message delivered last was typed, and the first line after
+    /// it as typed (both `scrolled_total() + row`): what the shell printed
+    /// from there to its next prompt is the command's output.
+    pub delivered_line: Option<(u64, u64)>,
     /// keepane's prompt came and the server waits a moment before taking
     /// the command as done (`PROMPT_SETTLE`); nothing is typed in meanwhile.
     pub settle: bool,
@@ -1207,7 +1207,15 @@ impl Pane {
     /// arrives as one. (A shell's command of several lines comes here as
     /// one line already: `Message::wrapped`.)
     pub fn deliver(&mut self, text: &str) {
-        self.delivered_line = Some(self.cursor_line());
+        // The rows the command takes as typed, from the cursor on: what the
+        // shell prints starts after them. Counted, not read back from the
+        // screen, where a row's wrap cannot be told from ConPTY's padding.
+        let col = usize::from(self.screen().cursor_position().1);
+        let width = unicode_width::UnicodeWidthStr::width(text);
+        // A command that ends exactly at the right edge moves the cursor to
+        // the next row, and its Enter one more: a row per width, plus one.
+        let rows = ((col + width) / usize::from(self.cols.max(1)) + 1) as u64;
+        self.delivered_line = Some((self.cursor_line(), self.cursor_line() + rows));
         let mut bytes = super::input::encode_paste(text, self.screen().bracketed_paste());
         bytes.push(b'\r');
         self.write_input(&bytes);
@@ -1679,6 +1687,21 @@ mod tests {
         let (tx, _rx) = channel();
         let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
         Pane::spawn(12, &argv, None, cols, rows, history, &[], tx).unwrap()
+    }
+
+    #[test]
+    fn a_delivered_command_takes_the_rows_it_is_typed_over() {
+        let mut p = quiet_pane(10, 5, 100);
+        p.process_output(b"PS> ");
+        // Up to the right edge exactly: the cursor goes on to the next row,
+        // Enter one more.
+        p.deliver("abcdef");
+        assert_eq!(p.delivered_line, Some((0, 2)));
+        p.process_output(b"\r\n\r\nPS> ");
+        p.deliver("ab");
+        assert_eq!(p.delivered_line, Some((2, 3)), "short of the edge: its own row");
+        p.deliver(&"x".repeat(17));
+        assert_eq!(p.delivered_line, Some((2, 5)), "4 + 17 columns: over three rows");
     }
 
     #[test]
